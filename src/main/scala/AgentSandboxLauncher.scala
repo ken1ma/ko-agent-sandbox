@@ -861,7 +861,7 @@ object AgentSandboxLauncher:
   ): Either[String, (String, Option[String])] =
     val proxyImageId = inspect.linesIterator.nextOption().getOrElse("")
     val label = inspect.linesIterator.drop(1).nextOption().getOrElse("")
-    bundleMismatch(proxyImage, bundledSourceId("ko-agent-egress-proxy"), label) match
+    bundleMismatch(proxyImage, bundledEgressProxyBundleId(), label) match
       case Some(mismatch) if !overridden => Left(s"error: $mismatch")
       case mismatch                      => Right((proxyImageId, mismatch))
 

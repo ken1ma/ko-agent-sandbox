@@ -224,8 +224,8 @@ toolchain for the images built on it:
    - The check at the end of the final image build, below, asserts the directory's contents and
      owner.
 
-`ko-agent-egress-proxy/Containerfile` also builds on `debian-coursier` and runs `sbt`
-during its build.
+`ko-agent-egress-proxy/Containerfile` also builds on `debian-coursier`, through `debian-graalvm`,
+and runs `sbt` during its build.
 
 - If measurements show that repeated proxy builds get slower, give that trusted build step explicit
   Buildah cache mounts for the Coursier and sbt build caches.

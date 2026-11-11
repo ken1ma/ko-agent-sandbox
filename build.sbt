@@ -106,9 +106,9 @@ lazy val root = project.in(file(".")).dependsOn(egressProxy).settings(
     val contexts = Seq(
       baseDirectory.value / "container" ->
         Seq(
-          "debian-temurin", "debian-coursier",  // base images
-          "ko-agent-sandbox",                   // the runtime image
-          "ko-agent-self-test",                 // test image
+          "debian-temurin", "debian-coursier", "debian-graalvm",  // base images
+          "ko-agent-sandbox",                                     // the runtime image
+          "ko-agent-self-test",                                   // test image
         ),
       // ko-agent-fs holds the workspace policy and the FUSE backend, which --build compiles
       // (ko-agent-fs/Containerfile), and the BPF backend (ko-agent-fs/bpf/Containerfile). The self-test image compiles

@@ -2,54 +2,7 @@
 # Build
 # ---------------------------------------------------------------------------
 ARG IMG_TAG_VER
-FROM debian-coursier:${IMG_TAG_VER} AS build
-
-# This layer precedes the application COPY, so the named build-stage cache keeps the toolchain when the proxy's
-# sources change. Only the native compilation repeats.
-# The GraalVM release bundles its own JDK, on which sbt and native-image run, so its JDK version need not match
-# debian-temurin's Temurin. GRAALVM_ARCHIVE_VERSION is the version part of the release's archive names: the GraalVM
-# release (25i5, 25 Innovation 5) and its JDK version.
-ARG GRAALVM_RELEASE=graal-25.5.5.0.3
-ARG GRAALVM_ARCHIVE_VERSION=25i5-25.0.5.0.3
-
-# Coursier cannot install this GraalVM release. Even its latest unpublished index stops at GraalVM Community 25.0.2,
-# so this command fails:
-#   cs java --jvm graalvm-community:25.0.5.0.3 --jvm-index \
-#     https://raw.githubusercontent.com/coursier/jvm-index/refs/heads/create-pull-request/patch/index.json
-
-RUN set -euxo pipefail; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends \
-        gcc \
-        zlib1g-dev; \
-    rm -rf /var/lib/apt/lists/*; \
-    case "$(uname -m)" in \
-        aarch64) \
-            GRAALVM_ARCH=aarch64; \
-            GRAALVM_SHA256=41741c0650ae7564a78335f9e4fc353a902e6ff1d4140f2e4fabd1c55d5cce66 \
-            ;; \
-        x86_64) \
-            GRAALVM_ARCH=x64; \
-            GRAALVM_SHA256=c6438dee6c3ade2220d40b7ccdcad24b512d30e233e61bb4fc70519522de34ef \
-            ;; \
-        *) \
-            echo "Unsupported architecture: $(uname -m)" >&2; \
-            exit 1 \
-            ;; \
-    esac; \
-    GRAALVM_ARCHIVE="graalvm-community-jdk-${GRAALVM_ARCHIVE_VERSION}"; \
-    GRAALVM_ARCHIVE="${GRAALVM_ARCHIVE}_linux-${GRAALVM_ARCH}_bin.tar.gz"; \
-    GRAALVM_BASE_URL="https://github.com/graalvm/graalvm-ce-builds/releases/download/${GRAALVM_RELEASE}"; \
-    GRAALVM_URL="${GRAALVM_BASE_URL}/${GRAALVM_ARCHIVE}"; \
-    curl -fsSL "$GRAALVM_URL" -o "/tmp/$GRAALVM_ARCHIVE"; \
-    printf '%s  %s\n' "$GRAALVM_SHA256" "/tmp/$GRAALVM_ARCHIVE" | sha256sum -c -; \
-    install -d -m 0755 /opt/graalvm; \
-    tar -xzf "/tmp/$GRAALVM_ARCHIVE" --strip-components=1 -C /opt/graalvm; \
-    rm "/tmp/$GRAALVM_ARCHIVE"; \
-    test -x /opt/graalvm/bin/native-image
-
-ENV JAVA_HOME=/opt/graalvm
-ENV PATH="/opt/graalvm/bin:$PATH"
+FROM debian-graalvm:${IMG_TAG_VER} AS build
 
 # Build as nonroot: cs setup's cache is under /home/nonroot, and a build as root would fill a second, cold cache
 # every time.
@@ -72,7 +25,7 @@ RUN set -euxo pipefail; \
     #   - A roomier cap would hide growth in GC time that nobody reads. \
     # -R:MaxHeapSize caps the proxy's own heap: bodies pass through fixed buffers instead of accumulating in \
     # the managed heap. \
-    native-image \
+    "$GRAALVM_HOME/bin/native-image" \
         -J-Xmx1536m \
         -R:MaxHeapSize=64m \
         -o /build/ko-agent-egress-proxy \
@@ -107,7 +60,8 @@ LABEL org.opencontainers.image.title="ko-agent-egress-proxy"
 LABEL org.opencontainers.image.description="CONNECT-only egress proxy enforcing a ko-agent-sandbox workspace's rules"
 LABEL org.opencontainers.image.base.name="gcr.io/distroless/base-debian13:nonroot"
 
-# BUNDLE_ID is the digest of this directory as the launcher bundled it (LauncherImages.contextSourceId).
+# BUNDLE_ID is the digest of this directory and debian-graalvm's as the launcher bundled them
+# (LauncherImages.egressProxyBundleId).
 # A launch recomputes the digest from its own jar and refuses a default-named image that another jar built.
 # This label locks the image to the launcher that bundled its sources (LauncherImages.bundleMismatch).
 ARG BUNDLE_ID

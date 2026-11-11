@@ -1,0 +1,52 @@
+ARG IMG_TAG_VER
+FROM debian-coursier:${IMG_TAG_VER}
+
+# The environment that compiles native images: GraalVM, and the C compiler and zlib headers that native-image needs.
+# JAVA_HOME names debian-temurin's Temurin, so sbt runs on the same JDK as in every other image. Only native-image
+# runs on GraalVM, on the JDK that the GraalVM release bundles, so that JDK's version need not match Temurin's.
+# GRAALVM_ARCHIVE_VERSION is the version part of the release's archive names: the GraalVM release (25i5, 25
+# Innovation 5) and its JDK version.
+ARG GRAALVM_RELEASE=graal-25.5.5.0.3
+ARG GRAALVM_ARCHIVE_VERSION=25i5-25.0.5.0.3
+
+# Coursier cannot install this GraalVM release. Even its latest unpublished index stops at GraalVM Community 25.0.2,
+# so this command fails:
+#   cs java --jvm graalvm-community:25.0.5.0.3 --jvm-index \
+#     https://raw.githubusercontent.com/coursier/jvm-index/refs/heads/create-pull-request/patch/index.json
+
+RUN set -euxo pipefail; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        gcc \
+        zlib1g-dev; \
+    rm -rf /var/lib/apt/lists/*; \
+    case "$(uname -m)" in \
+        aarch64) \
+            GRAALVM_ARCH=aarch64; \
+            GRAALVM_SHA256=41741c0650ae7564a78335f9e4fc353a902e6ff1d4140f2e4fabd1c55d5cce66 \
+            ;; \
+        x86_64) \
+            GRAALVM_ARCH=x64; \
+            GRAALVM_SHA256=c6438dee6c3ade2220d40b7ccdcad24b512d30e233e61bb4fc70519522de34ef \
+            ;; \
+        *) \
+            echo "Unsupported architecture: $(uname -m)" >&2; \
+            exit 1 \
+            ;; \
+    esac; \
+    GRAALVM_ARCHIVE="graalvm-community-jdk-${GRAALVM_ARCHIVE_VERSION}"; \
+    GRAALVM_ARCHIVE="${GRAALVM_ARCHIVE}_linux-${GRAALVM_ARCH}_bin.tar.gz"; \
+    GRAALVM_BASE_URL="https://github.com/graalvm/graalvm-ce-builds/releases/download/${GRAALVM_RELEASE}"; \
+    GRAALVM_URL="${GRAALVM_BASE_URL}/${GRAALVM_ARCHIVE}"; \
+    curl -fsSL "$GRAALVM_URL" -o "/tmp/$GRAALVM_ARCHIVE"; \
+    printf '%s  %s\n' "$GRAALVM_SHA256" "/tmp/$GRAALVM_ARCHIVE" | sha256sum -c -; \
+    install -d -m 0755 /opt/graalvm; \
+    tar -xzf "/tmp/$GRAALVM_ARCHIVE" --strip-components=1 -C /opt/graalvm; \
+    rm "/tmp/$GRAALVM_ARCHIVE"; \
+    test -x /opt/graalvm/bin/native-image
+
+ENV GRAALVM_HOME=/opt/graalvm
+
+# The image's tag names no GraalVM version (LauncherImages.ImgTagVersion), so this label shows the release. The label
+# follows the RUN for the reason debian-temurin's labels do.
+LABEL debian-graalvm.graalvm-release=${GRAALVM_RELEASE}

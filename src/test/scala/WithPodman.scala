@@ -71,11 +71,13 @@ object WithPodman extends munit.Assertions:
     * suites launch the default images (launcherCommand reads no options file), so each default image
     * must be current. */
   private def requireImagesCurrent(): Unit =
-    Seq(LauncherImages.SandboxImage -> "ko-agent-sandbox", LauncherImages.ProxyImage -> "ko-agent-egress-proxy")
-      .foreach: (image, context) =>
-        assert(runOk(podman, "image", "exists", image), s"$image is not built; run `java -jar $jar --build` first")
-        val label = inspect(image, LauncherImages.BundleLabelTemplate)
-        LauncherImages.bundleMismatch(image, LauncherImages.bundledSourceId(context), label).foreach(fail(_))
+    Seq(
+      LauncherImages.SandboxImage -> LauncherImages.bundledSourceId("ko-agent-sandbox"),
+      LauncherImages.ProxyImage -> LauncherImages.bundledEgressProxyBundleId(),
+    ).foreach: (image, expected) =>
+      assert(runOk(podman, "image", "exists", image), s"$image is not built; run `java -jar $jar --build` first")
+      val label = inspect(image, LauncherImages.BundleLabelTemplate)
+      LauncherImages.bundleMismatch(image, expected, label).foreach(fail(_))
 
   /** One scratch workspace as the registry records it: the id that the launcher gives its directory;
     * the JVM that created it, by pid and start time, because a pid alone is reused; and the directory

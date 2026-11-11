@@ -666,6 +666,7 @@ them on.
        podman image rm -f $(podman images -q --filter 'reference=ko-agent-*')
        podman image rm -f $(podman images -q --filter 'reference=debian-temurin')
        podman image rm -f $(podman images -q --filter 'reference=debian-coursier')
+       podman image rm -f $(podman images -q --filter 'reference=debian-graalvm')
 
     1. The pulled base images are not removed, since other images may use them: `debian`, `rust`
        and `distroless/base-debian13`.

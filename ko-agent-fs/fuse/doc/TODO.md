@@ -37,11 +37,15 @@ can put a second name of a guarded entry there first (`../../policy/doc/security
   - Staged mode keeps session mutations off the host tree. Its apply step needs the same protection
     against a concurrent replacement.
 - [ ] `a_create_never_reopens_a_guarded_entry_that_arrives_under_a_second_name`
-  (`tests/mounted_races.rs`) failed in two of three `--self-test` runs on Windows Server 24H2
-  (x86_64, WSL2 kernel 6.18.33.2; 2026-09-27), the second at `ac405d2`: "SECURITY: a create opened
-  the host's pointer file". It failed again in four of six runs on 2026-11-09 (WSL2 kernel
-  6.18.54.1), with the same message.
-  - It passed in the first run of each day, on the macOS rig, and in `--self-test` on macOS.
+  (`tests/mounted_races.rs`) fails in some `--self-test` runs on Windows with "SECURITY: a create
+  opened the host's pointer file".
+  - On 2026-09-27 it failed in two of three runs, the second at `ac405d2` (Windows Server 24H2,
+    x86_64, WSL2 kernel 6.18.33.2).
+  - On 2026-11-09 it failed in four of six runs (WSL2 kernel 6.18.54.1).
+  - On 2026-11-11 it failed again on WSL2 kernel 6.18.54.1. In that run, 3,468 `.git` writes took
+    4 inode numbers, and all 288 of the sandbox's `GIT~1` files took a number a `.git` had.
+  - It passed in the first run of 2026-09-27 and of 2026-11-09, on the macOS rig, and in
+    `--self-test` on macOS.
   - Suspected cause, which a failing run's inode record supports (below): an entry's identity is
     `(st_dev, st_ino)` (`fs.rs`, `identity`), and `lookup` reads the entry and its guarded siblings
     in separate `fstatat` calls (`policy_name`). One inode-number reuse suffices, in this

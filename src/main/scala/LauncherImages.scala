@@ -28,6 +28,7 @@ object LauncherImages:
   val ImgTagVersion = "latest-13-25"
   def temurinImage(version: String): String = s"debian-temurin:$version"
   def coursierImage(version: String): String = s"debian-coursier:$version"
+  def graalvmImage(version: String): String = s"debian-graalvm:$version"
   val SandboxImage = "ko-agent-sandbox:latest"
   val ProxyImage = "ko-agent-egress-proxy:latest"
   val KoAgentFsImage = "ko-agent-fs:latest"
@@ -47,7 +48,7 @@ object LauncherImages:
   def buildImageTags(version: String): Vector[String] =
     Vector(temurinImage(version), coursierImage(version), SandboxImage)
       ++ SandboxDownloadStages.map(sandboxStageImage)
-      ++ Vector(ProxyBuildImage, ProxyImage, KoAgentFsBuildImage, KoAgentFsImage)
+      ++ Vector(graalvmImage(version), ProxyBuildImage, ProxyImage, KoAgentFsBuildImage, KoAgentFsImage)
 
   /** The BPF backend's images, built on the podman machines alone (KoAgentBpf.buildCommands). */
   val KoAgentBpfImageTags = Vector(KoAgentBpfBuildImage, KoAgentBpfImage)
@@ -115,7 +116,8 @@ object LauncherImages:
    * The digest of one bundle directory as this jar bundles it. The digest covers the same bytes that
    * ImageBuilds.unpackBuildContext writes and contextSourceId hashes, read straight from the jar so
    * that no unpack is needed. The FUSE backend's binary must report this digest in its `--version`,
-   * and --build stamps it into the sandbox and proxy images as their bundle label (bundleMismatch).
+   * and --build stamps it into the sandbox image as its bundle label and into the proxy image's label
+   * (egressProxyBundleId, bundleMismatch).
    */
   def bundledSourceId(dir: String, copied: String => Boolean = _ => true): String =
     val entries = bundleIndex()
@@ -155,6 +157,20 @@ object LauncherImages:
       "debian-temurin" -> temurinSourceId.getBytes(StandardCharsets.UTF_8),
       "debian-coursier" -> coursierSourceId.getBytes(StandardCharsets.UTF_8),
     ))
+
+  /**
+   * The proxy image's bundle label covers debian-graalvm's directory too, because its GraalVM compiles the proxy. A
+   * GraalVM update thereby makes a launch refuse a proxy image built before it (bundleMismatch).
+   */
+  def egressProxyBundleId(proxySourceId: String, graalvmSourceId: String): String =
+    bundleSourceId(Vector(
+      "debian-graalvm" -> graalvmSourceId.getBytes(StandardCharsets.UTF_8),
+      "ko-agent-egress-proxy" -> proxySourceId.getBytes(StandardCharsets.UTF_8),
+    ))
+
+  /** egressProxyBundleId as this jar bundles the two directories. */
+  def bundledEgressProxyBundleId(): String =
+    egressProxyBundleId(bundledSourceId("ko-agent-egress-proxy"), bundledSourceId("debian-graalvm"))
 
   /**
    * The label read back through Go's raw-string (backtick) quoting, because the argument must not
@@ -275,7 +291,7 @@ object LauncherImages:
     existing: Vector[TaggedImage],
     current: Vector[String],
   ): Vector[TaggedImage] =
-    val versionedRepositories = Set("debian-temurin", "debian-coursier")
+    val versionedRepositories = Set("debian-temurin", "debian-coursier", "debian-graalvm")
     val currentTags = current.map(localImageTag).toSet
     val repositoryOrder = current.map(imageRepository).zipWithIndex.toMap
     existing.distinctBy(_.tag)

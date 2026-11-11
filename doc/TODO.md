@@ -1003,6 +1003,10 @@ The build:
 - [ ] Build the binary in CI, and run the launcher suite as the binary on both shipping
   architectures. Only then does the README offer the binary. build.sbt's comments explain the two
   exports and the resource includes that the command carries.
+- [ ] Build the binary with the GraalVM release that `container/debian-graalvm/Containerfile`
+  pins: in that image on Linux, and from the release its `ARG` lines name on macOS and Windows.
+  - The command above installs GraalVM with `cs java`, but Coursier's JVM index stops at GraalVM
+    Community 25.0.2.
 - [ ] Compute the bundle digests (`LauncherImages.bundledSourceId`) while `native-image` builds the
   binary, with build-time initialization. The binary then hashes nothing at launch, and
   `bundleSourceId` stays the one implementation. Check first that the bundled resources are

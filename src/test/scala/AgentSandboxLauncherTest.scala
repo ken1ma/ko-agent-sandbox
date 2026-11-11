@@ -811,6 +811,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       "debian-coursier",
       "ko-agent-sandbox",
     ) ++ stageTags.map(_.last) ++ Vector(
+      "debian-graalvm",
       "ko-agent-egress-proxy",
       "ko-agent-egress-proxy",
       "ko-agent-fs",
@@ -820,6 +821,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       commands.find(command => buildOutputImages(Vector(command)) == Vector(image)).get
     val temurin = building("debian-temurin:1.2-3")
     val coursier = building("debian-coursier:1.2-3")
+    val graalvm = building("debian-graalvm:1.2-3")
     val sandbox = building(SandboxImage)
     val proxyBuild = building(ProxyBuildImage)
     val proxy = building(ProxyImage)
@@ -829,7 +831,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(!temurin.contains("--build-arg"))
     assert(proxyBuild.containsSlice(Seq("--target", "build")))
     commands.foreach(command => assert(!command.contains("--save-stages")))
-    (Vector(coursier, sandbox, proxyBuild, proxy) ++ stageTags).foreach: command =>
+    (Vector(coursier, sandbox, graalvm, proxyBuild, proxy) ++ stageTags).foreach: command =>
       assert(command.containsSlice(Seq("--build-arg", "IMG_TAG_VER=1.2-3")))
     assert(fsBuild.containsSlice(Seq("--target", "build")))
     Vector(fsBuild, fs).foreach: command =>
@@ -843,13 +845,13 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(proxy.containsSlice(Seq("--build-arg", "BUNDLE_ID=proxyid")))
     assert(sandbox.containsSlice(Seq("--label", s"$BundleLabel=sandboxid")))
     assert(proxy.containsSlice(Seq("--label", s"$BundleLabel=proxyid")))
-    (Vector(temurin, coursier, proxyBuild, fsBuild, fs) ++ stageTags).foreach: command =>
+    (Vector(temurin, coursier, graalvm, proxyBuild, fsBuild, fs) ++ stageTags).foreach: command =>
       assert(!command.exists(_.startsWith("BUNDLE_ID=")))
       assert(!command.exists(_.startsWith(s"$BundleLabel=")))
     // debian-coursier carries the bases' identity, which --update checks; the image has no Containerfile LABEL.
     assert(coursier.containsSlice(Seq("--label", s"$BaseBundleLabel=baseid")))
     // A stage tag build with a --label would commit a new image (sandboxStageTagCommands).
-    (Vector(temurin, proxyBuild, fsBuild, fs) ++ stageTags).foreach: command =>
+    (Vector(temurin, graalvm, proxyBuild, fsBuild, fs) ++ stageTags).foreach: command =>
       assert(!command.contains("--label"))
 
   test("--build and --update refresh exactly the remote sources their Containerfiles use"):
@@ -1345,6 +1347,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         Vector(
           TaggedImage("localhost/debian-temurin:1.1-2", "temurin-old"),
           TaggedImage("debian-coursier:1.1-2", "coursier-old"),
+          TaggedImage("localhost/debian-graalvm:1.1-2", "graalvm-old"),
           TaggedImage("localhost/debian-temurin:1.2-3", "temurin-current"),
           TaggedImage("localhost/ko-agent-sandbox:latest", "sandbox-current"),
           TaggedImage("ko-agent-sandbox:mine", "custom-sandbox"),
@@ -1355,6 +1358,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         buildImageTags("1.2-3"),
       ),
       Vector(
+        TaggedImage("localhost/debian-graalvm:1.1-2", "graalvm-old"),
         TaggedImage("debian-coursier:1.1-2", "coursier-old"),
         TaggedImage("localhost/debian-temurin:1.1-2", "temurin-old"),
       ),
@@ -1599,10 +1603,10 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(selfTestBundleId("fs-source-1", "self-test-source-1", "bpf-source-1", "sandbox-image-2") != original)
 
   test("the bundle version lock refuses a mismatch and knows an unlabeled image"):
-    // The compared digests come from the jar's own bundle, one per image directory. The digests must
-    // be real, 64-hex and distinct, or the lock would equate the two images.
+    // The compared digests come from the jar's own bundle, one per image. Each digest must be 64 hex
+    // characters, and the two must differ, or the check could not tell the two images apart.
     val sandboxId = bundledSourceId("ko-agent-sandbox")
-    val proxyId = bundledSourceId("ko-agent-egress-proxy")
+    val proxyId = bundledEgressProxyBundleId()
     Vector(sandboxId, proxyId).foreach: id =>
       assert(id.length == 64 && id.forall(ch => ch.isDigit || (ch >= 'a' && ch <= 'f')), id)
     assert(sandboxId != proxyId)
@@ -1625,7 +1629,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(unlabeled.exists(_.contains("(none)")), unlabeled.toString)
 
   test("the proxy image's version lock refuses the default name, warns for an override, and answers the Id"):
-    val proxyId = bundledSourceId("ko-agent-egress-proxy")
+    val proxyId = bundledEgressProxyBundleId()
     val current = s"image-id\n$proxyId\n"
     assertEquals(proxyImageLock(ProxyImage, overridden = false, current), Right(("image-id", None)))
     assertEquals(proxyImageLock("ko-agent-egress-proxy:mine", overridden = true, current), Right(("image-id", None)))
@@ -1657,6 +1661,16 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val commands = buildCommands("podman", "1.2-3", baseId, "sourceid", "sandboxid", "proxyid")
     val labelled = commands.filter(_.containsSlice(Seq("--label", s"$BaseBundleLabel=$baseId")))
     assertEquals(labelled.map(_.last), Vector("debian-coursier"))
+
+  test("the proxy's identity covers debian-graalvm, whose GraalVM compiles it"):
+    val proxySourceId = bundledSourceId("ko-agent-egress-proxy")
+    val graalvmSourceId = bundledSourceId("debian-graalvm")
+    val proxyId = egressProxyBundleId(proxySourceId, graalvmSourceId)
+    assertEquals(bundledEgressProxyBundleId(), proxyId)
+    // A change in either directory changes the label that a launch compares.
+    assert(egressProxyBundleId(proxySourceId.reverse, graalvmSourceId) != proxyId)
+    assert(egressProxyBundleId(proxySourceId, graalvmSourceId.reverse) != proxyId)
+    assert(egressProxyBundleId(graalvmSourceId, proxySourceId) != proxyId)
 
   test("--update starts no pull or build on a base this jar's bundled base sources did not build"):
     assume(HostCommands.currentOs != Os.Windows, "the fake executable is a POSIX shell script")
@@ -1735,6 +1749,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     Vector(
       "debian-temurin/Containerfile",
       "debian-coursier/Containerfile",
+      "debian-graalvm/Containerfile",
       "ko-agent-sandbox/Containerfile",
       "ko-agent-egress-proxy/Containerfile",
       "ko-agent-fs/Containerfile",
@@ -1818,14 +1833,18 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     .toMap
     assertEquals(s"latest-${majors("DEBIAN")}-${majors("TEMURIN")}", ImgTagVersion)
 
-  test("debian-temurin labels its Debian and Temurin versions after its last RUN"):
+  test("debian-temurin and debian-graalvm label their versions after their last RUN"):
     // A LABEL before that RUN would keep the previous version after it changes (debian-temurin's
     // Containerfile has the podman behavior).
-    val lines = BundledBuildContext.resource("debian-temurin/Containerfile").linesIterator.toVector
-    val lastRun = lines.lastIndexWhere(_.startsWith("RUN "))
-    Vector("debian-version=${DEBIAN_VERSION}", "temurin-version=${TEMURIN_VERSION}").foreach: label =>
-      val at = lines.indexOf(s"LABEL debian-temurin.$label")
-      assert(at > lastRun, s"LABEL debian-temurin.$label is absent or precedes the last RUN")
+    Vector(
+      "debian-temurin" -> Vector("debian-version=${DEBIAN_VERSION}", "temurin-version=${TEMURIN_VERSION}"),
+      "debian-graalvm" -> Vector("graalvm-release=${GRAALVM_RELEASE}"),
+    ).foreach: (image, labels) =>
+      val lines = BundledBuildContext.resource(s"$image/Containerfile").linesIterator.toVector
+      val lastRun = lines.lastIndexWhere(_.startsWith("RUN "))
+      labels.foreach: label =>
+        val at = lines.indexOf(s"LABEL $image.$label")
+        assert(at > lastRun, s"LABEL $image.$label is absent or precedes the last RUN")
 
   test("SECURITY.md names exactly the git-fetch hosts the proxy ships"):
     // The git-host list has two homes: the git-fetch lines of the proxy's defaults/host, and the

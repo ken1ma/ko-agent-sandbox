@@ -63,7 +63,10 @@ object ImageBuilds:
       val selfTestSourceId = contextSourceId(context, "ko-agent-self-test")
       val bpfSourceId = contextSourceId(context, KoAgentBpf.SourceDir)
       val sandboxBundleId = contextSourceId(context, "ko-agent-sandbox")
-      val proxyBundleId = contextSourceId(context, "ko-agent-egress-proxy")
+      val proxyBundleId = egressProxyBundleId(
+        contextSourceId(context, "ko-agent-egress-proxy"),
+        contextSourceId(context, "debian-graalvm"),
+      )
       val readContainerfile = buildContextReader(context)
       val baseId = baseBundleId(
         contextSourceId(context, "debian-temurin"),
@@ -302,6 +305,10 @@ object ImageBuilds:
         "-t", SandboxImage, "ko-agent-sandbox",
       ),
     ) ++ sandboxStageTagCommands(podman, version) ++ Vector(
+      Vector(
+        podman, "build", NoRegistryLookup, "--build-arg", s"IMG_TAG_VER=$version",
+        "-t", graalvmImage(version), "debian-graalvm",
+      ),
       Vector(
         podman, "build", NoRegistryLookup, "--target", "build", "--build-arg", s"IMG_TAG_VER=$version",
         "-t", ProxyBuildImage, "ko-agent-egress-proxy",
