@@ -102,7 +102,12 @@ object RefusalAdvice:
 
   val bodyFramingHeader = "GET and HEAD must omit Content-Length and Transfer-Encoding here. Remove those headers."
 
-  val upgrade = "WebSockets and HTTP/2 upgrades are refused. Use a plain request."
+  val upgrade = "Only a WebSocket GET can upgrade, at a path a line grants. Use a plain request."
+
+  /** The line names the refused path whole, so the user reads the one path it opens. */
+  def webSocketNotGranted(host: String, path: String): String =
+    s"No line grants a WebSocket here. Use a plain request; if the work needs this WebSocket, ask the user to add " +
+      s"'${RulesetHelper.allowLine(host, path, RulesetHelper.Grant.WebSocket)}' to ${RulesetHelper.WorkspaceRuleFile}."
 
   val originForm = "Send the path, not the absolute URL."
 

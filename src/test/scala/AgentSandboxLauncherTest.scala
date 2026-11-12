@@ -1886,9 +1886,9 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val grantObject = """object Grant:\n([\s\S]*?)\n\n""".r
       .findFirstMatchIn(proxySource)
       .getOrElse(fail("the proxy no longer declares its grant words in `object Grant`"))
-    val words = """val (?:Read|GitFetch|Tunnel) = "([^"]+)"""".r
+    val words = """val (?:Read|GitFetch|WebSocket|Tunnel) = "([^"]+)"""".r
       .findAllMatchIn(grantObject.group(1)).map(_.group(1)).toSet
-    assertEquals(words, Set("read", "git-fetch", "tunnel"))
+    assertEquals(words, Set("read", "git-fetch", "upgrade=websocket", "tunnel"))
     assert(grantObject.group(1).contains("method="), "the proxy no longer spells the method word `method=`")
 
     // A ruleset with no lines of its own, so every grant word found is the text's own.

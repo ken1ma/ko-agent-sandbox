@@ -322,8 +322,10 @@ class HostileInputTest extends munit.FunSuite:
       "allow https://pypi.org/ tunnel", "allow https://mirror.example/a/ tunnel",
       "allow https://registry.npmjs.org/lodash/ method=POST,PUT", "deny https://github.com/ git-fetch",
       "deny https://**.googleapis.com/ tunnel", "allow https://x.example/ method=GET", "deny https://x.example/a/",
+      "allow https://mirror.example/raw upgrade=websocket", "allow https://mirror.example/ upgrade=h2c",
+      "allow https://mirror.example/ upgrade=websocket tunnel", "deny https://mirror.example/ upgrade=websocket",
     )
-    val words = Set("read", "git-fetch", "tunnel", "POST", "PUT", "PATCH", "DELETE")
+    val words = Set("read", "git-fetch", "tunnel", "POST", "PUT", "PATCH", "DELETE", "upgrade=websocket")
     var resolved = 0
     var refused = 0
     (1 to 1000).foreach: _ =>
@@ -405,6 +407,7 @@ class HostileInputTest extends munit.FunSuite:
     val methods = Vector("POST", "PUT", "PATCH", "DELETE").filter(grants)
     (Vector("read", "git-fetch").filter(grants)
       ++ Option.when(methods.nonEmpty)("method=" + methods.mkString(","))
+      ++ Option.when(grants("upgrade=websocket"))("upgrade=websocket")
       ++ Option.when(grants("tunnel"))("tunnel")).mkString(" ")
 
   /** One allow-line contribution, retained separately rather than folded. */
@@ -422,7 +425,7 @@ class HostileInputTest extends munit.FunSuite:
 
   /** What a request is, hand-labelled: the evaluator classifies nothing. */
   private enum Kind:
-    case Read, FetchDiscovery, UploadPack, PushDiscovery, Write
+    case Read, FetchDiscovery, UploadPack, PushDiscovery, Write, Handshake
 
   private case class Request(method: String, target: String, kind: Kind, ambiguous: Boolean)
 
@@ -439,6 +442,9 @@ class HostileInputTest extends munit.FunSuite:
     Request("GET", "/org/%2e/x", Kind.Read, ambiguous = true),
     Request("GET", "/org/repo/x", Kind.Read, ambiguous = false),
     Request("POST", "/org/%2e%2e/x", Kind.Write, ambiguous = true),
+    Request("GET", "/org/x", Kind.Handshake, ambiguous = false),
+    Request("GET", "/login/device/code", Kind.Handshake, ambiguous = false),
+    Request("GET", "/%2e%2e/x", Kind.Handshake, ambiguous = true),
   )
 
   private val Hosts = Vector(
@@ -501,6 +507,8 @@ class HostileInputTest extends munit.FunSuite:
       case Kind.PushDiscovery  => grants("POST")
       case Kind.UploadPack     => !request.ambiguous && (grants("git-fetch") || grants("POST"))
       case Kind.Write          => !request.ambiguous && grants(request.method)
+      // A handshake's path is literal under every line, the root included, and `read` does not open it.
+      case Kind.Handshake      => !request.ambiguous && grants("upgrade=websocket")
     if opened then "allowed" else "refused"
 
   private def production(resolved: ResolvedEgress, host: String, request: Request): String =
@@ -508,7 +516,9 @@ class HostileInputTest extends munit.FunSuite:
       authorizeRequest(ConnectRequest(host, 443), resolved)
       if resolved.tunnelHosts(host) then "tunnel"
       else
-        val framing = if request.method == "GET" then "" else "Content-Length: 0\r\n"
+        val framing = request.kind match
+          case Kind.Handshake => "Upgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+          case _              => if request.method == "GET" then "" else "Content-Length: 0\r\n"
         val head = HttpRequestHead.parse(
           ascii(s"${request.method} ${request.target} HTTP/1.1\r\nHost: $host\r\n$framing\r\n"),
         )
@@ -525,6 +535,8 @@ class HostileInputTest extends munit.FunSuite:
       Set("POST"),
       Set("read", "POST"),
       Set("PUT"),
+      Set("upgrade=websocket"),
+      Set("read", "upgrade=websocket"),
     )
     val paths = Vector("/", "/org/", "/org/repo/", "/login/device/code")
     val pool: Vector[Drawn] =
@@ -532,7 +544,9 @@ class HostileInputTest extends munit.FunSuite:
         ++ Hosts.map(host => Allow(host, "/", Set("tunnel")))
         ++ (for
           host <- Hosts
-          grants <- Vector(Set.empty[String], Set("read"), Set("git-fetch"), Set("POST"), Set("tunnel"))
+          grants <- Vector(
+            Set.empty[String], Set("read"), Set("git-fetch"), Set("POST"), Set("upgrade=websocket"), Set("tunnel"),
+          )
         yield Deny(host, subtree = false, grants))
         ++ Vector(Deny("github.com", subtree = true, Set.empty), Deny("new.example", subtree = true, Set.empty),
           Deny("new.example", subtree = true, Set("tunnel")), Deny("github.com", subtree = true, Set("read")))

@@ -266,14 +266,14 @@ object LaunchMessages:
        |For a destination's grants and restrictions, consult `$$KO_AGENT_SANDBOX_EGRESS_RULESET`.
        |Anything not allowed by the ruleset is refused. A line grants exactly its words under its
        |path: `tunnel` is an opaque tunnel; `read` is GET and HEAD, bodyless; `git-fetch`
-       |serves `clone` and `pull`; `method=` names the
-       |HTTP methods allowed there. On an inspected host, the rule with the longest matching
-       |path decides which operations are permitted. A rule path ending in `/` matches request
-       |paths with that prefix; other rule paths match exactly. A request matching no rule is
-       |refused. For rules below `/`, a request path is also refused unless it is printable ASCII
-       |with `%` escaping only non-ASCII text or a space, and has no dot segment, backslash, `;`,
-       |`#` or empty segment; a `POST`, `PUT`, `PATCH` or `DELETE` path may carry no `%` or dot
-       |segment under any rule.
+       |serves `clone` and `pull`; `method=` names the HTTP methods allowed there;
+       |`upgrade=websocket` opens a WebSocket there. On an inspected host, the rule with the
+       |longest matching path decides which operations are permitted. A rule path ending in `/`
+       |matches request paths with that prefix; other rule paths match exactly. A request
+       |matching no rule is refused. For rules below `/`, a request path is also refused unless it
+       |is printable ASCII with `%` escaping only non-ASCII text or a space, and has no dot
+       |segment, backslash, `;`, `#` or empty segment; a `POST`, `PUT`, `PATCH` or `DELETE` path
+       |may carry no `%` or dot segment under any rule.
        |
        |$refused
        |${brokeredParagraph(brokered)}""".stripMargin

@@ -617,6 +617,8 @@ object AgentEgressProxy:
    * - Keeping the connection alive would mean agreeing with the origin about where each message ends: the exact
    *   disagreement that request smuggling exploits.
    * - After the response, the proxy only drains the client (drainClient) and never answers the client again.
+   * - The exception is a granted WebSocket handshake: its checked 101 hands the connection to relayStream, which
+   *   parses nothing more.
    *
    * The cost is a handshake per request; a `git fetch` costs two.
    */
@@ -674,13 +676,18 @@ object AgentEgressProxy:
 
           val printedMethod = method
           val printedTarget = target
-          relayInspected(
+          val switched = relayInspected(
             clientTls, originTls, origin.transport, head,
             relayed =>
               fields.id.foreach(id =>
                 System.err.println(RequestAudit.chunkedEndLine(host, printedMethod, printedTarget, id, relayed)),
               ),
           )
+          if switched then
+            val streamed = relayStream(clientTls, client, originTls, origin.transport)
+            fields.id.foreach(id =>
+              System.err.println(RequestAudit.webSocketEndLine(host, printedMethod, printedTarget, id, streamed)),
+            )
         finally closeTlsOutput(originTls, origin.transport)
 
       catch
@@ -720,6 +727,8 @@ object AgentEgressProxy:
    */
   // Socket rather than SSLSocket: nothing here is TLS-specific, since the sockets arrive already inside the tunnel.
   // Plain sockets also let the tests run the relay on loopback pairs.
+  // True when the origin switched a granted WebSocket handshake to its stream, which the caller relays
+  // (relayStream). An `Upgrade` in `head` is one that authorizeInspectedRequest granted.
   def relayInspected(
     clientTls: Socket,
     originTls: Socket,
@@ -727,7 +736,7 @@ object AgentEgressProxy:
     head: HttpRequestHead,
     // Called once for a request with a body, from the upload's thread when the body ends.
     bodyRelayed: BodyRelayed => Unit = _ => (),
-  ): Unit =
+  ): Boolean =
     val toOrigin = originTls.getOutputStream
     val fromOrigin = originTls.getInputStream
     val toClient = clientTls.getOutputStream
@@ -736,9 +745,10 @@ object AgentEgressProxy:
     originTls.setSoTimeout(InspectedIdleTimeoutMillis)
 
     val framing = head.bodyFraming
+    val upgrade = head.values("Upgrade").headOption
 
     try
-      toOrigin.write(head.toOriginBytes)
+      toOrigin.write(upgrade.fold(head.toOriginBytes)(head.toOriginUpgradeBytes))
       toOrigin.flush()
     catch
       case ex: IOException =>
@@ -771,14 +781,26 @@ object AgentEgressProxy:
       * - The Expect went to the origin whole (toOriginBytes drops only this hop's headers). So a client that holds
       *   its body back for a 100 that the origin never sends is where it would be against that origin directly: the
       *   client sends on its own timer, which is 1 s for curl.
-      * - A 101 is refused before it is forwarded: the origin never received an Upgrade, and what follows a 101 is no
-      *   longer HTTP. */
+      * - A 101 to a request without an Upgrade is refused before it is forwarded: what follows a 101 is no longer
+      *   HTTP.
+      * - A 101 to a granted handshake ends the HTTP exchange once its `Sec-WebSocket-Accept` matches the key. An
+      *   origin that answers 101 without computing the value would let the client send requests that this proxy
+      *   neither authorizes nor logs.
+      * - The 101 must also name the WebSocket in its own `Upgrade`, since toClientUpgradeBytes writes the client's
+      *   pair: the client cannot check what the origin switched to. */
     @tailrec
     def finalResponseHead(interimRead: Int = 0): HttpResponseHead =
       val response = responseHead()
       if response.status == 101 then
-        throw IOException("origin answered 101 Switching Protocols to a request sent without Upgrade")
-      if !response.interim then
+        if upgrade.isEmpty then
+          throw IOException("origin answered 101 Switching Protocols to a request sent without Upgrade")
+        val key = head.values("Sec-WebSocket-Key").head
+        if response.values("Sec-WebSocket-Accept") != Vector(webSocketAccept(key)) then
+          throw IOException("origin answered 101 without the Sec-WebSocket-Accept of the handshake's key")
+        if !response.values("Upgrade").map(_.toLowerCase(java.util.Locale.ROOT)).sameElements(Vector("websocket")) then
+          throw IOException("origin answered 101 without Upgrade: websocket")
+        response
+      else if !response.interim then
         upload.foreach(_.originAnswered())
         response
       else if interimRead == MaxInterimResponses then
@@ -790,16 +812,22 @@ object AgentEgressProxy:
 
     try
       val response = finalResponseHead()
-      val responseFraming = response.bodyFraming(head.method)
-
-      toClient.write(response.toClientBytes)
-      try
-        forwardResponseBody(fromOrigin, toClient, responseFraming)
+      if response.status == 101 then
+        toClient.write(response.toClientUpgradeBytes(upgrade.get))
         toClient.flush()
-      catch case ex: IOException => throw TruncatedResponse(ex.getMessage)
-      // The client's input belongs to the upload until the upload ends. An upload still running means that the
-      // client uploads past the final head or holds a body back after it, and that client gets the close as it is.
-      if upload.forall(_.ended(DrainTimeoutMillis)) then drainClient(clientTls)
+        true
+      else
+        val responseFraming = response.bodyFraming(head.method)
+
+        toClient.write(response.toClientBytes)
+        try
+          forwardResponseBody(fromOrigin, toClient, responseFraming)
+          toClient.flush()
+        catch case ex: IOException => throw TruncatedResponse(ex.getMessage)
+        // The client's input belongs to the upload until the upload ends. An upload still running means that the
+        // client uploads past the final head or holds a body back after it, and that client gets the close as it is.
+        if upload.forall(_.ended(DrainTimeoutMillis)) then drainClient(clientTls)
+        false
     finally
       // Whatever ends this, an upload still blocked on writing to an origin that stopped reading would hold the TLS
       // layer's close for its whole deadline (closeTlsOutput). So the transport is closed first.
@@ -908,6 +936,48 @@ object AgentEgressProxy:
 
       loop(64 * 1024)
     catch case _: IOException => ()
+
+  /**
+   * A WebSocket's bytes both ways after a checked 101, parsed no further.
+   *
+   * - When either direction ends, both transports close. A WebSocket peer may never end the other direction, so a
+   *   half-close as tunnel() keeps would leave the connection open.
+   * - No idle limit applies: InspectedIdleTimeoutMillis would end a dictation during which the origin sends nothing.
+   *   A tunnel has no idle limit either.
+   */
+  def relayStream(
+    clientTls: Socket,
+    clientTransport: Socket,
+    originTls: Socket,
+    originTransport: Socket,
+  ): StreamRelayed =
+    clientTls.setSoTimeout(0)
+    originTls.setSoTimeout(0)
+
+    def pump(in: InputStream, out: OutputStream): Long =
+      val buffer = new Array[Byte](RelayBufferBytes)
+      var written = 0L
+      try
+        var read = in.read(buffer)
+        while read >= 0 do
+          out.write(buffer, 0, read)
+          out.flush()
+          written += read
+          read = in.read(buffer)
+      catch case _: IOException => ()
+      finally
+        closeQuietly(clientTransport)
+        closeQuietly(originTransport)
+      written
+
+    // Taken before either pump runs: a socket that the other pump closed refuses to hand out a stream.
+    val (fromClient, toOrigin) = (clientTls.getInputStream, originTls.getOutputStream)
+    val (fromOrigin, toClient) = (originTls.getInputStream, clientTls.getOutputStream)
+    val sent = java.util.concurrent.atomic.AtomicLong()
+    val sending = Thread.startVirtualThread(() => sent.set(pump(fromClient, toOrigin)))
+    val received = pump(fromOrigin, toClient)
+    sending.join()
+    StreamRelayed(sent.get, received)
 
   def tunnel(client: Socket, origin: Socket): Unit =
     val done = CountDownLatch(2)

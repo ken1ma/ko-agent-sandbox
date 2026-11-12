@@ -1,17 +1,17 @@
-// The fields of an inspected request's audit lines past the target: its framing, its client and its credential's
-// index on the `allow` line, and the `chunked-end` line that ends a chunked body (SECURITY.md, "The audit line
-// grammar").
+// The fields of an inspected request's audit lines past the target: its framing, its upgrade, its client and its
+// credential's index on the `allow` line, and the `chunked-end` and `websocket-end` lines that end a chunked body and
+// a WebSocket's stream (SECURITY.md, "The audit line grammar").
 //
 // The names:
 // - `cred` is short for credential, since every inspected line can carry it and developers read the log.
 // - `content-length=` is named after the header, not `send=`: the line prints before the relay sends the body, so the
 //   value is the declared upper bound, not a count. It is lower case, as HTTP/2 and HTTP/3 require field names to be
 //   on the wire (RFC 9113, 8.2.1).
-// - `send=` on the `chunked-end` line, and the planned `recv=` for a WebSocket's other direction, count from the
-//   client's side. A size named after a direction does not read as a second reference beside `id=`.
-// - The line is `chunked-end`, one token so that the host stays the third field. It names the framing, as the planned
-//   `websocket-end` will. Not `close`: it prints when the last chunk passes, while the connection still carries the
-//   response.
+// - `send=` and `recv=` count from the client's side. A size named after a direction does not read as a second
+//   reference beside `id=`.
+// - The lines are `chunked-end` and `websocket-end`, one token each so that the host stays the third field, and each
+//   names what ended. Not `close`: `chunked-end` prints when the last chunk passes, while the connection still
+//   carries the response.
 
 package agentsandbox.egress
 
@@ -23,11 +23,14 @@ import HTTPHelper.{BodyFraming, HttpRequestHead}
 import LogHelper.auditLine
 
 /** What one request's `allow` line adds after `inject=`, each field followed by a space, and the `id=` that its
-  * `chunked-end` line repeats. */
+  * `chunked-end` or `websocket-end` line repeats. */
 final case class AllowFields(text: String, id: Option[Long])
 
 /** A request body's end: the payload bytes written to the origin, and whether the whole body reached the origin. */
 final case class BodyRelayed(payloadBytes: Long, complete: Boolean)
+
+/** A WebSocket stream's end: the bytes written to the origin and to the client after the 101. */
+final case class StreamRelayed(sentBytes: Long, receivedBytes: Long)
 
 /** The counters behind `id=` and `cred=`. One instance serves one proxy run (AgentEgressProxy.Run). */
 final class RequestAudit:
@@ -36,9 +39,12 @@ final class RequestAudit:
   private val credentialIndexes = mutable.HashMap.empty[String, Int]
 
   /** The fields of the `allow` line for `asSent`, the head as the client sent it, before any brokered value replaced
-    * a placeholder. `framing` is the framing that the relay forwards. */
+    * a placeholder. `framing` is the framing that the relay forwards. An `Upgrade` in `asSent` is one that
+    * authorizeInspectedRequest granted. */
   def allowFields(asSent: HttpRequestHead, framing: BodyFraming): AllowFields =
-    val id = Option.when(framing == BodyFraming.Chunked)(lastId.incrementAndGet())
+    val webSocket = Option.when(asSent.values("Upgrade").nonEmpty)(RulesetHelper.Grant.WebSocket)
+    // The requests that an end line follows.
+    val id = Option.when(framing == BodyFraming.Chunked || webSocket.nonEmpty)(lastId.incrementAndGet())
     val framingField = framing match
       case BodyFraming.Length(count) => Some(s"content-length=$count")
       case BodyFraming.Chunked       => Some("chunked")
@@ -46,8 +52,8 @@ final class RequestAudit:
     val credential = RequestAudit.staticCredential(asSent).map: value =>
       s"cred=${credentialIndex(value).fold("?")(_.toString)}"
     val fields =
-      Vector(framingField, id.map(number => s"id=$number"), RequestAudit.client(asSent).map(token => s"client=$token"),
-        credential).flatten
+      Vector(framingField, webSocket, id.map(number => s"id=$number"),
+        RequestAudit.client(asSent).map(token => s"client=$token"), credential).flatten
     AllowFields(fields.map(field => s"$field ").mkString, id)
 
   /** The 1-based index of `credential` in order of first sight, or None for a new credential past
@@ -93,3 +99,7 @@ object RequestAudit:
   def chunkedEndLine(host: String, method: String, target: String, id: Long, relayed: BodyRelayed): String =
     val incomplete = if relayed.complete then "" else " incomplete"
     auditLine("chunked-end", host, method, target, s"id=$id send=${relayed.payloadBytes}$incomplete")
+
+  /** The line that ends a WebSocket's stream, after its handshake's `allow` line with the same `id=`. */
+  def webSocketEndLine(host: String, method: String, target: String, id: Long, relayed: StreamRelayed): String =
+    auditLine("websocket-end", host, method, target, s"id=$id send=${relayed.sentBytes} recv=${relayed.receivedBytes}")

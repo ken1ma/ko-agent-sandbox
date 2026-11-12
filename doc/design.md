@@ -125,7 +125,7 @@ The rules stay three fixed profiles over one file, `rule`, in the grammar that `
 spells out:
 
 - `allow` and `deny` lines naming URLs;
-- four grant words;
+- a few fixed grant words;
 - no pattern except the taking-away subtree;
 - no open vocabulary;
 - no profile per provider set: a launch selects its providers with `--model-provider`, over the
@@ -470,30 +470,37 @@ proxy"). Each of these stays out of it for a reason of its own:
   the credential is in no argument, banner, log line or error, and the proxy is its one reader. A
   second source would need a second reader.
 
-### No WebSocket on an inspected connection
+### WebSocket only at a path that a line names
 
-Considered: relaying a WebSocket on an inspected or brokered host after checking the upgrade
-request's headers, so that a brokered OpenAI host could carry the Codex CLI's first choice of
-transport. Rejected:
+Considered: relaying a WebSocket on any inspected host after checking the upgrade request's
+headers. Chosen instead: the `upgrade=websocket` grant, at a path that a line names
+(`egress-proxy.md`, "The rule file"). Claude Code's `/voice` streams over a WebSocket to
+`api.anthropic.com` (`mic.md`, "Claude Code"), so inspecting that host without the grant would end
+`/voice`.
 
-- A WebSocket matters only on an inspected host; on a tunnel it passes as bytes. Every model host
-  is a tunnel under the default rules, so no installed agent meets the refusal today.
-- The one client known to open a WebSocket to its model host, the Codex CLI's built-in provider,
-  falls back to HTTP after the refusal ("Credential brokering at the egress proxy" has the
-  measurement).
+- A WebSocket matters only on an inspected host; on a tunnel it passes as bytes.
+- After the `101`, the proxy relays decrypted bytes without applying method and path grants. That
+  is a third treatment beside inspected and tunnel, and a line confines it to the path that a
+  feature needs. The launch's widening report shows a workspace's line.
+- The relay starts only after a `101` whose `Sec-WebSocket-Accept` matches the request's key. So
+  up to the switch, the connection still carries one request that the proxy reads (`SECURITY.md`,
+  "Reading without being able to write").
+- A grant at a host's root would let any client move its traffic into streams that the log shows
+  as one line each. The defaults grant at a path, never at a root (`plan-tls-inspect-agents.md`,
+  "Guarantees").
+- The Codex CLI's built-in provider opens a WebSocket to its model host, and falls back to HTTP
+  after the refusal ("Credential brokering at the egress proxy" has the measurement). Its hosts
+  take no grant while the fallback works: with the grant, the log would show one line per
+  connection in place of a line per request.
   - The client's `supports_websockets = false` cannot be set for that provider: codex-cli 0.155.1
     refuses to load an override of a built-in provider.
 - The binaries of the other installed agents hold no `wss://` literal for a model host.
   - `claude` holds one for its Remote Control bridge, `bridge.claudeusercontent.com`, which no
     default rule allows.
   - A URL built at run time escapes that search.
-- After the upgrade, the proxy would relay decrypted bytes without applying HTTP method and path
-  grants. That is a third treatment beside inspected and tunnel. Supporting that stream requires
-  reviewing how the one-request rule protects against request smuggling (`SECURITY.md`, "Reading
-  without being able to write").
 
-Revisit if one Codex turn through a brokered relay fails on the HTTP fallback, or the provider
-drops the HTTP path.
+Revisit the Codex hosts' missing grant if one Codex turn fails on the HTTP fallback, or the
+provider drops the HTTP path.
 
 ### No inspecting every allowed host
 
@@ -505,7 +512,8 @@ everywhere would have these costs, the most serious first:
 
 - It would break the agents whose clients an inspected connection cannot carry.
   - A certificate-pinned client cannot be terminated at all.
-  - An HTTP/2-only or WebSocket client needs a relay that the proxy lacks.
+  - An HTTP/2-only client needs a relay that the proxy lacks, and a WebSocket client needs a line
+    for each path it streams at.
   - Which installed agents these are is not yet measured ("Brokered provider traffic" lists the
     clients and the measurement).
 - It would take away the per-launch consent to the proxy seeing the conversation and provider

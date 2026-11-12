@@ -897,7 +897,7 @@ podman machine's elsewhere.
     `--rm` container with its output, the reason included.
   - A connection whose `allow` line was written before the failure continues to its end. The proxy
     writes that line before the first relayed byte, and an inspected connection carries one
-    request. The connection's `error` line, if its relay later fails, may be missing from the file.
+    request. Its later `error`, `chunked-end` or `websocket-end` line may be missing from the file.
   - The `deny` lines of the refused requests are still written to stderr, and to the file if the
     file accepts them again.
 
@@ -960,14 +960,15 @@ proxy"):
 
 ### The audit line grammar
 
-Connection and inspected-request events use one log line each, and a chunked request body adds a
-`chunked-end` line when it ends. The leading fields are stable for tooling. The trailing
-explanation is meant for people and may change:
+Connection and inspected-request events use one log line each. A chunked request body and a
+WebSocket stream each add a line when they end. Every field is stable for tooling except `<why>`,
+the explanation that ends a `deny` or `error` line, which is meant for people and may change:
 
-    <instant> allow       <host> <method> [<target>] [inject=<names>] [<fields>] -> <ip>
-    <instant> chunked-end <host> <method> <target> id=<n> send=<bytes> [incomplete]
-    <instant> deny        <host> <method> [<target>] <why>
-    <instant> error       <host> <method> [<target>] <why>
+    <instant> allow         <host> <method> [<target>] [inject=<names>] [<fields>] -> <ip>
+    <instant> chunked-end   <host> <method> <target> id=<n> send=<bytes> [incomplete]
+    <instant> websocket-end <host> GET <target> id=<n> send=<bytes> recv=<bytes>
+    <instant> deny          <host> <method> [<target>] <why>
+    <instant> error         <host> <method> [<target>] <why>
 
 Timestamps use UTC with second precision, for example `2026-08-26T11:59:38Z`. Every line carries a
 timestamp, including startup lines; the examples below omit it.
@@ -995,8 +996,9 @@ timestamp, including startup lines; the examples below omit it.
   supplies it (`RequestAudit` in the proxy):
   - `content-length=<bytes>` from a declared `Content-Length`, or `chunked`. The relay forwards
     no more body than the declared length, so `<bytes>` bounds what the origin received.
-  - `id=<n>` on a chunked request's line, which the request's `chunked-end` line repeats. `<n>`
-    counts those requests from 1 in one proxy's log.
+  - `upgrade=websocket` on a WebSocket handshake that a line granted.
+  - `id=<n>` on a chunked request's line and a handshake's, which the request's `chunked-end` or
+    `websocket-end` line repeats. `<n>` counts those requests from 1 in one proxy's log.
   - `client=<token>`: the start of the `User-Agent`, as far as its characters are in
     `[A-Za-z0-9._:/-]`, and at most 128 of them. The line logs nothing after the token.
   - `cred=<n>`: the index of the request's credential among the distinct credentials the
@@ -1018,6 +1020,9 @@ timestamp, including startup lines; the examples below omit it.
     a `deny` line. Either comes before or after the `chunked-end` line, and carries no `id=`.
   - The log records no response status, so `incomplete` is the one sign of an origin that refused
     mid-upload.
+- **`websocket-end`** ends a granted WebSocket's stream after its handshake's `allow` line.
+  `send=<bytes>` and `recv=<bytes>` count what the relay wrote to the origin and to the client
+  after the `101`. The stream's content is unlogged, as a body is.
 - Every field, `<why>` included, escapes these characters as a Java or Scala string literal would
   (`\t`, `\u001b`, `\u202e`, `\"`, `\\`): a C0 or C1 control character, DEL, U+2028, U+2029, a
   format character (the bidi controls, zero-width characters, U+00AD), an unpaired surrogate, `"`
@@ -1051,6 +1056,8 @@ The stages emit the following kinds of events:
     allow api.github.com POST /gists chunked id=1 client=curl/8.5.0 -> 140.82.112.5
     chunked-end api.github.com POST /gists id=1 send=52428800
     chunked-end api.github.com POST /gists id=2 send=65536 incomplete
+    allow ws.example GET /stream upgrade=websocket id=3 client=claude-cli/2.1.319 -> 203.0.113.9
+    websocket-end ws.example GET /stream id=3 send=48213 recv=1032
     deny github.com POST /owner/repo.git/git-receive-pack POST not granted
     deny github.com GET /r.git/info/refs?service=git-receive-pack git push ref discovery
     deny github.com GET /r.git/info/refs?service=git-upload-pack git fetch ref discovery
@@ -1127,9 +1134,9 @@ the reason beside each line. "What is inside TLS", above, says what stays opaque
 For each inspected request, the proxy terminates TLS and checks the grants in the resolved scope
 with the longest literal path match (`doc/egress-proxy.md`, "The rule file"):
 
-- `read`: bodyless `GET` and `HEAD`, except the two Git discovery requests below. The exception
-  covers any spelling that percent-decodes once to one of those requests, as a forge's router
-  decodes before routing.
+- `read`: bodyless `GET` and `HEAD`, except the two Git discovery requests below and a WebSocket
+  handshake, which falls under `upgrade=websocket`. The Git exception covers any spelling that
+  percent-decodes once to one of those requests, as a forge's router decodes before routing.
 - `git-fetch`: the ref discovery and the transfer step of `clone` and `fetch`.
   - The ref discovery is `GET .../info/refs?service=git-upload-pack`.
   - The transfer step is a `POST` to a path of at least two nonempty segments followed by
@@ -1157,6 +1164,12 @@ with the longest literal path match (`doc/egress-proxy.md`, "The rule file"):
     inventory includes names that the registry's own `GET`s never carried, such as private-registry
     and Git dependencies in a lockfile. The request does not send dependency edges. Enabling
     install-time vulnerability warnings allows that disclosure.
+- `upgrade=websocket` on a workspace's own line: a WebSocket handshake at that path, and the stream
+  after a checked `101`, relayed unparsed. The defaults have no such line.
+  - The handshake is a `GET` with one `Upgrade: websocket` and one `Sec-WebSocket-Key`, and the
+    word grants no other request there.
+  - The stream is a channel of its own size each way, which the log records as byte totals
+    (`websocket-end`), as it records a body's size.
 - Nothing else.
   - `POST .../git-receive-pack` is the push, and is refused. The push's ref discovery,
     `GET .../info/refs?service=git-receive-pack`, is refused too, although it is a `GET`, so that
@@ -1199,8 +1212,8 @@ Consequences under the default grants follow. A workspace can explicitly grant t
   - These downloads remain subject to the destination rules, including any redirected destination.
   - `doc/TODO.md` records the download-only inspection that would allow LFS batch downloads.
 
-Each inspected connection carries one request and its response, then closes. The proxy forwards the
-request with validated body framing:
+Each inspected connection carries one request and its response, then closes, unless the request is
+a granted WebSocket handshake (below). The proxy forwards the request with validated body framing:
 
 - The proxy sends `Connection: close` to the origin, and validates the response's framing to detect
   truncation. This removes connection reuse as a request-smuggling path, without assuming that the
@@ -1209,8 +1222,17 @@ request with validated body framing:
   `Transfer-Encoding`, conflicting `Content-Length` values, or a `Content-Length` with anything but
   digits in it, which the origin receives as written.
 - ALPN is restricted to `http/1.1` so the proxy can parse the request.
-- `Upgrade` is refused, so no WebSocket or cleartext HTTP/2 can turn the one inspected request into
-  a stream the proxy no longer reads.
+- `Upgrade` is refused, so no cleartext HTTP/2 can turn the one inspected request into a stream the
+  proxy no longer reads. The exception is a WebSocket at a path that an `upgrade=websocket` line
+  names:
+  - The stream begins only after the origin's `101` carries `Upgrade: websocket` and the
+    `Sec-WebSocket-Accept` derived from the request's key. An origin that switches without
+    computing the value would let the client send requests that the proxy neither authorizes nor
+    logs, so that answer ends the connection.
+  - The check does not prove that the origin speaks WebSocket afterwards: an endpoint that reflects
+    a client's headers can return the value, which the client can compute.
+  - After the `101`, the proxy parses nothing. The stream is a third treatment, opaque after an
+    inspected handshake (`doc/design.md`, "WebSocket only at a path that a line names").
 
 ### Who holds the CA key
 
@@ -1399,10 +1421,12 @@ handling of percent-escapes, `..`, backslashes, empty segments or letter case:
 The catalog grants whole-host access to public Git hosting services by default. A workspace that
 needs access to one owner can deny the host and then allow that owner's path.
 
-Two forms of widening are allowed but made explicit:
+Three forms of widening are allowed but made explicit:
 
 - A `method=POST` grant that covers a repository's discovery and `git-receive-pack` paths allows
   push. The launch's widening report and `--egress-effective` show that grant.
+- An `upgrade=websocket` grant opens a stream that the proxy does not parse. The launch's widening
+  report and `--egress-effective` show it as they show a `POST` grant.
 - A `tunnel` grant for a host that the defaults inspect requires `deny defaults` followed by the
   workspace's complete ruleset. This makes the loss of inspection and request-level auditing an
   explicit decision about the whole ruleset. Restricting an existing tunnel to inspected reads

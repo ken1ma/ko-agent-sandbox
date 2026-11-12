@@ -73,7 +73,6 @@ reason, so that nobody proposes it again.
 ## TLS inspection of the agents' model traffic
 
 - [ ] Carry out `plan-tls-inspect-agents.md`:
-  - add the `upgrade=websocket` grant, which Claude Code's `/voice` needs on an inspected host;
   - inspect each agent's model hosts by default, one agent at a time after its measurement.
 - [ ] Note at `--build` when an installed client's version differs from the measured version
   beside its lines in `defaults/model-provider/<name>`, as `--build` notes a podman machine that

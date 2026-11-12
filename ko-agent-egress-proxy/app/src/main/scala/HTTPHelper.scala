@@ -201,16 +201,12 @@ object HTTPHelper:
     /** HTTP/1.1, with this hop's headers removed and `Connection: close` added. This hop's headers are the fixed
       * hop-by-hop set plus whatever the message's own Connection header names. End-of-stream then frames the
       * response. */
-    def toOriginBytes: Array[Byte] =
-      val builder = StringBuilder()
+    def toOriginBytes: Array[Byte] = serialized(s"$method $target HTTP/1.1", headers, "Connection: close\r\n")
 
-      builder.append(s"$method $target HTTP/1.1\r\n")
-
-      endToEnd(headers).foreach((name, value) => builder.append(s"$name: $value\r\n"))
-
-      builder.append("Connection: close\r\n\r\n")
-
-      builder.toString.getBytes(StandardCharsets.ISO_8859_1)
+    /** A granted WebSocket handshake as toOriginBytes sends a request, with the upgrade's pair in place of
+      * `Connection: close`: the origin upgrades only on seeing them (RFC 6455 §4.1). */
+    def toOriginUpgradeBytes(upgrade: String): Array[Byte] =
+      serialized(s"$method $target HTTP/1.1", headers, upgradePair(upgrade))
 
   val HopByHopHeaders =
     Set(
@@ -223,6 +219,25 @@ object HTTPHelper:
       "trailer",
       "upgrade",
     )
+
+  /** A head with this hop's headers removed (endToEnd), and `hop`, this hop's own header lines, after the rest. */
+  private def serialized(startLine: String, headers: Vector[(String, String)], hop: String): Array[Byte] =
+    val builder = StringBuilder()
+    builder.append(s"$startLine\r\n")
+    endToEnd(headers).foreach((name, value) => builder.append(s"$name: $value\r\n"))
+    builder.append(s"$hop\r\n")
+    builder.toString.getBytes(StandardCharsets.ISO_8859_1)
+
+  /** The GUID that RFC 6455 §1.3 appends to the key before hashing. */
+  private val WebSocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+  /** The `Sec-WebSocket-Accept` that an origin derives from the handshake's key (RFC 6455 §4.2.2). */
+  def webSocketAccept(key: String): String =
+    val digest = java.security.MessageDigest.getInstance("SHA-1")
+      .digest(s"$key$WebSocketGuid".getBytes(StandardCharsets.US_ASCII))
+    java.util.Base64.getEncoder.encodeToString(digest)
+
+  private def upgradePair(upgrade: String): String = s"Upgrade: $upgrade\r\nConnection: Upgrade\r\n"
 
   /** The name of a header line, refusing a folded line and a name that is empty or not a token. */
   private def headerName(line: String): String =
@@ -338,15 +353,12 @@ object HTTPHelper:
       *   - apt showed this failure as intermittent mid-download EOFs, invisible in the proxy's own log.
       * - An interim head carries no Connection at all: the final head states the disposition. */
     def toClientBytes: Array[Byte] =
-      val builder = StringBuilder()
+      serialized(s"HTTP/1.1 $status $reason", headers, if interim then "" else "Connection: close\r\n")
 
-      builder.append(s"HTTP/1.1 $status $reason\r\n")
-
-      endToEnd(headers).foreach((name, value) => builder.append(s"$name: $value\r\n"))
-
-      builder.append(if interim then "\r\n" else "Connection: close\r\n\r\n")
-
-      builder.toString.getBytes(StandardCharsets.ISO_8859_1)
+    /** A checked `101` as toClientBytes sends a head, with the upgrade's pair that the client checks (RFC 6455
+      * §4.1). `upgrade` is the client's own spelling from its handshake. */
+    def toClientUpgradeBytes(upgrade: String): Array[Byte] =
+      serialized(s"HTTP/1.1 $status $reason", headers, upgradePair(upgrade))
 
     /** RFC 9112 §6.3 for the connections that this proxy closes after one request.
       *

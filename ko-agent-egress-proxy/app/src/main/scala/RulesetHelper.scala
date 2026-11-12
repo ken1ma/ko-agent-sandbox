@@ -53,17 +53,24 @@ object RulesetHelper:
     val GitFetch = "git-fetch"
     val Tunnel = "tunnel"
     val Methods: Vector[String] = Vector("POST", "PUT", "PATCH", "DELETE")
-    val Forms = "read, git-fetch, method=M,..., tunnel"
+    // A WebSocket handshake at the line's path, and the stream after a checked 101 (relayInspected). `websocket` is
+    // the only value: cleartext HTTP/2 would turn the one request into requests that the proxy does not read.
+    val WebSocket = "upgrade=websocket"
+    val Forms = "read, git-fetch, method=M,..., upgrade=websocket, tunnel"
 
     def isInspected(grants: Set[String]): Boolean = grants.exists(_ != Tunnel)
 
-    /** The words after the URL, in the grammar's order: read, git-fetch, method=…, tunnel. */
+    /** The words after the URL, in the grammar's order: read, git-fetch, method=…, upgrade=websocket, tunnel. */
     def spelled(grants: Set[String]): String =
       val methods = Methods.filter(grants)
       (Option.when(grants(Read))(Read).toVector
         ++ Option.when(grants(GitFetch))(GitFetch)
         ++ Option.when(methods.nonEmpty)("method=" + methods.mkString(","))
+        ++ Option.when(grants(WebSocket))(WebSocket)
         ++ Option.when(grants(Tunnel))(Tunnel)).mkString(" ")
+
+    /** Every grant word, in the grammar's order, a method standing for its own word. */
+    val InOrder: Vector[String] = Vector(Read, GitFetch) ++ Methods ++ Vector(WebSocket, Tunnel)
 
   /** What a `deny` names: an exact host, or the apex and everything under it. */
   enum HostPattern:
@@ -242,7 +249,9 @@ object RulesetHelper:
     if words.count(_.startsWith("method=")) > 1 then refuse("names method= twice; one word lists the methods")
     words.foldLeft(Set.empty[String]): (grants, word) =>
       val named: Vector[String] = word match
-        case Grant.Read | Grant.GitFetch | Grant.Tunnel => Vector(word)
+        case Grant.Read | Grant.GitFetch | Grant.WebSocket | Grant.Tunnel => Vector(word)
+        case _ if word.startsWith("upgrade=") =>
+          refuse(s"names the upgrade '${word.drop("upgrade=".length)}'; ${Grant.WebSocket} is the only upgrade")
         case _ if word.startsWith("method=") =>
           val methods = word.drop("method=".length).split(",", -1).toVector
           methods.foreach: method =>
@@ -772,7 +781,7 @@ object RulesetHelper:
         val grants = treatment match
           case Treatment.Tunnel       => Set(Grant.Tunnel)
           case Treatment.Inspected(scopes) => scopes(path)
-        val grantLines = (Vector(Grant.Read, Grant.GitFetch) ++ Grant.Methods ++ Vector(Grant.Tunnel))
+        val grantLines = Grant.InOrder
           .filter(grants)
           .map(grant => s"  $grant: ${scope.grants.getOrElse(grant, Vector.empty).mkString("; ")}")
         Vector(allowLine(host, path, Grant.spelled(grants)), s"  boundary: ${scope.boundary.mkString("; ")}")
@@ -796,6 +805,8 @@ object RulesetHelper:
    * classification once against the resolved scope of the path's longest literal match:
    *
    * - GET and HEAD fall under `read`, bodyless.
+   * - A WebSocket handshake falls under `upgrade=websocket` alone: a `GET` with one `Upgrade: websocket` and one
+   *   `Sec-WebSocket-Key`, its path in canonical form under every line. Any other `Upgrade` is refused.
    * - Fetch discovery and upload-pack fall under `git-fetch` (GitHelper.isUploadPack), so a clone that could not
    *   transfer fails at its first request.
    * - Push discovery falls under a `POST` grant, where the push is the workspace's own grant.
@@ -825,8 +836,14 @@ object RulesetHelper:
     if !head.target.startsWith("/") then
       throw Refusal("only origin-form request targets are allowed", RefusalAdvice.originForm)
 
-    if head.values("Upgrade").nonEmpty then
-      throw Refusal("HTTP Upgrade is not allowed", RefusalAdvice.upgrade)
+    // A second header of either name is ambiguous, as a second framing header is: refused, not resolved.
+    val webSocket = head.values("Upgrade") match
+      case Vector()                                                                      => false
+      case Vector(value) if value.equalsIgnoreCase("websocket") && head.method == "GET" => true
+      case Vector(_) => throw Refusal("HTTP Upgrade is not allowed", RefusalAdvice.upgrade)
+      case _         => throw BadRequest("duplicate Upgrade header")
+    if webSocket && head.values("Sec-WebSocket-Key").size != 1 then
+      throw BadRequest("a WebSocket handshake carries one Sec-WebSocket-Key")
 
     head.values("Host") match
       case Vector(value) =>
@@ -853,7 +870,11 @@ object RulesetHelper:
         if head.bodyFraming != BodyFraming.Empty then
           throw Refusal("request body framing header", RefusalAdvice.bodyFramingHeader)
 
-        if isReceivePackDiscovery(head) then
+        if webSocket then
+          RulePath.requireLiteralPath(path)
+          if !grants(Grant.WebSocket) then
+            throw Refusal(s"${Grant.WebSocket} not granted", RefusalAdvice.webSocketNotGranted(host, path))
+        else if isReceivePackDiscovery(head) then
           if !grants("POST") then throw Refusal("git push ref discovery", RefusalAdvice.gitPush)
         else if isUploadPackDiscovery(head) then
           if !grants(Grant.GitFetch) then throw Refusal("git fetch ref discovery", RefusalAdvice.gitFetch)

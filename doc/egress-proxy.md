@@ -76,7 +76,7 @@ deny  https://HOST/        [GRANT...]                     never a path
 deny  https://**.DOMAIN/   [GRANT...]
 deny  model-provider NAME
 
-GRANT: read | git-fetch | method=M,... | tunnel           at least one; each once
+GRANT: read | git-fetch | method=M,... | upgrade=websocket | tunnel     at least one; each once
 ```
 
 - `HOST` is an exact hostname — IDN mapped, lowercased, one trailing dot removed — never an IP
@@ -111,6 +111,11 @@ What a line grants is its words, and nothing is implied:
   path, without granting general `GET` or `HEAD` access. These methods can also retrieve data,
   such as a GraphQL query sent by `POST`. `POST` at a repository also grants `git push`'s ref
   discovery, which uses `GET`.
+- `upgrade=websocket` — a WebSocket at that path: a `GET` with `Upgrade: websocket`, and the stream
+  after the origin's `101`, relayed without inspection. A plain `GET` there still needs `read`.
+  - The request path is in canonical form under every line, the root's included.
+  - The audit log shows the handshake and the stream's bytes each way (`../SECURITY.md`, "The
+    audit line grammar"), and the launch's widening report shows a workspace's line.
 - `tunnel` — permits traffic without request inspection. A `tunnel` stands alone on its line, and
   its URL ends at `/`.
 
@@ -332,9 +337,10 @@ directory:
 - A host command is refused when its proxy's file cannot be created there. The message names the
   directory to make writable.
 - Startup lines come first. SECURITY.md lists them (`../SECURITY.md`, "The audit line grammar").
-- Every connection event after the startup lines is one line, and a chunked request body adds a
-  `chunked-end` line with its size when it ends. The line of an inspected request holds the
-  request's full target, query string included, which makes an exfiltrating `GET` visible.
+- Every connection event after the startup lines is one line. A chunked request body and a
+  WebSocket stream each add a line with their size when they end. The line of an inspected request
+  holds the request's full target, query string included, which makes an exfiltrating `GET`
+  visible.
 
 A refusal reads as
 

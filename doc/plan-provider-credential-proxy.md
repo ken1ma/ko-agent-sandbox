@@ -418,7 +418,9 @@ For one brokered connection:
    value was substituted.
 
 Advertise only HTTP/1.1 at first. Server-sent events and bounded streaming bodies must work on the
-existing inspected path. Brokering does not support WebSocket upgrade, HTTP/2-only clients or
+existing inspected path. Brokering supports a WebSocket only at a path that an `upgrade=websocket`
+line grants: the handshake carries the substituted value, and a credential sent inside the stream
+reaches the origin as the placeholder. Brokering does not support HTTP/2-only or
 certificate-pinned clients; those clients do not regain a real credential inside the sandbox.
 
 The Codex client accepts the inspection CA, and falls back from a refused websocket upgrade to HTTP

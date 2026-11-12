@@ -91,3 +91,14 @@ class RequestAuditTest extends munit.FunSuite:
       RequestAudit.chunkedEndLine("api.example", "POST", "/v1/files", 4, BodyRelayed(65536, complete = false)),
       "chunked-end api.example POST /v1/files id=4 send=65536 incomplete",
     )
+
+  test("a granted WebSocket handshake takes upgrade=websocket and an id, and its end line counts both directions"):
+    val audit = RequestAudit()
+    assertEquals(
+      fields(audit, "Upgrade: websocket", "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==", "User-Agent: claude-cli/2.1"),
+      "upgrade=websocket id=1 client=claude-cli/2.1 ",
+    )
+    assertEquals(
+      RequestAudit.webSocketEndLine("api.example", "GET", "/stream", 1, StreamRelayed(48213, 1032)),
+      "websocket-end api.example GET /stream id=1 send=48213 recv=1032",
+    )

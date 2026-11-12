@@ -163,6 +163,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
       "allow https://x.example/ method=GET" -> "names the method 'GET'",
       "allow https://x.example/ method=post" -> "names the method 'post'",
       "allow https://x.example/ tunnel read" -> "puts tunnel beside another word",
+      "allow https://x.example/ upgrade=websocket tunnel" -> "puts tunnel beside another word",
+      "allow https://x.example/ upgrade=h2c" -> "names the upgrade 'h2c'; upgrade=websocket is the only upgrade",
+      "allow https://x.example/ upgrade=websocket upgrade=websocket" -> "names upgrade=websocket twice",
       "allow https://x.example/api/ tunnel" -> "gives a tunnel a path",
       "allow https://x.example/ write" -> "has the word 'write', which is no grant",
       "allow https://x.example/ allow=git-fetch" -> "has the word 'allow=git-fetch', which is no grant",
@@ -838,6 +841,51 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // Printed after the ruleset lines and outside their digest: metadata about the file, not the ruleset.
     assert(!rulesetLines(resolved).exists(_.startsWith("widening")), rulesetLines(resolved).toString)
     assertEquals(metadataLines(resolved)(1), wideningLine(resolved).get)
+
+  test("upgrade=websocket resolves at its path, prints in the grammar's order, widens, and a deny takes it"):
+    val rule = "allow https://new.example/ read\nallow https://new.example/raw upgrade=websocket\n"
+    val resolved = rulesetOf(rule = rule)
+    assertEquals(
+      resolved.scopesOf("new.example"),
+      Map("/" -> Set("read"), "/raw" -> Set("read", "upgrade=websocket")),
+    )
+    assert(rulesetLines(resolved).contains("allow https://new.example/raw read upgrade=websocket"))
+    assert(
+      provenanceLines(resolved).contains("  upgrade=websocket: rule: allow https://new.example/raw upgrade=websocket"),
+      provenanceLines(resolved).mkString("\n"),
+    )
+    assertEquals(
+      resolved.provenance.widening.map(_.text),
+      Vector("allow https://new.example/ read", "allow https://new.example/raw upgrade=websocket"),
+    )
+    val taken = rulesetOf(rule = rule + "deny https://new.example/ upgrade=websocket\n")
+    assertEquals(taken.scopesOf("new.example"), Map("/" -> Set("read"), "/raw" -> Set("read")))
+
+  test("upgrade=websocket grants a WebSocket GET at its path alone, and every other Upgrade is refused"):
+    def request(scopes: Map[String, Set[String]], line: String, headers: String): Unit =
+      authorizeInspectedRequest("new.example", head(s"$line HTTP/1.1\r\nHost: new.example\r\n$headers\r\n"), scopes)
+    val granted = rulesetOf(rule = "allow https://new.example/ read\nallow https://new.example/raw upgrade=websocket")
+      .scopesOf("new.example")
+    val handshake = s"Upgrade: websocket\r\n$WebSocketKey"
+    def refusal(line: String, headers: String = handshake, scopes: Map[String, Set[String]] = granted): String =
+      intercept[Refusal](request(scopes, line, headers)).getMessage
+    request(granted, "GET /raw", handshake)
+    request(granted, "GET /raw", s"Upgrade: WebSocket\r\n$WebSocketKey")
+    // Another path, and the granted path under another spelling.
+    assertEquals(refusal("GET /other"), "upgrade=websocket not granted")
+    assertEquals(refusal("GET /raw/"), "upgrade=websocket not granted")
+    assertEquals(refusal("GET /r%61w"), "an escaped ASCII character other than a space in the path")
+    // Another protocol, a list, and a method other than GET.
+    assertEquals(refusal("GET /raw", s"Upgrade: h2c\r\n$WebSocketKey"), "HTTP Upgrade is not allowed")
+    assertEquals(refusal("GET /raw", s"Upgrade: websocket, h2c\r\n$WebSocketKey"), "HTTP Upgrade is not allowed")
+    assertEquals(refusal("POST /raw", s"${handshake}Content-Length: 0\r\n"), "HTTP Upgrade is not allowed")
+    // A second header of either name, and a handshake without its key.
+    Vector(s"${handshake}Upgrade: websocket\r\n", s"$handshake$WebSocketKey", "Upgrade: websocket\r\n").foreach:
+      headers => intercept[BadRequest](request(granted, "GET /raw", headers))
+    // A plain GET at a path that holds upgrade=websocket alone.
+    val alone = rulesetOf(rule = "allow https://new.example/raw upgrade=websocket").scopesOf("new.example")
+    assertEquals(refusal("GET /raw", "", alone), "read not granted")
+    request(alone, "GET /raw", handshake)
     // `deny defaults` widens, and under it a defaults host may go tunnel: both listed.
     assertEquals(
       rulesetOf(
@@ -1663,6 +1711,63 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assert(relayed.isEmpty, "the body's end is reported once")
     Vector(uploader, uploaderPeer, refuser, refuserPeer).foreach(_.close())
 
+  private lazy val WebSocketGet = HttpRequestHead.parse(
+    ascii(s"GET /raw HTTP/1.1\r\nHost: docs.example\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n$WebSocketKey\r\n"),
+  )
+
+  /** relayInspected for a granted handshake against an origin that answers `response`: what it returned, or the
+    * failure's message, and what the client received. */
+  private def handshakeAnswered(response: String): (Either[String, Boolean], String) =
+    val (client, clientPeer) = socketPair()
+    val (origin, originPeer) = socketPair()
+    val served = playOrigin(originPeer, ascii(response))
+    clientPeer.shutdownOutput()
+    val outcome =
+      try Right(relayInspected(client, origin, origin, WebSocketGet))
+      catch case ex: IOException => Left(ex.getMessage)
+    client.close()
+    served.join()
+    val received = String(clientPeer.getInputStream.readAllBytes(), StandardCharsets.ISO_8859_1)
+    Vector(clientPeer, origin, originPeer).foreach(_.close())
+    (outcome, received)
+
+  test("a granted handshake switches only on a 101 whose Sec-WebSocket-Accept matches its key"):
+    val switching = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+    val (switched, head101) = handshakeAnswered(s"$switching$WebSocketAccept\r\n")
+    assertEquals(switched, Right(true))
+    assertEquals(
+      head101,
+      s"HTTP/1.1 101 Switching Protocols\r\n${WebSocketAccept}Upgrade: websocket\r\nConnection: Upgrade\r\n\r\n",
+    )
+    val mismatch = "origin answered 101 without the Sec-WebSocket-Accept of the handshake's key"
+    Vector(
+      s"${switching}Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOp=\r\n\r\n",
+      s"$switching\r\n",
+      s"$switching$WebSocketAccept$WebSocketAccept\r\n",
+    ).foreach: response =>
+      assertEquals(handshakeAnswered(response), (Left(mismatch), ""), response)
+    // The origin's own Upgrade must name the WebSocket, once.
+    Vector("", "Upgrade: h2c\r\n", "Upgrade: websocket\r\nUpgrade: websocket\r\n").foreach: upgrade =>
+      assertEquals(
+        handshakeAnswered(s"HTTP/1.1 101 Switching Protocols\r\n${upgrade}Connection: Upgrade\r\n$WebSocketAccept\r\n"),
+        (Left("origin answered 101 without Upgrade: websocket"), ""),
+        upgrade,
+      )
+    assertEquals(
+      handshakeAnswered(s"HTTP/1.1 101 Switching Protocols\r\nUpgrade: WebSocket\r\n$WebSocketAccept\r\n")(0),
+      Right(true),
+    )
+    // Any other answer is a response, and the connection ends with it.
+    val (answered, ok) = handshakeAnswered("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+    assertEquals(answered, Right(false))
+    assertEquals(ok, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+
+  test("a granted handshake reaches the origin with the upgrade's pair, and no Connection: close"):
+    assertEquals(
+      String(WebSocketGet.toOriginUpgradeBytes("websocket"), StandardCharsets.ISO_8859_1),
+      s"GET /raw HTTP/1.1\r\nHost: docs.example\r\n${WebSocketKey}Upgrade: websocket\r\nConnection: Upgrade\r\n\r\n",
+    )
+
   test("an origin's 101 is refused before it is forwarded"):
     val (client, clientPeer) = socketPair()
     val (origin, originPeer) = socketPair()
@@ -2259,6 +2364,47 @@ class AgentEgressProxyTest extends munit.FunSuite:
         tls.getOutputStream.write(ascii("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")),
     )
     assertEquals(answeredFirst, Set("chunked-end docs.example POST /upload id=1 send=3 incomplete"))
+
+  test("a granted WebSocket's stream is relayed both ways, and ends with one websocket-end line when a side closes"):
+    val granted = Map("/raw" -> Set("upgrade=websocket"))
+    val handshake = String(WebSocketGet.toOriginUpgradeBytes("websocket"), StandardCharsets.ISO_8859_1)
+    val switching =
+      s"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n$WebSocketAccept\r\n"
+    val allowLine = "allow docs.example GET /raw upgrade=websocket id=1 -> 127.0.0.1"
+    def write(tls: java.net.Socket, bytes: String): Unit =
+      tls.getOutputStream.write(ascii(bytes))
+      tls.getOutputStream.flush()
+    // The client sends five bytes, reads their echo and closes; the origin echoes and reads on.
+    val echoed = java.util.concurrent.atomic.AtomicReference("")
+    val clientClosed = inspectedExchange(
+      "docs.example", Vector.empty, granted,
+      send = tls =>
+        write(tls, handshake)
+        readHttpHeader(tls.getInputStream, 64 * 1024)
+        write(tls, "ping!")
+        echoed.set(String(tls.getInputStream.readNBytes(5), StandardCharsets.ISO_8859_1)),
+      serve = tls =>
+        readHttpHeader(tls.getInputStream, 64 * 1024)
+        write(tls, switching)
+        write(tls, String(tls.getInputStream.readNBytes(5), StandardCharsets.ISO_8859_1))
+        tls.getInputStream.readAllBytes(),
+    )
+    assertEquals(echoed.get, "ping!")
+    assertEquals(clientClosed, Vector(allowLine, "websocket-end docs.example GET /raw id=1 send=5 recv=5"))
+    // The origin sends three bytes and closes, while the client sends nothing.
+    val received = java.util.concurrent.atomic.AtomicReference("")
+    val originClosed = inspectedExchange(
+      "docs.example", Vector.empty, granted,
+      send = tls =>
+        write(tls, handshake)
+        readHttpHeader(tls.getInputStream, 64 * 1024)
+        received.set(String(tls.getInputStream.readAllBytes(), StandardCharsets.ISO_8859_1)),
+      serve = tls =>
+        readHttpHeader(tls.getInputStream, 64 * 1024)
+        write(tls, switching + "bye"),
+    )
+    assertEquals(received.get, "bye")
+    assertEquals(originClosed, Vector(allowLine, "websocket-end docs.example GET /raw id=1 send=0 recv=3"))
 
   test("a header value edged with a control is refused on a request and a response head; SP and HTAB are stripped"):
     // Checked raw: Java's `trim` removes every character up to SP, so a check after it would let an
@@ -2859,9 +3005,10 @@ class AgentEgressProxyTest extends munit.FunSuite:
     intercept[Refusal]:
       inspected("GET https://github.com/x HTTP/1.1\r\nHost: github.com\r\n\r\n")
 
-  test("HTTP Upgrade is refused"):
-    intercept[Refusal]:
-      inspected("GET /x HTTP/1.1\r\nHost: github.com\r\nUpgrade: websocket\r\n\r\n")
+  test("HTTP Upgrade is refused where no line grants it"):
+    Vector("Upgrade: h2c\r\n", s"Upgrade: websocket\r\n$WebSocketKey").foreach: upgrade =>
+      intercept[Refusal]:
+        inspected(s"GET /x HTTP/1.1\r\nHost: github.com\r\n$upgrade\r\n")
 
   test("ambiguous message framing is refused rather than resolved"):
     intercept[BadRequest]:
@@ -3248,7 +3395,11 @@ class AgentEgressProxyTest extends munit.FunSuite:
       ),
       RefusalRow(
         "authorizeInspectedRequest Upgrade", github, upgrade,
-        () => inspected("GET /x HTTP/1.1\r\nHost: github.com\r\nUpgrade: websocket\r\n\r\n"),
+        () => inspected("GET /x HTTP/1.1\r\nHost: github.com\r\nUpgrade: h2c\r\n\r\n"),
+      ),
+      RefusalRow(
+        "authorizeInspectedRequest WebSocket", github, webSocketNotGranted(github, "/x"),
+        () => inspected(s"GET /x HTTP/1.1\r\nHost: github.com\r\nUpgrade: websocket\r\n$WebSocketKey\r\n"),
       ),
       RefusalRow(
         "authorizeInspectedRequest Host header", github, hostHeader,
@@ -3547,6 +3698,10 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
   private def head(value: String): HttpRequestHead =
     HttpRequestHead.parse(ascii(value))
+
+  /** RFC 6455's sample key, §1.3, and the accept it derives. */
+  private lazy val WebSocketKey = "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+  private lazy val WebSocketAccept = "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n"
 
   private lazy val defaultsRuleset: ResolvedEgress =
     resolveRuleset(Some("deny-unless-allowed"), None, None)

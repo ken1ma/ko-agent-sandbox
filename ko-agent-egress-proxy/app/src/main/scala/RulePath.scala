@@ -117,7 +117,7 @@ object RulePath:
   def requireUnambiguousPath(path: String): Unit =
     decodedSpelling(path).foreach(problem => throw Refusal(s"$problem in the path", RefusalAdvice.ambiguousPath))
 
-  /** Refuses, on every method, a path whose longest match is a line other than the root, for any spelling that
-    * literalPathProblem names. */
+  /** Refuses, on every method, a path whose longest match is a line other than the root, and a WebSocket handshake's
+    * path under any line, for any spelling that literalPathProblem names. */
   def requireLiteralPath(path: String): Unit =
     literalPathProblem(path).foreach(problem => throw Refusal(s"$problem in the path", RefusalAdvice.ambiguousPath))

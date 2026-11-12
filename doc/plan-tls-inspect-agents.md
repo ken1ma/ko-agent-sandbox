@@ -233,8 +233,9 @@ allow https://api.anthropic.com/api/ws/speech_to_text/voice_stream upgrade=webso
 - The word grants a `GET` that carries `Upgrade: websocket`, at the line's path. It grants no
   other request: a plain `GET` at that path still needs `read`. `websocket` is the only value.
 - The proxy forwards the handshake to the origin. It relays bytes both ways only after the origin
-  answers `101` with the `Sec-WebSocket-Accept` that RFC 6455 derives from the request's key. Any
-  other answer is relayed as a response, and the connection ends.
+  answers `101` with `Upgrade: websocket` and the `Sec-WebSocket-Accept` that RFC 6455 derives
+  from the request's key. A `101` without them ends the connection. Any other answer is relayed as
+  a response, and the connection ends.
   - The check refuses an endpoint that answers `101` without computing the value. Past such an
     endpoint, a client could send HTTP requests that the proxy neither authorizes nor logs.
   - The check does not prove that the origin speaks WebSocket afterwards: an endpoint that
@@ -260,9 +261,8 @@ allow https://api.anthropic.com/api/ws/speech_to_text/voice_stream upgrade=webso
 - The defaults' line names a path of Claude Code's. A release that moves the endpoint ends
   `/voice`, and the log names the refused path.
 
-This grant reverses `design.md`, "No WebSocket on an inspected connection", for a path that a
-line names. The upgraded stream is the third treatment that the section describes: opaque after an
-inspected handshake.
+`design.md`, "WebSocket only at a path that a line names", records this decision. The upgraded
+stream is the third treatment that the section describes: opaque after an inspected handshake.
 
 ## Measurement
 
@@ -480,8 +480,8 @@ bother to, and prove nothing.
 - `design.md`:
   - "No inspecting every allowed host": the consent cost and the revisit condition stop tying
     inspection to brokering, and point here instead;
-  - "No WebSocket on an inspected connection": the section becomes the decision for a WebSocket
-    at a path that a line names, with the reasons that still refuse it elsewhere;
+  - "WebSocket only at a path that a line names": the decision for a WebSocket at a path that a
+    line names, with the reasons that still refuse it elsewhere;
   - "Credential brokering at the egress proxy": the model-host bindings that the launcher accepts.
 - `plan-provider-credential-proxy.md`:
   - use case 5 and guarantee 12: the consent and the banner apply to a host that is otherwise a
@@ -505,7 +505,7 @@ bother to, and prove nothing.
   of a host the defaults inspect today, and `content-length=` on a workspace's `method=POST` line.
   SECURITY.md's "The audit line grammar" and the provider plan's sentence on logged headers change
   in that commit.
-- [ ] The grant's commit: a WebSocket at a path that a workspace's line names is relayed and
+- [x] The grant's commit: a WebSocket at a path that a workspace's line names is relayed and
   logged with its bytes, and every other `Upgrade` is refused. `design.md`, SECURITY.md and
   `egress-proxy.md` change in that commit.
 - [ ] Claude Code's `/voice` works with `api.anthropic.com` inspected, and its handshake and
@@ -543,7 +543,7 @@ bother to, and prove nothing.
 - A custom `[model_providers.NAME]` with `supports_websockets = false` in the image's Codex
   configuration, to keep Codex off its WebSocket. The image would select a provider for every
   user and follow Codex's configuration schema across releases. Codex 0.155.1 refuses an override
-  of the built-in provider (`design.md`, "No WebSocket on an inspected connection").
+  of the built-in provider (`design.md`, "WebSocket only at a path that a line names").
 - Any `upgrade=` value but `websocket`. Cleartext HTTP/2 (`h2c`) would turn the one request into
   a stream of requests that the proxy does not read.
 - Answering a refused `Upgrade` with `426`, which Codex's client falls back on at once. RFC 9110
