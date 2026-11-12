@@ -397,8 +397,9 @@ credential brokering: proxy reads provider HTTP for <service>/<instance>: <hosts
 ```
 
 This is a privacy boundary: the trusted proxy sees model request and response bytes for brokered
-hosts. Plaintext model conversations are an asset in the proxy's memory. The proxy never logs bodies
-or headers; crash reports and exceptions must not include them.
+hosts. Plaintext model conversations are an asset in the proxy's memory. The proxy never logs
+bodies, and of headers only the start of the `User-Agent`; crash reports and exceptions must not
+include them.
 
 For one brokered connection:
 

@@ -960,12 +960,14 @@ proxy"):
 
 ### The audit line grammar
 
-Connection and inspected-request events use one log line each. The leading fields are stable for
-tooling. The trailing explanation is meant for people and may change:
+Connection and inspected-request events use one log line each, and a chunked request body adds a
+`chunked-end` line when it ends. The leading fields are stable for tooling. The trailing
+explanation is meant for people and may change:
 
-    <instant> allow <host> <method> [<target>] [inject=<names>] -> <ip>
-    <instant> deny  <host> <method> [<target>] <why>
-    <instant> error <host> <method> [<target>] <why>
+    <instant> allow       <host> <method> [<target>] [inject=<names>] [<fields>] -> <ip>
+    <instant> chunked-end <host> <method> <target> id=<n> send=<bytes> [incomplete]
+    <instant> deny        <host> <method> [<target>] <why>
+    <instant> error       <host> <method> [<target>] <why>
 
 Timestamps use UTC with second precision, for example `2026-08-26T11:59:38Z`. Every line carries a
 timestamp, including startup lines; the examples below omit it.
@@ -989,6 +991,33 @@ timestamp, including startup lines; the examples below omit it.
     prints as the binding's name. So does a bound parameter's value: `?sig=AZURE_SAS_SIG`. A
     percent-escaped spelling of a placeholder prints as sent.
   - A request denied after the substitution sent no credential, and its line has no `inject`.
+- **`<fields>`** follow on an inspected `allow` line, in this order, each only when the request
+  supplies it (`RequestAudit` in the proxy):
+  - `content-length=<bytes>` from a declared `Content-Length`, or `chunked`. The relay forwards
+    no more body than the declared length, so `<bytes>` bounds what the origin received.
+  - `id=<n>` on a chunked request's line, which the request's `chunked-end` line repeats. `<n>`
+    counts those requests from 1 in one proxy's log.
+  - `client=<token>`: the start of the `User-Agent`, as far as its characters are in
+    `[A-Za-z0-9._:/-]`, and at most 128 of them. The line logs nothing after the token.
+  - `cred=<n>`: the index of the request's credential among the distinct credentials the
+    proxy has seen on any host, in order of first sight. A new index on a host that already had
+    one is a refreshed token, another credential the user configured, or a foreign key.
+    - The index counts the values of `x-api-key` and `x-goog-api-key`, and the token of an
+      `Authorization` under `Bearer`, `token` or `Basic`, as the client sent them. So a brokered
+      placeholder counts as one credential.
+    - A signing scheme such as SigV4 sends a new value every request, and prints no field.
+    - The proxy keeps a digest of each credential, never the value, in memory for its lifetime.
+      Past 1024 credentials, a new one prints `cred=?`.
+  - `client=` and `cred=` are client-supplied. An attacker's own client omits or copies
+    them, so they name a foreign client that did not bother to, and prove nothing.
+- **`chunked-end`** ends a chunked request after its `allow` line. `send=<bytes>` counts the payload
+  bytes that the relay wrote to the origin, without the chunk framing.
+  - `incomplete` marks a body that did not reach the origin whole: the client closed, the chunking
+    was malformed, or the origin answered or closed first. The origin may keep what it received.
+  - Before the origin answers, a client's close also prints an `error` line, and malformed chunking
+    a `deny` line. Either comes before or after the `chunked-end` line, and carries no `id=`.
+  - The log records no response status, so `incomplete` is the one sign of an origin that refused
+    mid-upload.
 - Every field, `<why>` included, escapes these characters as a Java or Scala string literal would
   (`\t`, `\u001b`, `\u202e`, `\"`, `\\`): a C0 or C1 control character, DEL, U+2028, U+2029, a
   format character (the bidi controls, zero-width characters, U+00AD), an unpaired surrogate, `"`
@@ -1015,10 +1044,13 @@ The stages emit the following kinds of events:
     deny github.com CONNECT SNI evil.example differs from target
     deny github.com CONNECT encrypted ClientHello
 
-    # tunnels and inspected requests — step 11 onward
-    allow api.anthropic.com CONNECT -> 160.79.104.10
+    # inspected requests — step 11 onward
     allow github.com GET /owner/repo?tab=readme -> 140.82.112.3
-    allow api.github.com GET /user inject=GH_TOKEN -> 140.82.112.5
+    allow api.github.com GET /user inject=GH_TOKEN client=curl/8.5.0 cred=1 -> 140.82.112.5
+    allow api.github.com POST /gists content-length=1532 client=curl/8.5.0 cred=1 -> 140.82.112.5
+    allow api.github.com POST /gists chunked id=1 client=curl/8.5.0 -> 140.82.112.5
+    chunked-end api.github.com POST /gists id=1 send=52428800
+    chunked-end api.github.com POST /gists id=2 send=65536 incomplete
     deny github.com POST /owner/repo.git/git-receive-pack POST not granted
     deny github.com GET /r.git/info/refs?service=git-receive-pack git push ref discovery
     deny github.com GET /r.git/info/refs?service=git-upload-pack git fetch ref discovery
@@ -1028,6 +1060,9 @@ The stages emit the following kinds of events:
     deny github.com GET /owner/repo Host header evil.example
     deny storage.googleapis.com GET /other-bucket/key path under no line
     deny storage.googleapis.com GET /my-bucket/../other-bucket/key a dot segment in the path
+
+    # opaque tunnels — step 11 onward
+    allow api.anthropic.com CONNECT -> 160.79.104.10
 
     # infrastructure — error, never deny
     error internal.example CONNECT resolution: unknown host

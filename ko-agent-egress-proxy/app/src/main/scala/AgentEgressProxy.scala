@@ -3,7 +3,7 @@
 // The other files hold the rest:
 //
 // - RulesetHelper.scala: the ruleset and its decisions;
-// - LogHelper.scala: the audit log's form;
+// - LogHelper.scala: the audit log's form; RequestAudit.scala: an inspected request's fields past the target;
 // - Refusals.scala: the refusal types, advice and response wording;
 // - HTTPHelper.scala: HTTP handling;
 // - TLSHelper.scala: TLS handling;
@@ -395,6 +395,7 @@ object AgentEgressProxy:
     // Set by serve(): the first write to the log that failed. The log is the file where one is set, else stderr.
     auditLogFailure: () => Option[IOException] = () => None,
     credentials: Vector[BrokeredCredential] = Vector.empty,
+    audit: RequestAudit = RequestAudit(),
   ):
     /**
      * Refuses for the rest of the run once a line failed to be written to the log: a log that resumed would lack
@@ -561,6 +562,7 @@ object AgentEgressProxy:
             run.resolved.allows,
             run.requireAuditLog,
             run.credentials,
+            run.audit,
           )
 
         case None =>
@@ -628,6 +630,7 @@ object AgentEgressProxy:
     allowed: String => Boolean,
     requireAuditLog: () => Unit,
     credentials: Vector[BrokeredCredential] = Vector.empty,
+    audit: RequestAudit = RequestAudit(),
   ): Unit =
     val clientTls = inspection.accept(client, hello.wireBytes)
 
@@ -647,7 +650,8 @@ object AgentEgressProxy:
         val raw =
           try readHttpHeader(clientTls.getInputStream, MaxHttpHeaderBytes)
           catch case ex: IOException => throw BadRequest(s"unreadable request head: ${ex.getMessage}")
-        val substituted = HttpRequestHead.parse(raw).withCredentials(host, credentials)
+        val asSent = HttpRequestHead.parse(raw)
+        val substituted = asSent.withCredentials(host, credentials)
         val head = substituted.head
         method = head.method
         target = substituted.printedTarget
@@ -658,12 +662,25 @@ object AgentEgressProxy:
 
         try
           val injected = Option.when(substituted.injected.nonEmpty)(s"inject=${substituted.injected.mkString(",")} ")
+          // After the origin leg connects, so a request that never reaches the origin takes no id.
+          val fields = audit.allowFields(asSent, head.bodyFraming)
           System.err.println(
-            auditLine("allow", host, method, target, s"${injected.getOrElse("")}-> ${origin.address.getHostAddress}"),
+            auditLine(
+              "allow", host, method, target,
+              s"${injected.getOrElse("")}${fields.text}-> ${origin.address.getHostAddress}",
+            ),
           )
           requireAuditLog()
 
-          relayInspected(clientTls, originTls, origin.transport, head)
+          val printedMethod = method
+          val printedTarget = target
+          relayInspected(
+            clientTls, originTls, origin.transport, head,
+            relayed =>
+              fields.id.foreach(id =>
+                System.err.println(RequestAudit.chunkedEndLine(host, printedMethod, printedTarget, id, relayed)),
+              ),
+          )
         finally closeTlsOutput(originTls, origin.transport)
 
       catch
@@ -708,6 +725,8 @@ object AgentEgressProxy:
     originTls: Socket,
     originTransport: Socket,
     head: HttpRequestHead,
+    // Called once for a request with a body, from the upload's thread when the body ends.
+    bodyRelayed: BodyRelayed => Unit = _ => (),
   ): Unit =
     val toOrigin = originTls.getOutputStream
     val fromOrigin = originTls.getInputStream
@@ -716,12 +735,19 @@ object AgentEgressProxy:
     clientTls.setSoTimeout(InspectedIdleTimeoutMillis)
     originTls.setSoTimeout(InspectedIdleTimeoutMillis)
 
-    toOrigin.write(head.toOriginBytes)
-    toOrigin.flush()
-
     val framing = head.bodyFraming
+
+    try
+      toOrigin.write(head.toOriginBytes)
+      toOrigin.flush()
+    catch
+      case ex: IOException =>
+        if framing != BodyFraming.Empty then bodyRelayed(BodyRelayed(0, complete = false))
+        throw ex
+
     val upload =
-      Option.when(framing != BodyFraming.Empty)(Upload(clientTls.getInputStream, toOrigin, originTransport, framing))
+      Option.when(framing != BodyFraming.Empty):
+        Upload(clientTls.getInputStream, toOrigin, originTransport, framing, bodyRelayed)
 
     /** The upload's failure, in the origin's place, when the upload failed first. The client's malformed chunking
       * is the client's 400, not the origin's 502, and the client's broken connection is named. */
@@ -791,40 +817,67 @@ object AgentEgressProxy:
    * - A write that the origin refuses is left for the origin's answer, or its absence, to report.
    * - A failure before the answer closes the origin's transport. So the head read reports the failure
    *   (failureBeforeAnswer) instead of waiting out the origin's own timeout for a body that stopped coming.
+   * - The thread's last act reports the payload bytes that reached the origin's TLS layer, and whether every byte
+   *   of the body did (`bodyRelayed`).
    */
   private final class Upload(
     fromClient: InputStream,
     toOrigin: OutputStream,
     originTransport: Socket,
     framing: BodyFraming,
+    bodyRelayed: BodyRelayed => Unit,
   ):
     @volatile private var answered = false
     private var failure: Option[Exception] = None
+    // Only the upload's thread touches these three.
+    private var refused = false
+    private var withheld = false
+    private var payloadBytes = 0L
+
+    /** True when the bytes went to the origin. A refused or skipped write marks the body withheld. */
+    private def sent(buffer: Array[Byte], offset: Int, length: Int): Boolean =
+      val going = !answered && !refused
+      if going then
+        try toOrigin.write(buffer, offset, length)
+        catch case _: IOException => refused = true
+      val wrote = going && !refused
+      if !wrote then withheld = true
+      wrote
 
     private val toOriginUntilAnswered = new OutputStream:
-      private var refused = false
-
       override def write(byte: Int): Unit = write(Array(byte.toByte), 0, 1)
 
-      override def write(buffer: Array[Byte], offset: Int, length: Int): Unit =
-        if !answered && !refused then
-          try toOrigin.write(buffer, offset, length)
-          catch case _: IOException => refused = true
+      override def write(buffer: Array[Byte], offset: Int, length: Int): Unit = sent(buffer, offset, length)
 
       override def flush(): Unit =
         if !answered && !refused then
           try toOrigin.flush()
-          catch case _: IOException => refused = true
+          catch
+            case _: IOException =>
+              refused = true
+              withheld = true
+
+    /** The body's payload, as distinct from the chunk framing that toOriginUntilAnswered carries. */
+    private val payloadUntilAnswered = new OutputStream:
+      override def write(byte: Int): Unit = write(Array(byte.toByte), 0, 1)
+
+      override def write(buffer: Array[Byte], offset: Int, length: Int): Unit =
+        if sent(buffer, offset, length) then payloadBytes += length
+
+      override def flush(): Unit = toOriginUntilAnswered.flush()
 
     private val thread = Thread.startVirtualThread: () =>
+      var bodyEnded = false
       try
-        forwardRequestBody(fromClient, toOriginUntilAnswered, framing)
+        forwardRequestBody(fromClient, toOriginUntilAnswered, framing, payloadUntilAnswered)
         toOriginUntilAnswered.flush()
+        bodyEnded = true
       catch
         case ex: (IOException | BadRequest) =>
           synchronized:
             failure = Some(ex)
             if !answered then closeQuietly(originTransport)
+      finally bodyRelayed(BodyRelayed(payloadBytes, complete = bodyEnded && !withheld))
 
     def originAnswered(): Unit = synchronized { answered = true }
 

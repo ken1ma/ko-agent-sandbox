@@ -1279,7 +1279,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val largeBody = Array.fill[Byte](RelayBufferBytes * 2 + 1)(0x5a)
     assertOneBuffer(largeBody)((in, out) => copyExactly(in, out, largeBody.length))
     assertOneBuffer(largeBody)((in, out) => forwardResponseBody(in, out, BodyFraming.UntilClose))
-    assertOneBuffer(ascii("3\r\none\r\n3\r\ntwo\r\n0\r\n\r\n"))(copyChunked)
+    assertOneBuffer(ascii("3\r\none\r\n3\r\ntwo\r\n0\r\n\r\n"))((in, out) => copyChunked(in, out, out))
 
   // ---------------------------------------------------------------------------
   // The relay on real sockets: loopback pairs, a thread that plays the origin, and the in-tunnel client observed on
@@ -1552,6 +1552,116 @@ class AgentEgressProxyTest extends munit.FunSuite:
     client.close()
     origin.close()
     served.join()
+
+  private val ChunkedPost = HttpRequestHead.parse(
+    ascii("POST /upload HTTP/1.1\r\nHost: docs.example\r\nTransfer-Encoding: chunked\r\n\r\n"),
+  )
+
+  /** What relayInspected reports of a chunked body that `send` writes from the client's side, against an origin that
+    * reads `originReads` bytes of the body and then answers 200. The relay's own failure, if any, is ignored. */
+  private def relayedChunks(originReads: Int)(send: java.net.Socket => Unit): BodyRelayed =
+    val (client, clientPeer) = socketPair()
+    val (origin, originPeer) = socketPair()
+    val served = Thread.startVirtualThread: () =>
+      try
+        readHttpHeader(originPeer.getInputStream, 64 * 1024)
+        originPeer.getInputStream.readNBytes(originReads)
+        originPeer.getOutputStream.write(ascii("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"))
+        originPeer.getOutputStream.close()
+      catch case _: Exception => ()
+    val sending = Thread.startVirtualThread(() =>
+      try send(clientPeer)
+      catch case _: Exception => (),
+    )
+    val relayed = java.util.concurrent.LinkedBlockingQueue[BodyRelayed]()
+    try relayInspected(client, origin, origin, ChunkedPost, relayed.put)
+    catch case _: (IOException | BadRequest) => ()
+    client.close()
+    origin.close()
+    served.join()
+    sending.join()
+    val reported = relayed.poll(10, java.util.concurrent.TimeUnit.SECONDS)
+    assert(relayed.isEmpty, "the body's end is reported once")
+    reported
+
+  test("a chunked body's end counts the payload written to the origin, without the chunk framing"):
+    val whole = "3\r\none\r\n4\r\nfour\r\n0\r\n\r\n"
+    val relayed = relayedChunks(whole.length): client =>
+      client.getOutputStream.write(ascii(whole))
+      client.shutdownOutput()
+    assertEquals(relayed, BodyRelayed(7, complete = true))
+
+  test("a chunked body is incomplete when the client closes mid-body, chunks malformed, or the origin answers first"):
+    val closedMidBody = relayedChunks(Int.MaxValue): client =>
+      client.getOutputStream.write(ascii("3\r\none\r\n5\r\nab"))
+      client.shutdownOutput()
+    assertEquals(closedMidBody, BodyRelayed(5, complete = false))
+    val malformed = relayedChunks(Int.MaxValue): client =>
+      client.getOutputStream.write(ascii("3\r\none\r\nzz\r\n"))
+    assertEquals(malformed, BodyRelayed(3, complete = false))
+    // The origin reads the first chunk, answers, and the client sends the rest only after the answer.
+    val firstChunk = "3\r\none\r\n"
+    val answeredFirst = relayedChunks(firstChunk.length): client =>
+      client.getOutputStream.write(ascii(firstChunk))
+      readHttpHeader(client.getInputStream, 64 * 1024)
+      client.getOutputStream.write(ascii("3\r\ntwo\r\n0\r\n\r\n"))
+      client.shutdownOutput()
+    assertEquals(answeredFirst, BodyRelayed(3, complete = false))
+
+  /** `socket`, whose output stream takes `accepted` bytes and then refuses each write whole, as an origin that closed
+    * mid-request does. */
+  private def refusingAfter(socket: java.net.Socket, accepted: Int): java.net.Socket =
+    new java.net.Socket:
+      private var left = accepted
+      private val refusing = new java.io.OutputStream:
+        override def write(byte: Int): Unit = write(Array(byte.toByte), 0, 1)
+
+        override def write(buffer: Array[Byte], offset: Int, length: Int): Unit =
+          if length > left then throw IOException("origin refused the write")
+          socket.getOutputStream.write(buffer, offset, length)
+          left -= length
+
+        override def flush(): Unit = socket.getOutputStream.flush()
+
+      override def getOutputStream: java.io.OutputStream = refusing
+      override def getInputStream: java.io.InputStream = socket.getInputStream
+      override def setSoTimeout(timeout: Int): Unit = socket.setSoTimeout(timeout)
+      override def close(): Unit = socket.close()
+
+  test("a write that the origin refuses ends the body once, incomplete, counting the payload written before it"):
+    // The head write fails: no payload went.
+    val relayed = java.util.concurrent.LinkedBlockingQueue[BodyRelayed]()
+    val (client, clientPeer) = socketPair()
+    val (origin, originPeer) = socketPair()
+    intercept[IOException](relayInspected(client, refusingAfter(origin, 0), origin, ChunkedPost, relayed.put))
+    assertEquals(relayed.poll(), BodyRelayed(0, complete = false))
+    assert(relayed.isEmpty, "the body's end is reported once")
+    Vector(client, clientPeer, origin, originPeer).foreach(_.close())
+
+    // The origin takes the head, `3\r\n` and `one`, and refuses the CRLF after `one`. It answers only once the body
+    // ended, so the refusal and not the answer withholds the rest.
+    val (uploader, uploaderPeer) = socketPair()
+    val (refuser, refuserPeer) = socketPair()
+    val bodyEnded = java.util.concurrent.CountDownLatch(1)
+    val served = Thread.startVirtualThread: () =>
+      try
+        bodyEnded.await()
+        refuserPeer.getOutputStream.write(ascii("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"))
+        refuserPeer.getOutputStream.close()
+      catch case _: Exception => ()
+    uploaderPeer.getOutputStream.write(ascii("3\r\none\r\n3\r\ntwo\r\n0\r\n\r\n"))
+    uploaderPeer.shutdownOutput()
+    val accepted = ChunkedPost.toOriginBytes.length + "3\r\none".length
+    relayInspected(
+      uploader, refusingAfter(refuser, accepted), refuser, ChunkedPost,
+      body =>
+        relayed.put(body)
+        bodyEnded.countDown(),
+    )
+    served.join()
+    assertEquals(relayed.poll(10, java.util.concurrent.TimeUnit.SECONDS), BodyRelayed(3, complete = false))
+    assert(relayed.isEmpty, "the body's end is reported once")
+    Vector(uploader, uploaderPeer, refuser, refuserPeer).foreach(_.close())
 
   test("an origin's 101 is refused before it is forwarded"):
     val (client, clientPeer) = socketPair()
@@ -1942,9 +2052,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
   /**
    * One request over the whole inspected path, brokered credentials given: the client's TLS to this proxy's leaf,
    * the head read, rewritten and decided, and the origin's TLS as production opens it.
-   * Returns the head that the test's origin received, empty when none was sent, and the audit lines. The origin's
-   * TLS client trusts the default context (TlsInspection.connect), which this method sets to the test CA's context
-   * for the call.
+   * Returns the head that the test's origin received, empty when none was sent, and the audit lines.
    */
   private def brokeredExchange(
     host: String,
@@ -1952,24 +2060,47 @@ class AgentEgressProxyTest extends munit.FunSuite:
     credentials: Vector[BrokeredCredential],
     scopes: Map[String, Set[String]] = Map("/" -> Set("read")),
   ): (String, Vector[String]) =
+    val received = java.util.concurrent.atomic.AtomicReference("")
+    val log = inspectedExchange(
+      host,
+      credentials,
+      scopes,
+      send = tls =>
+        tls.getOutputStream.write(ascii(request))
+        tls.getOutputStream.flush()
+        tls.getInputStream.readAllBytes(),
+      serve = tls =>
+        received.set(String(readHttpHeader(tls.getInputStream, 64 * 1024), StandardCharsets.ISO_8859_1))
+        tls.getOutputStream.write(ascii("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")),
+    )
+    (received.get, log)
+
+  /**
+   * One connection over the whole inspected path between a TLS client that `send` drives and a TLS origin that
+   * `serve` drives, each socket closed when its function returns. Returns the audit lines. The origin's TLS client
+   * trusts the default context (TlsInspection.connect), which this method sets to the test CA's context for the call.
+   */
+  private def inspectedExchange(
+    host: String,
+    credentials: Vector[BrokeredCredential],
+    scopes: Map[String, Set[String]],
+    send: java.net.Socket => Unit,
+    serve: java.net.Socket => Unit,
+  ): Vector[String] =
     val (inspection, clientContext) = testTls()
     val (proxySide, clientSide) = socketPair()
     val (transport, originSide) = socketPair()
-    val received = java.util.concurrent.atomic.AtomicReference("")
     val origin = Thread.startVirtualThread: () =>
       try
         val tls = inspection.accept(originSide, Array.emptyByteArray)
-        received.set(String(readHttpHeader(tls.getInputStream, 64 * 1024), StandardCharsets.ISO_8859_1))
-        tls.getOutputStream.write(ascii("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"))
-        tls.close()
+        try serve(tls)
+        finally tls.close()
       catch case _: Exception => ()
     val client = Thread.startVirtualThread: () =>
       try
         val tls = clientContext.getSocketFactory.createSocket(clientSide, host, 443, true)
-        tls.getOutputStream.write(ascii(request))
-        tls.getOutputStream.flush()
-        tls.getInputStream.readAllBytes()
-        tls.close()
+        try send(tls)
+        finally tls.close()
       catch case _: Exception => ()
     val log = java.io.ByteArrayOutputStream()
     val savedErr = System.err
@@ -1988,7 +2119,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       transport.close()
     client.join(java.time.Duration.ofSeconds(10))
     origin.join(java.time.Duration.ofSeconds(10))
-    (received.get, String(log.toByteArray, StandardCharsets.UTF_8).linesIterator.toVector)
+    String(log.toByteArray, StandardCharsets.UTF_8).linesIterator.toVector
 
   private val docsToken = BrokeredCredential(
     CredentialBinding("DOCS_TOKEN", "docs.example", RulePath.Root, CredentialGrammar.DefaultPlace),
@@ -2002,12 +2133,13 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val (atBound, boundLog) = brokeredExchange("docs.example", get("docs.example", s"Bearer ${docsToken.placeholder}"),
       Vector(docsToken))
     assert(atBound.contains(s"\r\nAuthorization: Bearer ${docsToken.value}\r\n"), atBound)
-    assertEquals(boundLog, Vector("allow docs.example GET /user inject=DOCS_TOKEN -> 127.0.0.1"))
+    // The index counts the placeholder as sent, so the proxy digests no brokered value.
+    assertEquals(boundLog, Vector("allow docs.example GET /user inject=DOCS_TOKEN cred=1 -> 127.0.0.1"))
     val (elsewhere, elsewhereLog) = brokeredExchange(
       "proxy.corp.example", get("proxy.corp.example", s"Bearer ${docsToken.placeholder}"), Vector(docsToken),
     )
     assert(elsewhere.contains(s"\r\nAuthorization: Bearer ${docsToken.placeholder}\r\n"), elsewhere)
-    assertEquals(elsewhereLog, Vector("allow proxy.corp.example GET /user -> 127.0.0.1"))
+    assertEquals(elsewhereLog, Vector("allow proxy.corp.example GET /user cred=1 -> 127.0.0.1"))
     for line <- boundLog ++ elsewhereLog do
       assert(!line.contains(docsToken.value) && !line.contains(docsToken.placeholder), line)
 
@@ -2021,7 +2153,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
         Vector(docsToken),
       )
       assert(received.contains(s"\r\nAuthorization: $authorization\r\n"), received)
-      assertEquals(log, Vector("allow docs.example GET /user -> 127.0.0.1"))
+      assertEquals(log, Vector("allow docs.example GET /user cred=1 -> 127.0.0.1"))
 
   test("a bound parameter arrives percent-encoded and decodes to the value; the log names the binding"):
     val sas = BrokeredCredential(
@@ -2055,6 +2187,78 @@ class AgentEgressProxyTest extends munit.FunSuite:
       fetchLog,
       Vector("allow docs.example GET /o/r.git/info/refs?service=SERVICE inject=SERVICE -> 127.0.0.1"),
     )
+
+  test("the allow line carries the request's fields after inject=, and a deny line carries none"):
+    val posting = Map("/" -> Set("read", "POST"))
+    val request =
+      "POST /v1/messages HTTP/1.1\r\nHost: docs.example\r\nUser-Agent: claude-cli/2.1.319 (external, cli)\r\n" +
+        s"Authorization: Bearer ${docsToken.placeholder}\r\nContent-Length: 2\r\n\r\nhi"
+    val (_, allowed) = brokeredExchange("docs.example", request, Vector(docsToken), posting)
+    // A Content-Length body bounds what the origin receives, and prints no chunked-end line.
+    assertEquals(
+      allowed,
+      Vector(
+        "allow docs.example POST /v1/messages inject=DOCS_TOKEN content-length=2 client=claude-cli/2.1.319 cred=1 " +
+          "-> 127.0.0.1",
+      ),
+    )
+    val (_, denied) = brokeredExchange("docs.example", request, Vector(docsToken))
+    assertEquals(denied, Vector("deny docs.example POST /v1/messages POST not granted"))
+
+  test("a chunked request's allow line and its chunked-end line hold one id"):
+    val request =
+      "POST /upload HTTP/1.1\r\nHost: docs.example\r\nUser-Agent: curl/8.5.0\r\nTransfer-Encoding: chunked\r\n" +
+        "\r\n3\r\none\r\n0\r\n\r\n"
+    val (_, log) = brokeredExchange("docs.example", request, Vector.empty, Map("/" -> Set("read", "POST")))
+    assertEquals(log.head, "allow docs.example POST /upload chunked id=1 client=curl/8.5.0 -> 127.0.0.1")
+    assert(log.tail.length == 1 && log(1).startsWith("chunked-end docs.example POST /upload id=1 send="), log.toString)
+
+  test("an incomplete chunked body's line comes with a deny or error line when the client's body failed"):
+    val head = "POST /upload HTTP/1.1\r\nHost: docs.example\r\nTransfer-Encoding: chunked\r\n\r\n"
+    def upload(send: java.net.Socket => Unit, serve: java.net.Socket => Unit): Set[String] =
+      val log = inspectedExchange("docs.example", Vector.empty, Map("/" -> Set("read", "POST")), send, serve)
+      assertEquals(log.headOption, Some("allow docs.example POST /upload chunked id=1 -> 127.0.0.1"))
+      // The upload's thread prints the chunked-end line, and the relay's thread the failure, in either order.
+      log.tail.toSet
+    def write(tls: java.net.Socket, bytes: String): Unit =
+      tls.getOutputStream.write(ascii(bytes))
+      tls.getOutputStream.flush()
+    def readAll(tls: java.net.Socket): Unit =
+      readHttpHeader(tls.getInputStream, 64 * 1024)
+      tls.getInputStream.readAllBytes()
+    val closedMidBody = upload(send = write(_, head + "3\r\none\r\n5\r\nab"), serve = readAll)
+    assertEquals(
+      closedMidBody,
+      Set(
+        "chunked-end docs.example POST /upload id=1 send=5 incomplete",
+        "error docs.example POST /upload origin: request body: body ended 3 bytes early",
+      ),
+    )
+    val malformed = upload(
+      send = tls =>
+        write(tls, head + "3\r\none\r\nzz\r\n")
+        tls.getInputStream.readAllBytes(),
+      serve = readAll,
+    )
+    assertEquals(
+      malformed,
+      Set(
+        "chunked-end docs.example POST /upload id=1 send=3 incomplete",
+        "deny docs.example POST /upload invalid chunk size",
+      ),
+    )
+    val firstChunk = "3\r\none\r\n"
+    val answeredFirst = upload(
+      send = tls =>
+        write(tls, head + firstChunk)
+        readHttpHeader(tls.getInputStream, 64 * 1024)
+        write(tls, "3\r\ntwo\r\n0\r\n\r\n"),
+      serve = tls =>
+        readHttpHeader(tls.getInputStream, 64 * 1024)
+        tls.getInputStream.readNBytes(firstChunk.length)
+        tls.getOutputStream.write(ascii("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")),
+    )
+    assertEquals(answeredFirst, Set("chunked-end docs.example POST /upload id=1 send=3 incomplete"))
 
   test("a header value edged with a control is refused on a request and a response head; SP and HTAB are stripped"):
     // Checked raw: Java's `trim` removes every character up to SP, so a check after it would let an
@@ -2721,7 +2925,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
     def rechunked(body: String): String =
       val out = java.io.ByteArrayOutputStream()
-      copyChunked(ByteArrayInputStream(body.getBytes(StandardCharsets.ISO_8859_1)), out)
+      copyChunked(ByteArrayInputStream(body.getBytes(StandardCharsets.ISO_8859_1)), out, out)
       out.toString(StandardCharsets.ISO_8859_1)
     assertEquals(rechunked("3;ext\r\none\r\n0\r\nX-Trailer: \u00e9\r\n\r\n"), "3\r\none\r\n0\r\n\r\n")
     Vector("no colon", " folded: v", "bad name: v", "X-Trailer: \u0007").foreach: trailer =>

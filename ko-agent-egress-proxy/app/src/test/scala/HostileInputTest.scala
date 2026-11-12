@@ -289,6 +289,20 @@ class HostileInputTest extends munit.FunSuite:
     )
     assertEquals(tabbed.values("X-Probe"), Vector("a\tb"))
 
+  test("a hostile User-Agent prints only its start, and never splits or reorders the allow line"):
+    // The bytes as sent: U+202E and the no-break space arrive as UTF-8, which the head reads byte by byte.
+    val hostile = Vector("\t(x)", "‮evil", " x", "=cred=9", " x", "a" * 4096)
+    hostile.foreach: suffix =>
+      val head = HttpRequestHead.parse(
+        s"GET /a HTTP/1.1\r\nHost: github.com\r\nUser-Agent: curl/8.5.0$suffix\r\nx-api-key: sk-one\r\n\r\n"
+          .getBytes(StandardCharsets.UTF_8),
+      )
+      val fields = RequestAudit().allowFields(head, head.bodyFraming)
+      val line = LogHelper.auditLine("allow", "github.com", "GET", "/a", s"${fields.text}-> 127.0.0.1")
+      val expectedClient = if suffix.head == 'a' then ("curl/8.5.0" + suffix).take(RequestAudit.MaxClientChars)
+        else "curl/8.5.0"
+      assertEquals(line, s"allow github.com GET /a client=$expectedClient cred=1 -> 127.0.0.1", suffix)
+
   test("no rule file, however malformed, allows a host or a grant nobody named"):
     // The fail-open direction for rule parsing. A file that resolves at all must resolve to the defaults hosts plus
     // the hosts that its own text spells, never to a host that the arithmetic invented. Every grant on a resolved

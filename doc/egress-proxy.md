@@ -332,9 +332,9 @@ directory:
 - A host command is refused when its proxy's file cannot be created there. The message names the
   directory to make writable.
 - Startup lines come first. SECURITY.md lists them (`../SECURITY.md`, "The audit line grammar").
-- Every connection event after the startup lines is one line. The line of an inspected request
-  holds the request's full target, query string included, which makes an exfiltrating `GET`
-  visible.
+- Every connection event after the startup lines is one line, and a chunked request body adds a
+  `chunked-end` line with its size when it ends. The line of an inspected request holds the
+  request's full target, query string included, which makes an exfiltrating `GET` visible.
 
 A refusal reads as
 
@@ -384,8 +384,8 @@ in its place in requests to `HOST`.
   says why (`design.md`, "Credential brokering at the egress proxy").
 - The launch prints each binding with its placeholder. `--egress-effective` prints where each
   binding's value would go under the ruleset, and the agent instructions name the bindings.
-- The audit line of a request that carried a value ends `inject=NAME -> <ip>` (`../SECURITY.md`,
-  "The audit line grammar").
+- The audit line of a request that carried a value holds `inject=NAME` (`../SECURITY.md`, "The
+  audit line grammar").
 - Measured against GitHub (2026-10-04, `gh` 2.102.0 installed in the sandbox), one token bound as
   `GH_TOKEN@api.github.com` and as `GIT_TOKEN@github.com`:
   - each name holds a placeholder of its own in the token's `gho_` format;

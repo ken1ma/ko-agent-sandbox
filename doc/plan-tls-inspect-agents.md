@@ -58,7 +58,7 @@ such as `OPENAI_API_KEY@api.openai.com`, is accepted from the commit that inspec
 ## Guarantees
 
 1. An agent's model hosts move from `tunnel` to inspected only after the measurement below has
-   passed for the installed client.
+   passed for one version of the agent's client.
    - The defaults file holds the measurement's record beside the lines ("Measurement").
    - The image installs every agent at its latest release (`Containerfile`), so a build can
      install a client newer than the measured one, and runs that client unmeasured.
@@ -68,8 +68,8 @@ such as `OPENAI_API_KEY@api.openai.com`, is accepted from the commit that inspec
      first release — continuous integration"), and the note at `--build` ("TLS inspection of the
      agents' model traffic").
 2. An inspected model host grants `read` and every `method=` word at the root. The treatment still
-   refuses requests that the tunnel carried: "Measurement" lists every such rule, and a client that
-   meets one stays a tunnel.
+   fails requests that the tunnel carried, and a client that meets such a failure stays a tunnel.
+   "Measurement" says how each failure shows.
    - The defaults grant `upgrade=websocket` at a path, never at a root, and only where a
      measurement shows that a feature, or the client's turn, fails without the WebSocket. A grant
      at the root would let any client move its traffic into streams that the log shows as one
@@ -99,11 +99,6 @@ The order follows the state of the evidence, best first.
   report does not establish the installed client's behavior.
 - The version beside each agent is the image's on 2026-11-11.
 
-The sandbox environment is the launcher's, not the host's. The launcher sets the six proxy
-variables and the CA variables itself (`AgentSandboxLauncher.scala`, the egress and CA arguments).
-So a client's precedence among those variables decides nothing; Claude Code, for example, reads
-`https_proxy` before `HTTPS_PROXY`.
-
 - `claude` 2.1.319, `api.anthropic.com`.
   - `/voice` under `--audio=mic` streams the recording over a WebSocket to `api.anthropic.com`, at
     `/api/ws/speech_to_text/voice_stream` (`mic.md`, "Claude Code"). The defaults grant
@@ -115,28 +110,17 @@ So a client's precedence among those variables decides nothing; Claude Code, for
     (`AgentSandboxLauncher.scala`); `CLAUDE_CODE_CERT_STORE`, which selects the bundled Mozilla set,
     the OS store or both (https://code.claude.com/docs/en/network-config). A streamed response is
     `text/event-stream` (the gateway protocol page, "Response headers").
-  - Remote Control is off unless a flag, a command or a setting turns it on.
-    - When on, Remote Control registers with the Anthropic API and polls for work. While it is
-      connected, Anthropic stores the transcript
-      (https://code.claude.com/docs/en/remote-control, "Connection and security").
-    - `claude` holds a `wss://` URL for `bridge.claudeusercontent.com`, which no default rule allows
-      (`design.md`, "No WebSocket on an inspected connection").
   - Measure:
     - a session with tool calls, a subagent and a compaction;
     - `/voice` under `--audio=mic`, through the grant;
     - every other `Upgrade` the client sends to `api.anthropic.com`, each a `deny` line with its
       path, and the feature that sent it;
-    - `claude -p`, as `ko-review` runs the reviewer (`ko-review.md`);
-    - a stream that fails mid-turn. The fallback is a non-streaming request to the same host, and
-      so a second `POST` line. `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK` turns the fallback off
-      (the environment variables page);
-    - whether that non-streaming request stays silent past the relay's 300 seconds
-      ("Measurement");
-    - with Remote Control on, the hosts and paths it calls, and whether it connects at all.
+    - `claude -p`, as `ko-review` runs the reviewer (`ko-review.md`).
 - `codex` 0.166.0, `api.openai.com` and `chatgpt.com`.
   - The defaults give these hosts no `upgrade=websocket` line while the HTTP fallback below
     works: with the line, Codex's model traffic would move into the WebSocket, and the log would
-    show one handshake line per connection in place of a line per request.
+    show one handshake line per connection in place of a line per request. A workspace that
+    prefers the WebSocket writes the line itself.
   - Documented: `CODEX_CA_CERTIFICATE`, falling back to `SSL_CERT_FILE`, for login, HTTPS and
     WebSocket alike (https://learn.chatgpt.com/docs/auth, "Custom CA bundles").
   - On `main`:
@@ -231,7 +215,7 @@ So a client's precedence among those variables decides nothing; Claude Code, for
     - 2.10.0 under WSL failed behind a TLS-inspecting proxy in its v3 harness, while v2 worked
       (#9860, closed as completed).
   - Measure: interactive and headless mode each; whether the client trusts the launch CA; whether
-    each model host's lines have `credential=`. A host whose lines lack the field may receive
+    each model host's lines have `cred=`. A host whose lines lack the field may receive
     SigV4-signed requests, which the index does not count ("Audit line additions"). A completed
     turn shows that such a request passes the relay unchanged.
 
@@ -259,17 +243,17 @@ allow https://api.anthropic.com/api/ws/speech_to_text/voice_stream upgrade=webso
     `Sec-WebSocket-Key`. The proxy refuses a second or a conflicting header of either name, as it
     refuses ambiguous framing.
   - The proxy checks nothing else of the handshake: the origin validates its own.
-- When either direction ends, the proxy closes both transports and prints the `sent` line once.
-  A tunnel instead half-closes and waits for the other direction, which a WebSocket peer may
-  never end.
+- When either direction ends, the proxy closes both transports and prints the `websocket-end`
+  line once. A tunnel instead half-closes and waits for the other direction, which a WebSocket
+  peer may never end.
 - The stream has no idle limit, as a tunnel has none: the relay's 300 seconds apply to each
   direction alone, and would end a dictation during which the origin sends nothing. The 300
   seconds still bound the wait for the origin's answer to the handshake.
 - The connection still carries one HTTP request. After the `101` the proxy parses nothing, and
   applies no method or path grant to the stream.
-- The log shows the handshake's `allow` line with `upgrade=websocket`, and a `sent` line with the
-  bytes each way when the stream ends ("Audit line additions"). The stream's content is unlogged,
-  as a `POST` body is.
+- The log shows the handshake's `allow` line with `upgrade=websocket`, and a `websocket-end` line
+  with the bytes each way when the stream ends ("Audit line additions"). The stream's content is
+  unlogged, as a `POST` body is.
 - A workspace's own `upgrade=websocket` line is in the launch's widening report and in
   `--egress-effective`, as a `POST` grant that allows a push is (SECURITY.md, "Adding hosts, not
   patterns").
@@ -307,28 +291,20 @@ Read from the log:
   - The hosts and paths show that the inspected hosts are the complete set, and that nothing moved
     to a host the defaults do not name.
   - A tunnel shows its host alone.
-- no `deny` line on a model host, except refusals that an agent's entry above accepts. Each of
-  these rules is a way the client could fail (`RulesetHelper.authorizeInspectedRequest`):
-  - one request per connection, and `http/1.1` alone;
-  - no `Upgrade` outside an `upgrade=websocket` line;
-  - a request head of at most 16 KiB;
-  - a `Host` header that names the `CONNECT` host, and an origin-form target;
-  - a `GET` or `HEAD` without a body or a framing header;
-  - no method beyond `GET`, `HEAD`, `POST`, `PUT`, `PATCH` and `DELETE`;
-  - no `%` and no dot segment in the path of a `POST`, `PUT`, `PATCH` or `DELETE`;
-  - one unambiguous body framing.
+- no `deny` line on a model host, except refusals that an agent's entry above accepts. A `deny`
+  line names the rule that the request broke (SECURITY.md, "The audit line grammar").
 - no `error` line on a model host. Each of these is a way the client could fail:
   - a connection whose origin sends nothing for 300 seconds ends
     (`InspectedIdleTimeoutMillis`). A non-streaming request whose answer takes longer is the
     case to look for;
   - a server-sent-event stream that the relay truncates shows as a `relay:` line. The stream must
     survive a whole long turn;
-  - a client that does not trust the launch CA shows as a handshake error, and an origin failure as
-    an `origin:` line.
+  - a client that does not trust the launch CA, or that offers HTTP/2 alone, shows as a handshake
+    error, and an origin failure as an `origin:` line.
 - whether the client sends a `Content-Length` or a chunked body. The framing decides whether a
-  request's size is on its `allow` line or on a `sent` line.
+  request's size is on its `allow` line or on a `chunked-end` line.
 - whether a model request's target holds a credential in its query, and whether the request's
-  line has `credential=`.
+  line has `cred=`.
   - A line without the field, on a request that the provider accepted, means a credential that
     the index does not count: another header, or a signing scheme.
   - The log names neither. The client's documentation or source does, and the index gains a
@@ -337,8 +313,12 @@ Read from the log:
   - The sandbox has no route but the proxy, so a transport that ignores `HTTPS_PROXY` fails rather
     than escapes. The log then shows what did connect.
 - for a client whose model traffic runs in a granted WebSocket: each stream's handshake line and
-  its `sent` line with the byte totals, beside the completed turns. One stream carries several
-  requests, and the log has no line for each.
+  its `websocket-end` line with the byte totals, beside the completed turns. One stream carries
+  several requests, and the log has no line for each.
+
+The log misses one failure, which shows as the client's own error. A client that sends a second
+request on a connection meets the closed socket, and can lose the end of the first response
+(`HTTPHelper.toClientBytes`).
 
 Each result is recorded beside the agent's lines in the defaults file:
 
@@ -362,16 +342,16 @@ failing rule. "Deliberate exclusions" explains why the relay does not change.
 ## Audit line additions
 
 The inspected `allow` line gains fields on every inspected host. The fields come before the `->`,
-after `inject=` where the line has one. Each field is `key=value`, the fields come in this order,
-and each field is present only when the request supplies it:
+after `inject=` where the line has one. Each field is `key=value` or, for `chunked`, a bare word.
+The fields come in this order, and each field is present only when the request supplies it:
 
-- `request=<bytes>` from a declared `Content-Length`, or `request=chunked`.
+- `content-length=<bytes>` from a declared `Content-Length`, or `chunked`.
   - The line prints when the origin leg connects, before the body is relayed
     (`AgentEgressProxy.scala`, the in-tunnel audit context). So a chunked request's total is not on
     this line.
   - The relay forwards no more body than a declared `Content-Length`. So that field is the upper
     bound of what the origin received, and such a request prints no second line.
-  - A chunked body prints `sent <host> <method> <target> id=<n> request=<bytes>` when the body
+  - A chunked body prints `chunked-end <host> <method> <target> id=<n> send=<bytes>` when the body
     ends, on every inspected host. The sender picks the framing, so an upload that avoids the size
     field needs only chunking.
   - `<bytes>` counts the body's payload bytes that the relay wrote to the origin, without the
@@ -381,21 +361,21 @@ and each field is present only when the request supplies it:
     the count: a client's close, malformed chunking, or an origin that answered or closed early.
     The origin may keep what it received.
 - `upgrade=websocket` on a handshake that an `upgrade=websocket` line allowed.
-  - The stream's end prints `sent <host> GET <target> id=<n> request=<bytes> response=<bytes>`,
+  - The stream's end prints `websocket-end <host> GET <target> id=<n> send=<bytes> recv=<bytes>`,
     with the bytes the relay wrote to the origin and to the client after the `101`.
-- `id=<n>` on an `allow` line that a `sent` line follows: a chunked body's, and a granted
-  handshake's. The `sent` line holds the same number.
+- `id=<n>` on an `allow` line that a `chunked-end` or `websocket-end` line follows: a chunked
+  body's, and a granted handshake's. The line that follows holds the same number.
   - `<n>` counts those requests from 1 in one proxy's log. Two requests to one host, method and
-    target can end in either order, and the number says which `sent` line belongs to which client
+    target can end in either order, and the number says which of those lines belongs to which client
     and credential.
-  - An `allow` line that no `sent` line follows has no `id=`.
+  - An `allow` line that neither line follows has no `id=`.
 - `client=<token>`: the start of the `User-Agent` header, as far as its characters are in
   `[A-Za-z0-9._:/-]`, and at most 128 of them. So a `curl` or a `python-requests` on a model host
   reads as such, beside the agent's own token.
   - The field is absent when the header is absent or starts with another character.
   - What follows the token is not logged, and the line does not say that something followed. The
     one rule keeps the line's fields unambiguous without a quoting grammar, and bounds the line.
-- `credential=<n>`: the index of this request's credential among the distinct credentials the proxy
+- `cred=<n>`: the index of this request's credential among the distinct credentials the proxy
   has seen since it started, in order of first sight.
   - The index counts static tokens together, as the client sent them: the values of `x-api-key`
     and `x-goog-api-key`, and an `Authorization` under `Bearer`, `token` or `Basic`, the schemes
@@ -404,13 +384,14 @@ and each field is present only when the request supplies it:
   - An `Authorization` under any other scheme prints no field. A scheme that signs each request,
     as SigV4 does, sends a different value every time, and would count as a new credential per
     request.
-  - A second index in a session is a refreshed token or a foreign key. The index does not tell
-    the two apart; the path and the time are what a reader has.
-  - After 1024 distinct credentials the field reads `credential=?` for a new one.
+  - A new index on a host that already had one is a refreshed token, another credential the user
+    configured, or a foreign key. The index does not tell them apart; the path and the time are
+    what a reader has.
+  - After 1024 distinct credentials the field reads `cred=?` for a new one.
   - The field is absent when the request holds none of these. A credential in another header or
     in the query is not counted.
 
-`client=` and `credential=` are client-supplied; the relay bounds or counts the sizes itself. An
+`client=` and `cred=` are client-supplied; the relay bounds or counts the sizes itself. An
 attacker's own client omits or copies the two fields. They name a foreign client that did not
 bother to, and prove nothing.
 
@@ -418,12 +399,12 @@ bother to, and prove nothing.
 
 - `ko-agent-egress-proxy/app/src/main/resources/defaults/model-provider/<name>`: the
   changed lines, each agent's with its measurement's record beside them.
-- `AgentEgressProxy.scala`:
-  - the fields on the inspected `allow` line, built from the parsed head before the origin leg
-    connects;
-  - the credential index, a bounded map from digest to index that the proxy instance owns;
-  - the counter behind `id=`, which the proxy instance owns;
-  - `Upload`'s count of the bytes written to the origin, and the `sent` line;
+  - The `/voice` line lands in Claude Code's commit, with the lines that inspect
+    `api.anthropic.com`. Beside the `tunnel` line it would fail every launch (`egress-proxy.md`,
+    "The rule file").
+- `RequestAudit.scala`: the fields on the inspected `allow` line, the `chunked-end` line, and the
+  credential index and the `id=` counter, which each proxy run owns (`AgentEgressProxy.Run`).
+- `AgentEgressProxy.scala`: `Upload`'s count of the payload bytes written to the origin.
 - The grant:
   - `RulesetHelper.scala`: the word in the grammar, its place in a scope, and the handshake's
     authorization. `Grant.Forms`, `Grant.spelled` and `provenanceLines` list the grant words one
@@ -433,12 +414,11 @@ bother to, and prove nothing.
     hop-by-hop headers, and `toClientBytes` appends `Connection: close`. A granted handshake and
     its `101` keep the upgrade headers, through a serializer of their own;
   - `AgentEgressProxy.relayInspected`: the `101` and its `Sec-WebSocket-Accept`, the relay of the
-    stream, and its `sent` line. Without a granted handshake a `101` stays an error;
+    stream, and its `websocket-end` line. Without a granted handshake a `101` stays an error;
   - `Refusals.scala`: `RefusalAdvice.upgrade` tells the agent to use a plain request. It gains
     the next step for a WebSocket the work needs: the user adds the line for that path;
   - `LaunchMessages.scala`: the "Egress" text of the session's instructions lists what each grant
     word allows, and gains the word;
-  - `defaults/model-provider/anthropic`: the line for `/voice`.
 - `EgressRules.scala`: unchanged. The banner's `N inspected, M tunnel` counts follow the ruleset by
   themselves.
 - `LogHelper.auditLine`: unchanged, since the fields are part of the tail.
@@ -452,23 +432,23 @@ bother to, and prove nothing.
   - the credential index for two keys, a refreshed bearer, two concurrent first uses of one key,
     which share an index, a SigV4 `Authorization`, which prints no field, a placeholder, a request
     without a credential, and the credential after the 1024th;
-  - the `sent` line for a chunked body, and no `sent` line for a `Content-Length` body;
-  - one `id=` on a chunked request's `allow` line and its `sent` line, different ids for two
+  - the `chunked-end` line for a chunked body, and none for a `Content-Length` body;
+  - one `id=` on a chunked request's `allow` line and its `chunked-end` line, different ids for two
     concurrent requests to one target, and no `id=` on a `Content-Length` request;
   - the `incomplete` line, with the payload bytes written to the origin, for a client that closes
     mid-body, for malformed chunking, and for an origin that answers before the body ends.
 - `HostileInputTest`: a `User-Agent` that holds a control character, U+202E, a no-break space, `=`
   or 4 KB of data prints the characters before it, and never splits or reorders a line.
 - The grant, in `AgentEgressProxyTest` and `HostileInputTest`:
-  - a handshake at the granted path is relayed, and its stream's bytes are on the `sent` line
-    that holds the handshake's `id=`;
+  - a handshake at the granted path is relayed, and its stream's bytes are on the `websocket-end`
+    line that holds the handshake's `id=`;
   - an `Upgrade` at another path, at the granted path under another spelling, with another
     protocol name, or on a `POST` is refused;
   - a `101` without the right `Sec-WebSocket-Accept`, and a `101` to a request that sent no
     `Upgrade`, give no stream;
   - a handshake with two `Upgrade` headers or two `Sec-WebSocket-Key` headers is refused;
-  - the stream ends, with one `sent` line, when the client closes, when the origin closes, and
-    when one side closes while the other sends nothing;
+  - the stream ends, with one `websocket-end` line, when the client closes, when the origin
+    closes, and when one side closes while the other sends nothing;
   - an origin that answers `200` to the handshake gets one response and no second request;
   - a plain `GET` at a path that holds `upgrade=websocket` alone is refused;
   - a workspace's line is in the widening report;
@@ -491,8 +471,8 @@ bother to, and prove nothing.
   - "Exfiltration through allowed network traffic" and "The web reached through the model
     provider": what the proxy sees of a model host, per treatment;
   - Copilot's and agy's items under "Not defended": the writes that become lines with a path;
-  - "The audit line grammar" gains the fields, the `sent` line, and the sentence that the fields
-    are client-supplied;
+  - "The audit line grammar" gains the fields, the `chunked-end` line, and the sentence that the
+    fields are client-supplied;
   - "Who holds the CA key": the sentence that Codex meets no leaf of the launch CA;
   - "Reading without being able to write": the grant beside `method=`, and the one-request
     argument for a stream that follows a checked `101`;
@@ -521,15 +501,15 @@ bother to, and prove nothing.
 
 ## Acceptance checklist
 
-- [ ] The fields' commit: a session's log shows `client=` and `credential=` on the `allow` lines
-  of a host the defaults inspect today, and `request=` on a workspace's `method=POST` line.
+- [x] The fields' commit: a session's log shows `client=` and `cred=` on the `allow` lines
+  of a host the defaults inspect today, and `content-length=` on a workspace's `method=POST` line.
   SECURITY.md's "The audit line grammar" and the provider plan's sentence on logged headers change
   in that commit.
 - [ ] The grant's commit: a WebSocket at a path that a workspace's line names is relayed and
   logged with its bytes, and every other `Upgrade` is refused. `design.md`, SECURITY.md and
   `egress-proxy.md` change in that commit.
 - [ ] Claude Code's `/voice` works with `api.anthropic.com` inspected, and its handshake and
-  `sent` lines are in the log.
+  `websocket-end` lines are in the log.
 - [ ] The first agent's measurement is recorded, and its model hosts are inspected. A session's log
   shows an `allow` line per model request sent over HTTP, with the fields.
 - [ ] A `curl` upload to that model host from inside the session shows as a line with
@@ -560,9 +540,6 @@ bother to, and prove nothing.
   with a documented header list.
 - Any log field from a body, for any host.
 - A relay change for a client that fails the measurement, beyond the `upgrade=websocket` grant.
-- An `upgrade=websocket` line in the defaults at any root, or for Codex's hosts while Codex's
-  HTTP fallback works. A workspace that prefers Codex's WebSocket to its logged HTTP fallback
-  writes the line itself.
 - A custom `[model_providers.NAME]` with `supports_websockets = false` in the image's Codex
   configuration, to keep Codex off its WebSocket. The image would select a provider for every
   user and follow Codex's configuration schema across releases. Codex 0.155.1 refuses an override

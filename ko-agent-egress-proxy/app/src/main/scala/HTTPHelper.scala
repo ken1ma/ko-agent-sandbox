@@ -475,11 +475,13 @@ object HTTPHelper:
     in: InputStream,
     out: OutputStream,
     framing: BodyFraming,
+    // Takes the payload, while `out` takes the chunk framing (Upload counts the payload).
+    payload: OutputStream,
   ): Unit =
     framing match
       case BodyFraming.Empty         => ()
-      case BodyFraming.Length(count) => copyExactly(in, out, count)
-      case BodyFraming.Chunked       => copyChunked(in, out)
+      case BodyFraming.Length(count) => copyExactly(in, payload, count)
+      case BodyFraming.Chunked       => copyChunked(in, out, payload)
       case BodyFraming.UntilClose =>
         // Request parsing never produces UntilClose (see the enum case), so reaching here is a proxy bug.
         throw IllegalStateException("request bodies cannot be close-delimited")
@@ -504,7 +506,7 @@ object HTTPHelper:
             throw TruncatedResponse(s"$count-byte response truncated: ${ex.getMessage}")
 
       case BodyFraming.Chunked =>
-        try copyChunked(in, out)
+        try copyChunked(in, out, out)
         catch
           case _: EOFException =>
             throw TruncatedResponse("response truncated inside a chunked body")
@@ -540,7 +542,7 @@ object HTTPHelper:
 
   /** Re-emits the chunked body canonically: extensions and trailers are checked against their grammar, then
     * dropped. So nothing in the body reads differently at the two ends. */
-  def copyChunked(in: InputStream, out: OutputStream): Unit =
+  def copyChunked(in: InputStream, out: OutputStream, payload: OutputStream): Unit =
     val buffer = new Array[Byte](RelayBufferBytes)
 
     @tailrec
@@ -561,7 +563,7 @@ object HTTPHelper:
         out.write(
           s"${java.lang.Long.toHexString(size)}\r\n".getBytes(StandardCharsets.US_ASCII),
         )
-        copyExactly(in, out, size, buffer)
+        copyExactly(in, payload, size, buffer)
 
         if readCrLfLine(in, MaxChunkLineBytes).nonEmpty then
           throw BadRequest("chunk not terminated by CRLF")

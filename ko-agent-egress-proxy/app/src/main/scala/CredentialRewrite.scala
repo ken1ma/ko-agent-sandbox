@@ -86,31 +86,40 @@ object CredentialRewrite:
             case None             => named(piece)
         s"${named(head.path)}?${pieces.mkString("&")}"
 
+  /** An `Authorization` value split into its scheme, the spaces after the scheme, and its token. None when one of
+    * the three is empty. */
+  def authorizationParts(value: String): Option[(String, String, String)] =
+    val scheme = value.takeWhile(_ != ' ')
+    val separator = value.drop(scheme.length).takeWhile(_ == ' ')
+    val token = value.drop(scheme.length + separator.length)
+    Option.when(scheme.nonEmpty && separator.nonEmpty && token.nonEmpty)((scheme, separator, token))
+
+  /** The `Authorization` schemes whose token the rewrite substitutes. Their tokens stay the same across requests,
+    * unlike a scheme that signs each request (RequestAudit counts them). */
+  val SubstitutedSchemes: Vector[String] = Vector("Bearer", "token", "Basic")
+
   /** Replaces the token after `Bearer` or `token`, or the password half after `Basic`, when that token or half is a
     * placeholder. Any other scheme stays as sent. The scheme's spelling and the spaces after it are kept. */
   private def authorizationWith(
     value: String,
     candidates: Seq[BrokeredCredential],
   ): Option[(String, BrokeredCredential)] =
-    val scheme = value.takeWhile(_ != ' ')
-    val separator = value.drop(scheme.length).takeWhile(_ == ' ')
-    val token = value.drop(scheme.length + separator.length)
-    if scheme.isEmpty || separator.isEmpty || token.isEmpty then None
-    else if scheme.equalsIgnoreCase("Bearer") || scheme.equalsIgnoreCase("token") then
-      candidates.find(_.placeholder == token).map(credential => (s"$scheme$separator${credential.value}", credential))
-    else if scheme.equalsIgnoreCase("Basic") then
-      val decoded =
-        try Some(String(java.util.Base64.getDecoder.decode(token), StandardCharsets.ISO_8859_1))
-        catch case _: IllegalArgumentException => None
-      decoded.flatMap: pair =>
-        val (user, password) = pair.span(_ != ':')
-        candidates.find(credential => password.nonEmpty && credential.placeholder == password.drop(1)).map:
-          credential =>
-            val encoded = java.util.Base64.getEncoder.encodeToString(
-              s"$user:${credential.value}".getBytes(StandardCharsets.ISO_8859_1),
-            )
-            (s"$scheme$separator$encoded", credential)
-    else None
+    authorizationParts(value).flatMap: (scheme, separator, token) =>
+      if scheme.equalsIgnoreCase("Bearer") || scheme.equalsIgnoreCase("token") then
+        candidates.find(_.placeholder == token).map(credential => (s"$scheme$separator${credential.value}", credential))
+      else if scheme.equalsIgnoreCase("Basic") then
+        val decoded =
+          try Some(String(java.util.Base64.getDecoder.decode(token), StandardCharsets.ISO_8859_1))
+          catch case _: IllegalArgumentException => None
+        decoded.flatMap: pair =>
+          val (user, password) = pair.span(_ != ':')
+          candidates.find(credential => password.nonEmpty && credential.placeholder == password.drop(1)).map:
+            credential =>
+              val encoded = java.util.Base64.getEncoder.encodeToString(
+                s"$user:${credential.value}".getBytes(StandardCharsets.ISO_8859_1),
+              )
+              (s"$scheme$separator$encoded", credential)
+      else None
 
   /**
    * One decode pass, which keeps a malformed escape as it is. Whichever way the sandbox spelled a bound
