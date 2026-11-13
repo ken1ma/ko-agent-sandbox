@@ -8,6 +8,13 @@ sandbox_mode = "danger-full-access"
 # scrollback and text selection do not reach it. doc/plan-clipboard.md reconsiders this setting.
 fullscreen_transcript = false
 
+[features]
+# Codex's TUI otherwise runs its turns in an app-server daemon, a copy of Codex that it installs under
+# ~/.codex/packages in the persistent volume. --update never reaches that copy, and its self-update fails in the
+# sandbox (measured with 0.169.0: the TUI ran a 0.166.0 daemon). The daemon's gain, work that continues after the
+# TUI exits, ends with the container anyway, whose main process is the agent.
+daemon_auto_start = false
+
 [shell_environment_policy.set]
 # Unified exec replaces PATH after Codex builds the child environment.
 # Each non-interactive `bash` reads the BASH_ENV file, which restores the PATH captured at image build time.

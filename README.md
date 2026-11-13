@@ -184,6 +184,8 @@ credentials in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#
 1. The image keeps Codex's conversation in the terminal's scrollback, where you can select and copy
    it. To restore Codex's default, pass `-c tui.fullscreen_transcript=true` for one launch, or set
    `tui.fullscreen_transcript = true` in `~/.codex/config.toml`.
+1. The image runs Codex without its background app-server daemon, so the TUI runs the image's
+   Codex and `--update` updates it.
 1. Ctrl-V pastes no image in any `--clipboard` mode
    ([clipboard plan](doc/plan-clipboard.md)).
 1. `/voice` under `--audio=mic` reports "voice transport could not connect"
