@@ -797,6 +797,18 @@ object RulesetHelper:
   // Enforcement
   // ---------------------------------------------------------------------------
 
+  /** Codex's Responses WebSocket. Codex 0.169.0 retries a refused handshake seven times over about seven seconds
+    * before it falls back to HTTPS, and falls back at once on a 426 (codex-rs/core/src/client.rs,
+    * `StatusCode::UPGRADE_REQUIRED`).
+    *
+    * - The host and path name the handshake, since they are Codex's own and stayed the same across releases. Codex's
+    *   User-Agent does not: it differs by entry point and release (`codex_exec/`, `codex-tui/`, `codex_cli_rs/` in
+    *   the measured logs). `/v1/responses` on api.openai.com keeps the 403, since other OpenAI clients use it.
+    * - The 426 carries no `Upgrade` field, which RFC 9110 requires, because the proxy accepts no protocol here.
+    * - doc/design.md, "WebSocket only at a path that a line names", records the exception and when it ends. */
+  def answersUpgradeRequired(host: String, path: String): Boolean =
+    host == "chatgpt.com" && path == "/backend-api/codex/responses"
+
   /**
    * The one check that every inspected request must pass.
    *
@@ -873,7 +885,11 @@ object RulesetHelper:
         if webSocket then
           RulePath.requireLiteralPath(path)
           if !grants(Grant.WebSocket) then
-            throw Refusal(s"${Grant.WebSocket} not granted", RefusalAdvice.webSocketNotGranted(host, path))
+            throw Refusal(
+              s"${Grant.WebSocket} not granted",
+              RefusalAdvice.webSocketNotGranted(host, path),
+              upgradeRequired = answersUpgradeRequired(host, path),
+            )
         else if isReceivePackDiscovery(head) then
           if !grants("POST") then throw Refusal("git push ref discovery", RefusalAdvice.gitPush)
         else if isUploadPackDiscovery(head) then

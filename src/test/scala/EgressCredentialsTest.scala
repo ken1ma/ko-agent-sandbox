@@ -160,20 +160,21 @@ class EgressCredentialsTest extends munit.FunSuite:
     assertEquals(resolved.map(_.map(_.placeholder.length)), Right(Vector(UnformattedPlaceholderLength)))
 
   test("a binding must reach a proxy that inspects its host: the session's, or a selected program's"):
-    val sessionInspected = Set("api.github.com", "api.anthropic.com")
-    val tunnels = Set("api.openai.com")
+    val sessionInspected = Set("api.github.com", "api.anthropic.com", "api.openai.com")
+    val tunnels = Set("api.githubcopilot.com")
     val programs = Map("sbt" -> Set("repo1.maven.org", "maven.pkg.github.com"))
     def checked(spelled: String) =
       EgressCredentials.checkHosts(Vector(binding(spelled)), sessionInspected, tunnels, programs)
     assertEquals(checked("GH_TOKEN@api.github.com"), Right(()))
     assertEquals(checked("GH_TOKEN@maven.pkg.github.com"), Right(()))
     assertEquals(checked("ANTHROPIC_API_KEY@api.anthropic.com:x-api-key"), Right(()))
+    assertEquals(checked("OPENAI_API_KEY@api.openai.com"), Right(()))
     assertEquals(
-      checked("OPENAI_API_KEY@api.openai.com"),
+      checked("COPILOT_TOKEN@api.githubcopilot.com"),
       Left(
-        "error: --egress-cred=OPENAI_API_KEY@api.openai.com:Authorization; api.openai.com is an opaque tunnel, " +
-          "where nothing can be substituted; bind to an inspected host or forward the value itself with " +
-          "--env=OPENAI_API_KEY",
+        "error: --egress-cred=COPILOT_TOKEN@api.githubcopilot.com:Authorization; api.githubcopilot.com is an opaque " +
+          "tunnel, where nothing can be substituted; bind to an inspected host or forward the value itself with " +
+          "--env=COPILOT_TOKEN",
       ),
     )
     assertEquals(

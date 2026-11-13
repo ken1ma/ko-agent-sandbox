@@ -426,11 +426,10 @@ line grants: the handshake carries the substituted value, and a credential sent 
 reaches the origin as the placeholder. Brokering does not support HTTP/2-only or
 certificate-pinned clients; those clients do not regain a real credential inside the sandbox.
 
-The Codex client accepts the inspection CA, and falls back from a refused websocket upgrade to HTTP
-requests (`design.md`, "Credential brokering at the egress proxy", has the measurement). Codex stays
-excluded from OpenAI brokering until one turn succeeds over an inspected connection. Each other
-installed agent's TLS and HTTP compatibility is measured the same way before its service is listed
-as supported.
+The Codex client accepts the inspection CA, falls back from a refused websocket upgrade to HTTP
+requests, and completes its turns over an inspected connection (`defaults/model-provider/openai`
+records the measurement). Each other installed agent's TLS and HTTP compatibility is measured the
+same way before its service is listed as supported.
 
 ## Failure and audit contract
 

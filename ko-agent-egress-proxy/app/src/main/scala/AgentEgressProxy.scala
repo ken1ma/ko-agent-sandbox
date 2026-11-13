@@ -708,7 +708,8 @@ object AgentEgressProxy:
 
         case ex: Refusal =>
           System.err.println(auditLine("deny", host, method, target, ex.getMessage))
-          respondInsideTls(clientTls, method, 403, "Forbidden", ex.proxyError, ex.getMessage, Some(ex.advice))
+          val (status, reason) = if ex.upgradeRequired then (426, "Upgrade Required") else (403, "Forbidden")
+          respondInsideTls(clientTls, method, status, reason, ex.proxyError, ex.getMessage, Some(ex.advice))
 
         case ex: IOException =>
           System.err.println(auditLine("error", host, method, target, s"origin: ${ex.getMessage}"))

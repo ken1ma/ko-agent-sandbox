@@ -1,7 +1,34 @@
 # Codex.
-allow https://chatgpt.com/     tunnel  # model traffic for a ChatGPT plan
-allow https://api.openai.com/  tunnel  # API-key use
-allow https://auth.openai.com/ tunnel  # issues the device code and the tokens
+allow https://chatgpt.com/     read method=POST,PUT,PATCH,DELETE  # model traffic for a ChatGPT plan
+allow https://api.openai.com/  read method=POST,PUT,PATCH,DELETE  # API-key use
+allow https://auth.openai.com/ read method=POST,PUT,PATCH,DELETE  # issues the device code and the tokens
+
+# Measured with codex 0.169.0 on 2026-11-13 (doc/plan-tls-inspect-agents.md, "Measurement"):
+# - Modes: the interactive TUI, with two turns and two compactions; codex exec with tool calls, codex exec resume and
+#   a turn that spawns a subagent. Signed in with ChatGPT, and codex exec also with an API key. codex logout, codex
+#   login --device-auth, and a token refresh that a rejected access token forced.
+# - chatgpt.com paths:
+#   - /backend-api/codex/responses, /backend-api/codex/models, /backend-api/codex/analytics-events/events
+#   - /backend-api/wham/: accounts/check, usage, security-setup, rate-limit-reset-credits, settings/user
+#   - /backend-api/ps/: plugins/installed, plugins/suggested/codex, plugins/list, mcp, apps/batch
+# - api.openai.com paths: /v1/responses. Under an API key, codex exec also fetches /backend-api/codex/models from
+#   chatgpt.com, sending the same key.
+# - auth.openai.com paths: /oauth/revoke, /api/accounts/deviceauth/usercode, /api/accounts/deviceauth/token (polled
+#   about every five seconds until the user approves), /oauth/token. Their codes and tokens travel in bodies, so
+#   their lines carry no cred=.
+# - Every request body declared a Content-Length. Every request to chatgpt.com and api.openai.com carried a
+#   credential, one index per key or token: the refreshed token shows as a new index.
+# - One error line: `relay: Broken pipe` on /backend-api/codex/responses, as a codex exec process exited after its turn
+#   completed.
+# - Refusals accepted:
+#   - the WebSocket upgrade at /backend-api/codex/responses, answered 426: each new codex exec process, codex exec
+#     resume and each subagent included, tries once and falls back to HTTPS for its turns. The TUI was measured while
+#     the proxy answered 403, when it tried 14 times before its first turn and never again;
+#   - the WebSocket upgrade at /v1/responses, answered 403: each new process tries 7 times over about 7 seconds
+#     before the same fallback (doc/design.md, "WebSocket only at a path that a line names");
+#   - ab.chatgpt.com, below;
+#   - sdmntpr<region>.oaiusercontent.com, five CONNECTs at each codex exec start under a ChatGPT sign-in.
+# - Other hosts: raw.githubusercontent.com, the TUI's /openai/codex/main/announcement_tip.toml.
 
 # ab.chatgpt.com serves A/B configuration and telemetry. The host is absent: codex works without it, and a refusal
 # produces a log line.

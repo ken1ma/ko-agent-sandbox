@@ -67,8 +67,6 @@ reason, so that nobody proposes it again.
     - A retrievable-storage behavior added at an allowed endpoint reopens the attack.
     - The cost of the rejection: a subscription session gets no path-based protection before
       step 6, since exact-path grants refuse the storage endpoints whatever credential is sent.
-  - Codex: taking the property to the OpenAI hosts waits for Codex's measurement
-    (`plan-tls-inspect-agents.md`, "The agents, in order").
 
 ## TLS inspection of the agents' model traffic
 
@@ -157,7 +155,7 @@ measurement.
 - [ ] Serve Codex's `/voice` (`mic.md`, "Codex"). Find what its WebRTC media connection
   needs, either UDP to the host and port the call's setup names, or TCP or TURN on 443. Then give
   the proxy a way to carry that connection.
-  - The proxy can read the setup only by inspecting `chatgpt.com`, which its defaults tunnel.
+  - The defaults inspect `chatgpt.com`, so the log shows the setup's paths.
   - A grant by address and port would be a new kind of egress rule, for the ruleset and
     SECURITY.md.
   - Then measure Codex's helper on the daemon:
@@ -1103,9 +1101,7 @@ bans sources`, compilation, binary identity, and the installed FUSE backend's mo
   `--self-test`; CI does not prove the FUSE backend on a user's own machine.
 - [ ] Repeat, on the image CI builds, the measurement of each agent whose model hosts the defaults
   inspect (`plan-tls-inspect-agents.md`, "Measurement"), signed in to that agent with a test
-  account.
-  - CI fails when a turn does not complete, or on a log line that the measurement does not accept.
-    A clean log alone does not show that a turn completed.
+  account. The plan's measurement suite runs it ("The measurement suite").
   - A run that passes at another client version is the evidence for recording that version beside
     the agent's lines in `defaults/model-provider/<name>`.
   - CI runs no `/voice`, which needs a microphone. `/voice` is measured by hand.

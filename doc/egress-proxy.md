@@ -34,9 +34,10 @@ The proxy's default rules are listed in the proxy image's `defaults/host` and
 
 - for every supported model provider (`anthropic`, `openai`, `google`, `aws` and `github`), the
   model, authentication and control-plane endpoints:
-  - `api.anthropic.com` inspected, with every method, and a WebSocket at Claude Code's `/voice`
-    path. The file records, beside the lines, the measurement that cleared the host;
-  - tunnels to the other model hosts and to every login and token host;
+  - `api.anthropic.com`, `chatgpt.com`, `api.openai.com` and `auth.openai.com` inspected, with
+    every method, and a WebSocket at Claude Code's `/voice` path. Each file records, beside the
+    lines, the measurement that cleared its hosts;
+  - tunnels to the other model and login hosts;
   - GitHub's two inspected login `POST`s and one token read, and Google's two inspected reads of
     the signed-in account;
 - inspected documentation, package-registry and forge hosts, with `read` on every line and
@@ -526,7 +527,9 @@ No format limits that placeholder's length (`EgressCredentials.placeholderFor`):
   - An AWS client signs each request itself and never sends its key (`design.md`, "Credential
     brokering at the egress proxy").
 - A model provider's API key at a host that the defaults inspect:
-  `ANTHROPIC_API_KEY@api.anthropic.com:x-api-key`, the header Claude Code sends the key in.
+  - `ANTHROPIC_API_KEY@api.anthropic.com:x-api-key`, the header Claude Code sends the key in;
+  - `OPENAI_API_KEY@api.openai.com`. Codex also fetches its model list from `chatgpt.com` with
+    that key, which the binding does not reach.
 - Not an API key at a model host that is still a tunnel, where nothing is substituted, and not an
   agent's own login. The same design.md section says why.
 

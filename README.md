@@ -281,9 +281,9 @@ credentials another cloud's login produced, and what forwarding costs.
 
 Every session accesses the network through the launcher's HTTPS proxy. The `--egress=` profile
 and the workspace's `.ko-agent-sandbox/egress/rule` determine which destinations and operations are
-allowed. The defaults include the supported model providers, with Claude Code's model host
-TLS-inspected and the others tunnelled, and TLS-inspected access to selected documentation sites,
-package registries, and Git hosting services.
+allowed. The defaults include the supported model providers, with Claude Code's and Codex's model
+hosts TLS-inspected and the others tunnelled, and TLS-inspected access to selected documentation
+sites, package registries, and Git hosting services.
 
 On the host, write one rule per line in `.ko-agent-sandbox/egress/rule`, then relaunch:
 

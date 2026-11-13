@@ -489,18 +489,29 @@ headers. Chosen instead: the `upgrade=websocket` grant, at a path that a line na
   as one line each. The defaults grant at a path, never at a root (`plan-tls-inspect-agents.md`,
   "Guarantees").
 - The Codex CLI's built-in provider opens a WebSocket to its model host, and falls back to HTTP
-  after the refusal ("Credential brokering at the egress proxy" has the measurement). Its hosts
-  take no grant while the fallback works: with the grant, the log would show one line per
-  connection in place of a line per request.
-  - The client's `supports_websockets = false` cannot be set for that provider: codex-cli 0.155.1
-    refuses to load an override of a built-in provider.
+  after the refusal (`defaults/model-provider/openai` has the measurement). Its hosts take no grant
+  while the fallback works: with the grant, the log would show one line per connection in place of
+  a line per request.
+  - A `403` costs each new Codex process about seven seconds and seven refused upgrades before the
+    fallback. So the proxy answers a refused handshake at `chatgpt.com`'s
+    `/backend-api/codex/responses` with `426`, on which Codex falls back at once.
+  - That `426` breaks RFC 9110's rule that a `426` names, in `Upgrade`, a protocol the server would
+    accept: the proxy accepts none, and sends no `Upgrade` field.
+  - The host and path select the `426`, not the User-Agent, which differs by Codex's entry point
+    and release. `/v1/responses` on `api.openai.com` keeps the `403`, since other OpenAI clients
+    use it, so Codex under an API key still spends the retries.
+  - The client's `supports_websockets = false` cannot be set for that provider: codex-cli 0.169.0
+    keeps a built-in provider's routing and accepts only `model_catalog_url` from an override
+    (`codex-rs/model-provider-info/src/lib.rs`, `merge_configured_providers`).
 - The binaries of the other installed agents hold no `wss://` literal for a model host.
   - `claude` holds one for its Remote Control bridge, `bridge.claudeusercontent.com`, which no
     default rule allows.
   - A URL built at run time escapes that search.
 
 Revisit the Codex hosts' missing grant if one Codex turn fails on the HTTP fallback, or the
-provider drops the HTTP path.
+provider drops the HTTP path. Remove the `426` once Codex gains an HTTPS-only option
+(openai/codex #27381) or stops retrying before the fallback (#19821), and a measurement shows that a
+`403` costs no retries.
 
 ### No inspecting every allowed host
 
@@ -520,12 +531,9 @@ serious first:
   - For a measured model host, the defaults accept that view without a per-launch consent
     (`plan-tls-inspect-agents.md`, "Outcome").
   - SECURITY.md has the exposure ("Not defended", "What is inside TLS").
-- It would gain nothing at two kinds of hosts, while costing every request a handshake (SECURITY.md,
-  "What is inside TLS"):
-  - an OAuth login's hosts, which the broker cannot serve before the provider plan's step 6
-    (`TODO.md`, "Credential brokering");
-  - a signed cloud API, where no header holds a value to substitute ("Credential brokering at the
-    egress proxy").
+- It would gain no substitution at a signed cloud API, where no header holds a value to
+  substitute, while costing every request a handshake ("Credential brokering at the egress
+  proxy").
 
 Revisit per agent, with that agent's measurement (`plan-tls-inspect-agents.md`, "The agents, in
 order").
@@ -680,8 +688,9 @@ The binding:
   - Otherwise the binding would show as a 401 inside the sandbox, with nothing in the log to
     explain it.
   - A model host that the defaults inspect takes a binding, such as
-    `ANTHROPIC_API_KEY@api.anthropic.com:x-api-key`, with a fixed header and no lifecycle. Claude
-    Code sends that key in `X-Api-Key`, not in `Authorization`, which a binding defaults to.
+    `ANTHROPIC_API_KEY@api.anthropic.com:x-api-key` or `OPENAI_API_KEY@api.openai.com`, with a
+    fixed header and no lifecycle. Claude Code sends its key in `X-Api-Key`, not in
+    `Authorization`, which a binding defaults to.
 - The launcher and the proxy compile one grammar object (`CredentialGrammar`), rather than the
   launcher asking the proxy's dry run:
   - The dry run mounts nothing by design.
@@ -713,20 +722,17 @@ Left out:
     (docker/sbx-releases #8).
   - A declared header or one named parameter is the durable form.
 - Brokering at a tunnel host, where no substitution can happen.
-  - The launcher refuses such a binding: `OPENAI_API_KEY@api.openai.com`, or
-    `AWS_BEARER_TOKEN_BEDROCK` at a workspace's `bedrock-runtime.<region>.amazonaws.com`.
+  - The launcher refuses such a binding, such as `AWS_BEARER_TOKEN_BEDROCK` at a workspace's
+    `bedrock-runtime.<region>.amazonaws.com`.
 - Brokering the agents' own logins:
   - Claude Code's login is an OAuth pair with local expiry bookkeeping and a refresh exchange. The
     proxy would mirror that lifecycle per release.
     - A stolen model token is a nuisance to the account holder. A stolen forge token reaches every
       private repository. Hiding the model token does not pay for a per-release contract.
   - The Codex CLI trusts the CA in `SSL_CERT_FILE`. The CLI's built-in provider opens a websocket
-    first, which the proxy refuses on an inspected connection.
-    - Measured with codex-cli 0.155.1 on an API key, against a local server that refuses the
-      upgrade (2026-09-22): seven `GET /v1/responses` with `Upgrade: websocket` over about seven
-      seconds, then `POST /v1/responses`.
-    - The Codex CLI is not brokered until one turn succeeds over an inspected connection. That
-      turn and the ChatGPT login are not measured.
+    first, which the proxy refuses on an inspected connection. Codex then falls back to HTTP, and
+    its turns complete under a ChatGPT login and under an API key (`defaults/model-provider/openai`
+    records the measurement).
   - Which credential may reach a model host is a rule that an inspected host could apply and a
     tunnel cannot (SECURITY.md, "Exfiltration through allowed network traffic"). `TODO.md` has
     that item ("Credential brokering").

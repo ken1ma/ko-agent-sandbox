@@ -223,7 +223,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       "deny https://*/" -> "invalid hostname",
       "allow https://x.example/ tunnel\nallow https://x.example/api/ read" -> "inspects x.example while it is a tunnel",
       "allow https://x.example/api/ read\nallow https://x.example/ tunnel" -> "makes x.example a tunnel while it holds",
-      "allow https://chatgpt.com/safe/ read" -> "inspects chatgpt.com while it is a tunnel",
+      "allow https://claude.ai/safe/ read" -> "inspects claude.ai while it is a tunnel",
       "allow https://github.com/ tunnel" -> "makes github.com an opaque tunnel, which the defaults inspect",
       "deny https://github.com/\nallow https://github.com/ tunnel" -> "makes github.com an opaque tunnel",
     ).foreach: (rule, problem) =>
@@ -264,7 +264,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // A grant no line gave, a subtree over nothing, a provider after `deny defaults`, and `tunnel`
     // on an inspected host: each names its line.
     Vector(
-      "deny https://chatgpt.com/ read" -> "matches nothing",
+      "deny https://claude.ai/ read" -> "matches nothing",
       "deny https://**.example.com/" -> "matches nothing",
       "deny https://github.com/ tunnel" -> "matches nothing",
       "deny defaults\ndeny model-provider google" -> "matches nothing",
@@ -294,8 +294,10 @@ class AgentEgressProxyTest extends munit.FunSuite:
       "allow https://github.com/ read git-fetch",
       "allow https://github.com/login/device/code method=POST",
       "allow https://api.github.com/copilot_internal/v2/token read",
-      "allow https://chatgpt.com/ tunnel",
+      "allow https://platform.claude.com/ tunnel",
+      "allow https://auth.openai.com/ read method=POST,PUT,PATCH,DELETE",
       "allow https://api.anthropic.com/ read method=POST,PUT,PATCH,DELETE",
+      "allow https://chatgpt.com/ read method=POST,PUT,PATCH,DELETE",
       "allow model-provider anthropic",
       "allow model-provider github",
     ).foreach(rule => assertEquals(rulesetOf(rule = rule).warnings, Vector.empty, rule))
@@ -610,7 +612,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       Set("read", "git-fetch"),
     )
     // The tunnel word takes the treatment.
-    assert(!every("deny https://chatgpt.com/ tunnel").hosts.contains("chatgpt.com"))
+    assert(!every("deny https://claude.ai/ tunnel").hosts.contains("claude.ai"))
     // Provider denials also remove catalog grants on the same hosts.
     val noGithub = every("deny model-provider github")
     Vector("github.com", "api.github.com", "api.githubcopilot.com").foreach: host =>
@@ -650,9 +652,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
     intercept[Refusal](authorize("github.com", 443, lockdown))
     // Under every profile a provider's lines meet the one-treatment check like any line.
     val ex = intercept[IllegalArgumentException](
-      rulesetOf(rule = "deny defaults\nallow model-provider openai\nallow https://chatgpt.com/ read"),
+      rulesetOf(rule = "deny defaults\nallow model-provider anthropic\nallow https://claude.ai/ read"),
     )
-    assert(ex.getMessage.contains("inspects chatgpt.com while it is a tunnel"), ex.getMessage)
+    assert(ex.getMessage.contains("inspects claude.ai while it is a tunnel"), ex.getMessage)
 
   test("every provider deny overrides earlier grants on its hosts and permits later exceptions"):
     ModelProviders.foreach: provider =>
@@ -696,13 +698,13 @@ class AgentEgressProxyTest extends munit.FunSuite:
           assert(!deniedAgain.allows(host), s"repeated $deny after $allow")
 
   test("a host has one treatment: narrowing a tunnel to inspected is local, widening needs deny defaults"):
-    val narrowed = rulesetOf(rule = "deny https://chatgpt.com/ tunnel\nallow https://chatgpt.com/ read")
-    assertEquals(narrowed.inspectedScopes("chatgpt.com"), Map("/" -> Set("read")))
+    val narrowed = rulesetOf(rule = "deny https://claude.ai/ tunnel\nallow https://claude.ai/ read")
+    assertEquals(narrowed.inspectedScopes("claude.ai"), Map("/" -> Set("read")))
     assertEquals(narrowed.warnings, Vector.empty)
     val beneath = rulesetOf(
-      rule = "deny https://chatgpt.com/ tunnel\nallow https://chatgpt.com/backend-api/ read",
+      rule = "deny https://claude.ai/ tunnel\nallow https://claude.ai/api/ read",
     )
-    assertEquals(beneath.inspectedScopes("chatgpt.com"), Map("/backend-api/" -> Set("read")))
+    assertEquals(beneath.inspectedScopes("claude.ai"), Map("/api/" -> Set("read")))
     // Widened, with the whole ruleset stated after deny defaults; and a new host as a tunnel.
     assertEquals(
       rulesetOf(rule = "deny defaults\nallow https://github.com/ tunnel").hosts,
@@ -710,13 +712,13 @@ class AgentEgressProxyTest extends munit.FunSuite:
     )
     assertEquals(rulesetOf(rule = "allow https://api.example/ tunnel").hosts("api.example"), Treatment.Tunnel)
     // The tunnel taken alone denies the host.
-    val taken = rulesetOf(rule = "deny https://chatgpt.com/ tunnel")
-    assert(!taken.hosts.contains("chatgpt.com"))
-    intercept[Refusal](authorize("chatgpt.com", 443, taken))
+    val taken = rulesetOf(rule = "deny https://claude.ai/ tunnel")
+    assert(!taken.hosts.contains("claude.ai"))
+    intercept[Refusal](authorize("claude.ai", 443, taken))
     // deny defaults with an inspected line on a defaults tunnel is valid: the defaults are cleared
     // before the line meets them.
-    val cleared = rulesetOf(rule = "deny defaults\nallow https://chatgpt.com/ read")
-    assertEquals(cleared.inspectedScopes("chatgpt.com"), Map("/" -> Set("read")))
+    val cleared = rulesetOf(rule = "deny defaults\nallow https://claude.ai/ read")
+    assertEquals(cleared.inspectedScopes("claude.ai"), Map("/" -> Set("read")))
     assertEquals(cleared.warnings, Vector.empty)
     // A host the defaults inspect returns to a tunnel only under deny defaults (egress-proxy.md, "The rule file").
     assert(
@@ -841,7 +843,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
           "allow https://github.com/login/ method=POST    # the defaults grant it on two paths below\n" +
           "allow https://www.googleapis.com/oauth2/v2/userinfo read  # the defaults' own line, restated\n" +
           "allow https://www.googleapis.com/oauth2/ read  # the defaults grant it on one path below\n" +
-          "allow https://chatgpt.com/ tunnel              # the defaults' own tunnel, restated\n" +
+          "allow https://platform.claude.com/ tunnel      # the defaults' own tunnel, restated\n" +
           "deny https://gitlab.com/\ndeny model-provider google\nallow model-provider anthropic\n" +
           "deny https://claude.ai/ tunnel\nallow https://claude.ai/ read  # a tunnel narrowed to inspected reads\n" +
           "deny https://github.com/ git-fetch\nallow https://github.com/my-org/ git-fetch\n",
@@ -920,10 +922,10 @@ class AgentEgressProxyTest extends munit.FunSuite:
           "allow https://api.anthropic.com/ read method=POST,PUT,PATCH,DELETE\n" +
             "allow https://api.anthropic.com/api/ws/speech_to_text/voice_stream upgrade=websocket\n" +
             "allow model-provider anthropic\n" +
-            "allow https://api.openai.com/ tunnel\nallow model-provider openai\n" +
+            "allow https://auth.openai.com/ read method=POST,PUT,PATCH,DELETE\nallow model-provider openai\n" +
             "allow https://github.com/ read git-fetch",
       ).provenance.widening.map(_.text),
-      Vector("allow https://api.openai.com/ tunnel", "allow model-provider openai"),
+      Vector("allow https://auth.openai.com/ read method=POST,PUT,PATCH,DELETE", "allow model-provider openai"),
     )
     // Nothing widens under a profile the file cannot widen; a file that only takes prints no line.
     Vector("deny-all", "deny-unless-model").foreach: profile =>
@@ -948,7 +950,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assert(lines.contains("allow https://github.com/ read git-fetch"), lines.toString)
     assert(lines.contains("allow https://github.com/login/device/code read git-fetch method=POST"), lines.toString)
     assert(lines.contains("allow https://api.github.com/copilot_internal/v2/token read"), lines.toString)
-    assert(lines.contains("allow https://chatgpt.com/ tunnel"), lines.toString)
+    assert(lines.contains("allow https://platform.claude.com/ tunnel"), lines.toString)
+    assert(lines.contains("allow https://auth.openai.com/ read method=POST,PUT,PATCH,DELETE"), lines.toString)
+    assert(lines.contains("allow https://chatgpt.com/ read method=POST,PUT,PATCH,DELETE"), lines.toString)
     assert(lines.contains("allow https://api.anthropic.com/ read method=POST,PUT,PATCH,DELETE"), lines.toString)
     assert(
       lines.contains(
@@ -1010,7 +1014,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
         "defaults/model-provider/github: allow https://api.github.com/copilot_internal/v2/token read",
     )
     assert(
-      lines.contains("  tunnel: defaults/model-provider/openai: allow https://chatgpt.com/ tunnel"),
+      lines.contains("  tunnel: defaults/model-provider/anthropic: allow https://platform.claude.com/ tunnel"),
       lines.toString,
     )
     assert(lines.contains("denied hosts:"), lines.toString)
@@ -1817,7 +1821,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
   /** The leaf the test's TLS servers present, naming both hosts they serve, and a client context
     * trusting the CA it chains to. */
   private def testTls(): (TlsInspection, javax.net.ssl.SSLContext) =
-    val hosts = Set("docs.example", "proxy.corp.example")
+    val hosts = Set("docs.example", "proxy.corp.example", "chatgpt.com")
     val (ca, caKey) = X509HelperTest.testCa(java.time.Instant.now(), days = 825)
     val directory = java.nio.file.Files.createTempDirectory("test-leaf")
     val leaf = X509Helper.issueLeaf(hosts.toVector.sorted, ca, caKey)
@@ -2207,6 +2211,45 @@ class AgentEgressProxyTest extends munit.FunSuite:
         tls.getOutputStream.write(ascii("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")),
     )
     (received.get, log)
+
+  test("a refused handshake at Codex's Responses path is answered 426, and every other refused handshake 403"):
+    val openai = rulesetOf(provider = "openai")
+    def flagged(host: String, path: String): Boolean =
+      intercept[Refusal](
+        authorizeInspectedRequest(
+          host, head(s"GET $path HTTP/1.1\r\nHost: $host\r\nUpgrade: websocket\r\n$WebSocketKey\r\n"),
+          openai.scopesOf(host),
+        ),
+      ).upgradeRequired
+    assert(flagged("chatgpt.com", "/backend-api/codex/responses"))
+    assert(!flagged("chatgpt.com", "/backend-api/codex/responses/"))
+    assert(!flagged("chatgpt.com", "/backend-api/other"))
+    assert(!flagged("api.openai.com", "/v1/responses"))
+    // The status line reaches the client inside the tunnel, with the 403's body and no Upgrade field; the origin
+    // hears nothing.
+    def statusAndHeaders(host: String, path: String): (String, String) =
+      val answer = java.util.concurrent.atomic.AtomicReference("")
+      val originHeard = java.util.concurrent.atomic.AtomicBoolean(false)
+      inspectedExchange(
+        host, Vector.empty, Map("/" -> Set("read", "POST", "PUT", "PATCH", "DELETE")),
+        send = tls =>
+          tls.getOutputStream.write(
+            ascii(
+              s"GET $path HTTP/1.1\r\nHost: $host\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+                s"$WebSocketKey\r\n",
+            ),
+          )
+          answer.set(String(tls.getInputStream.readAllBytes(), StandardCharsets.ISO_8859_1)),
+        serve = tls => originHeard.set(tls.getInputStream.read() >= 0),
+      )
+      assert(!originHeard.get, s"$host$path reached the origin")
+      val text = answer.get
+      (text.linesIterator.next(), text.substring(0, math.max(0, text.indexOf("\r\n\r\n"))))
+    val (codexStatus, codexHeaders) = statusAndHeaders("chatgpt.com", "/backend-api/codex/responses")
+    assertEquals(codexStatus, "HTTP/1.1 426 Upgrade Required")
+    assert(!codexHeaders.linesIterator.exists(_.toLowerCase.startsWith("upgrade:")), codexHeaders)
+    assert(codexHeaders.contains("http_request_denied"), codexHeaders)
+    assertEquals(statusAndHeaders("docs.example", "/backend-api/codex/responses")._1, "HTTP/1.1 403 Forbidden")
 
   /**
    * One connection over the whole inspected path between a TLS client that `send` drives and a TLS origin that

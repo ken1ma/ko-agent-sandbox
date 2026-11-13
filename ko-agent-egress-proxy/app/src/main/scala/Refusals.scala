@@ -25,9 +25,15 @@ case class TruncatedResponse(message: String) extends RuntimeException(message)
   * - `message` is the audit line's `<why>`, and `advice` is RefusalAdvice's next step. Both are required, so no
   *   refusal site can ship without its step.
   * - `proxyError` is the response's RFC 9209 proxy error type (Refusals.proxyStatus). The type is the ruleset's
-  *   refusal unless the site has a more specific registered type. */
-case class Refusal(message: String, advice: String, proxyError: String = "http_request_denied")
-    extends RuntimeException(message)
+  *   refusal unless the site has a more specific registered type.
+  * - `upgradeRequired` sends the same refusal as a 426, for the one handshake that RulesetHelper.answersUpgradeRequired
+  *   names. */
+case class Refusal(
+  message: String,
+  advice: String,
+  proxyError: String = "http_request_denied",
+  upgradeRequired: Boolean = false,
+) extends RuntimeException(message)
 
 /**
  * The next step that each refusal names for the agent reading the 403 body inside the sandbox. The step is one the

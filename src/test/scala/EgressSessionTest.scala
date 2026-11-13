@@ -295,7 +295,7 @@ class EgressSessionTest extends munit.FunSuite:
       refusedAtConnect(session, "https://pypi.org/", "a defaults host survived `deny defaults`")
       refusedAtConnect(session, "https://github.com/", "a defaults host survived `deny defaults`")
 
-  test("the defaults inspect Claude Code's model host, and only deny defaults returns its tunnel"):
+  test("the defaults inspect Claude Code's and Codex's model hosts, and only deny defaults returns a tunnel"):
     requireTestWithPodman()
 
     // A refused CONNECT or a failed handshake prints no issuer, and "(no issuer line)" differs from any CA.
@@ -313,7 +313,7 @@ class EgressSessionTest extends munit.FunSuite:
       var live: Option[Session] = None
       try
         ruleFile(workspace, rule)
-        val options = Vector("--egress=deny-unless-allowed", "--model-provider=anthropic")
+        val options = Vector("--egress=deny-unless-allowed", "--model-provider=anthropic,openai")
         val session = launchWith(workspace, workspace.resolve("session.log"), options)
         live = Some(session)
         body(session)
@@ -323,9 +323,9 @@ class EgressSessionTest extends munit.FunSuite:
 
     // The leaf names the host through the launcher's reading of the ruleset (EgressRules.inspectedHostsOf).
     launched(None): session =>
-      assertEquals(
-        reachedIssuer(session, "api.anthropic.com"), caSubject(session), "api.anthropic.com is not inspected",
-      )
+      Vector("api.anthropic.com", "chatgpt.com", "api.openai.com").foreach: host =>
+        assertEquals(reachedIssuer(session, host), caSubject(session), s"$host is not inspected")
+      // claude.ai and platform.claude.com.
       assert(Files.readString(session.log).contains(", 2 tunnel"), Files.readString(session.log))
 
     // The way back to the tunnel: deny defaults, then the whole ruleset (egress-proxy.md, "The rule file").

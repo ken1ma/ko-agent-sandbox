@@ -57,8 +57,8 @@ such as `OPENAI_API_KEY@api.openai.com`, is accepted from the commit that inspec
 
 ## Guarantees
 
-1. An agent's model hosts move from `tunnel` to inspected only after the measurement below has
-   passed for one version of the agent's client.
+1. An agent's model and login hosts move from `tunnel` to inspected only after the measurement
+   below has passed for one version of the agent's client.
    - The defaults file holds the measurement's record beside the lines ("Measurement").
    - The image installs every agent at its latest release (`Containerfile`), so a build can
      install a client newer than the measured one, and runs that client unmeasured.
@@ -67,9 +67,9 @@ such as `OPENAI_API_KEY@api.openai.com`, is accepted from the commit that inspec
    - `TODO.md` has the two checks for a newer client: CI's repeat of the measurement ("Before the
      first release — continuous integration"), and the note at `--build` ("TLS inspection of the
      agents' model traffic").
-2. An inspected model host grants `read` and every `method=` word at the root. The treatment still
-   fails requests that the tunnel carried, and a client that meets such a failure stays a tunnel.
-   "Measurement" says how each failure shows.
+2. An inspected model or login host grants `read` and every `method=` word at the root. The
+   treatment still fails requests that the tunnel carried, and a client that meets such a failure
+   stays a tunnel. "Measurement" says how each failure shows.
    - The defaults grant `upgrade=websocket` at a path, never at a root, and only where a
      measurement shows that a feature, or the client's turn, fails without the WebSocket. A grant
      at the root would let any client move its traffic into streams that the log shows as one
@@ -113,7 +113,7 @@ The order follows the state of the evidence, best first.
   - Measured on 2026-11-13, and inspected by default: `defaults/model-provider/anthropic` holds
     the record. The session had tool calls, a subagent, a compaction, WebFetch, `/voice` under
     `--audio=mic` and a sign-in, and `claude -p` ran as `ko-review` runs the reviewer.
-- `codex` 0.166.0, `api.openai.com` and `chatgpt.com`.
+- `codex` 0.169.0, `api.openai.com` and `chatgpt.com`.
   - The defaults give these hosts no `upgrade=websocket` line while the HTTP fallback below
     works: with the line, Codex's model traffic would move into the WebSocket, and the log would
     show one handshake line per connection in place of a line per request. A workspace that
@@ -127,31 +127,33 @@ The order follows the state of the evidence, best first.
       (`codex-rs/core/src/client.rs`, `disable_websockets`);
     - the source warns that a client built outside that policy bypasses the policy. So each
       transport is measured rather than inferred from a login.
-  - In 0.166.0, `client.rs` switches the session to HTTP when either WebSocket connect is answered
+  - In 0.169.0, `client.rs` switches the session to HTTP when either WebSocket connect is answered
     `426 Upgrade Required`: the turn's prewarm or its stream. It retries after an authorization
     error that the provider can recover from, and returns any other failure as an error. The proxy
-    answers a refused `Upgrade` with `403`.
+    answers a refused `Upgrade` with `403`, except at `chatgpt.com`'s Codex path (`design.md`,
+    "WebSocket only at a path that a line names").
   - Reported:
     - 0.147.0 and 0.154.0 on macOS accept the custom CA for HTTP, and reject it for the Responses
       WebSocket with `UnknownIssuer` (openai/codex #46489, open).
     - The WebSocket retries run out before the HTTP fallback (openai/codex #19821, open).
     - 0.155.1 completed both handshakes against a local server (SECURITY.md, "Who holds the CA
       key").
-  - Measure one turn, then a second turn in the same session. Measure the refusals and the seconds
-    before the fallback.
-  - Measure `codex exec` as well: `ko-review` runs the reviewer that way (`ko-review.md`).
+  - Measured on 2026-11-13, and inspected by default: `defaults/model-provider/openai` holds the
+    record. The TUI runs on the image's Codex, since the image turns off Codex's app-server daemon
+    (`container/ko-agent-sandbox/codex/config.toml`).
   - Codex passes with refused upgrades when the first turn completes over inspected HTTP, and no
-    later turn in the session tries an upgrade again.
-    - The number of refusals is recorded, not required. 0.155.1 sent seven over about seven
-      seconds (`design.md`, "Credential brokering at the egress proxy").
+    later turn in the same process tries an upgrade again.
+    - The number of refusals is recorded, not required. In each new process, `codex exec resume`
+      and each subagent included, 0.169.0 sends one to `chatgpt.com`, which answers `426`, and
+      seven over about seven seconds to `api.openai.com`, which answers `403`.
     - When retries end the turn, or a later turn tries an upgrade again, the hosts are inspected
       with `upgrade=websocket` at the path of Codex's WebSocket, which the refused upgrades' `deny`
       lines name. Codex is then measured again with that line, and passes on the WebSocket
       condition under "Measurement".
     - That treatment logs more than a tunnel: the handshake's path, client and credential, the
       stream's bytes, and a line for every other request on the host, such as a file upload.
-    - "Deliberate exclusions" has why the proxy does not answer `426`, and why the defaults set
-      Codex no custom provider.
+    - `design.md` has why the proxy answers `426` at `chatgpt.com`'s Codex path alone, and
+      "Deliberate exclusions" why the defaults set Codex no custom provider.
   - `/voice` is not served (`TODO.md`, "Codex's `/voice`"). That item reads the call's setup on
     `chatgpt.com`, which an inspected host logs by path.
 - `copilot` 1.0.107, `api.githubcopilot.com` and the three plan hosts.
@@ -216,10 +218,13 @@ The order follows the state of the evidence, best first.
     SigV4-signed requests, which the index does not count ("Audit line additions"). A completed
     turn shows that such a request passes the relay unchanged.
 
-The login and token hosts stay tunnels in this plan: `claude.ai`, `platform.claude.com`,
-`auth.openai.com`, and the Google and AWS sign-in hosts. Their traffic is a sign-in or a refresh,
-and inspecting it records nothing that an exfiltration reader needs. Revisit them with the provider
-plan's OAuth step.
+The login and token hosts are inspected too, each in its agent's commit, once the measurement
+covers the agent's sign-in and a token refresh.
+- The log then shows every request to them by path, so a request that no sign-in makes stands out.
+- The proxy then holds the sign-in's codes and tokens in plaintext, refresh tokens included, which
+  outlive the access tokens it sees on the model hosts.
+- `auth.openai.com` is inspected. `claude.ai` and `platform.claude.com` wait for Claude Code's next
+  measurement, and the Google and AWS sign-in hosts for their agents'.
 
 ## The `upgrade=websocket` grant
 
@@ -335,6 +340,30 @@ A feature that opens a transport of its own is measured as a mode: the agent's `
 
 A measurement that fails on a protocol rule leaves the agent a tunnel, and the record names the
 failing rule. "Deliberate exclusions" explains why the relay does not change.
+
+## The measurement suite
+
+Each new client release needs the measurement again (Guarantees, 1), several times before CI repeats
+it (`TODO.md`, "Before the first release — continuous integration"). So a suite runs the parts that
+need no person, and a log reader compares the run with the record. Both come after Codex's commit,
+and assume that the agents are signed in in the volume the suite names. CI later adds the sign-in.
+
+- The suite runs on the host under `testWithPodman`, since the proxy log is out of a session's
+  reach. A test per agent launches a session with the agent's measurement lines, then runs:
+  - Claude Code: `claude -p` with a tool call and a subagent;
+  - Codex: `codex exec`, `codex exec resume` and a turn that spawns a subagent;
+  - for each: a `curl` upload under a foreign key to the model host, whole, and chunked and cut
+    short.
+- Each test fails when a turn does not complete, or when the reader finds a line that the record
+  does not accept. A clean log alone does not show that a turn completed.
+- The reader parses one run's proxy log into each host's methods and paths, with identifiers,
+  tokens and query values normalized; every `deny` and `error` line, refused upgrades counted;
+  the framing; the `cred=` indexes; and the `websocket-end` totals. It reports the paths and
+  refusals that the record lacks, and the recorded paths that the run did not call.
+- The record becomes a form the reader parses: a fixed list of paths and accepted refusals in each
+  `defaults/model-provider/<name>`, beside the lines.
+- Interactive turns, a compaction, `/voice` and a sign-in stay manual. The record names each manual
+  item with the version it was measured at.
 
 ## Audit line additions
 
@@ -513,6 +542,8 @@ bother to, and prove nothing.
   `client=curl`, its size, and a second credential index. The same upload, chunked and cut short,
   shows as an `incomplete` line with its size.
 - [x] The workspace override restores the tunnel, and the banner's counts say so.
+- [ ] The measurement suite runs Claude Code's and Codex's parts that need no person, and its
+  reader compares the log with each record.
 - [ ] Each other agent's model hosts are inspected, or stay tunnels with the failing rule recorded,
   in one commit per agent.
 - [ ] Each document above changes in the commit of the agent it names, and the others in the first
@@ -544,9 +575,9 @@ bother to, and prove nothing.
   of the built-in provider (`design.md`, "WebSocket only at a path that a line names").
 - Any `upgrade=` value but `websocket`. Cleartext HTTP/2 (`h2c`) would turn the one request into
   a stream of requests that the proxy does not read.
-- Answering a refused `Upgrade` with `426`, which Codex's client falls back on at once. RFC 9110
+- Answering `426` to any refused `Upgrade` but Codex's handshake at `chatgpt.com`. RFC 9110
   requires a `426` to name, in `Upgrade`, a protocol the server would accept, and the relay
-  accepts none.
+  accepts none. `design.md` has the one exception and when it ends.
 
 ## References
 

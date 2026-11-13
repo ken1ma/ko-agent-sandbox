@@ -461,10 +461,10 @@ Inspection therefore does not establish that a request contains no workspace inf
 
 - Claude Code's WebSearch and Codex's web search run on the provider's servers. The query and its
   results travel inside a model request, and the provider's infrastructure does the searching.
-- The proxy sees a request to the inspected `api.anthropic.com`, or one connection to the
-  `chatgpt.com` tunnel. The domains searched are in a body, which the proxy never logs. So neither
-  the ruleset nor the audit log (`--egress-log`) applies to them. A query is outbound information
-  that the provider relays onward.
+- The proxy sees a request to `api.anthropic.com` or `chatgpt.com`, both inspected. The domains
+  searched are in a body, which the proxy never logs. So neither the ruleset nor the audit log
+  (`--egress-log`) applies to them. A query is outbound information that the provider relays
+  onward.
 - Claude Code's WebFetch is the opposite: a direct request from inside the sandbox, through the
   proxy. Only an allowed host answers the request, and the proxy logs it like any other connection.
 
@@ -767,13 +767,15 @@ lifecycle, benchmark and launcher suites binds its figures to the digest of its 
 
 - A `tunnel` host is deliberately not inspected. So the proxy sees only the handshake, and cannot
   tell a `GET` from a `POST`.
-- In the defaults, two kinds of host are `tunnel` hosts:
-  - a model host whose agent's client no measurement has cleared. Inspection fails some requests
-    that a tunnel carries (`doc/plan-tls-inspect-agents.md`, "Measurement");
-  - a login or token host, whose traffic is a sign-in or a refresh.
-- An inspected model host, `api.anthropic.com` in the defaults, grants every method at its root.
+- In the defaults, the `tunnel` hosts are the model and login hosts that no measurement of their
+  agent's client has cleared. Inspection fails some requests that a tunnel carries
+  (`doc/plan-tls-inspect-agents.md`, "Measurement").
+- An inspected model host, such as `api.anthropic.com`, `chatgpt.com` and `api.openai.com` in the
+  defaults, grants every method at its root.
   The proxy holds each request's conversation and provider token in memory, in plaintext, whether
   or not the launch selects a credential.
+- An inspected login host, such as `auth.openai.com`, puts the sign-in's codes and tokens in the
+  proxy's memory in plaintext, refresh tokens included.
 - Inspection lets the retained log record each request's method and target. An opaque tunnel logs
   the `CONNECT` alone.
 - Every other defaults host is inspected, including the bulk package registries, at a known
@@ -1279,7 +1281,8 @@ The sandbox trusts that CA through:
   - Measured with codex-cli 0.155.1 signed in with an API key, against a local server whose CA is
     in that file alone (2026-09-22): Codex's HTTPS requests and its websocket connection both
     complete the TLS handshake. Without the variable, both fail with `UnknownIssuer`.
-  - Under the default rules Codex's OpenAI hosts are tunnels, so Codex meets no leaf of this CA.
+  - Under the default rules Codex meets this CA's leaf at `chatgpt.com` and `api.openai.com`, and
+    its turns complete (`defaults/model-provider/openai` records the measurement).
 
 The image's JDK reads none of the above: a JVM consults a `cacerts` keystore and a
 `net.properties` file. So the launcher covers the JDK with the same technique, one layer over:
