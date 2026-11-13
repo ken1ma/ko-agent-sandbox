@@ -330,9 +330,9 @@ class SessionBoundaryTest extends munit.FunSuite:
             line.substring(line.indexOf("issuer:") + "issuer:".length).trim
         .getOrElse("(no issuer line)")
 
-    Vector("pypi.org", "github.com").foreach: host =>
+    Vector("pypi.org", "github.com", "api.anthropic.com").foreach: host =>
       assertEquals(issuer(host), ca, s"$host is not inspected")
-    Vector("api.anthropic.com", "chatgpt.com").foreach: host =>
+    Vector("chatgpt.com").foreach: host =>
       assertNotEquals(issuer(host), ca, s"$host was inspected; a tunnel host must stay opaque")
 
   test("an inspected tunnel permits reading and refuses writing"):

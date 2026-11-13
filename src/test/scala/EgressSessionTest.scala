@@ -287,15 +287,58 @@ class EgressSessionTest extends munit.FunSuite:
     requireTestWithPodman()
 
     withSession(Some("deny defaults\nallow model-provider anthropic\n")): session =>
-      // A tunnel is opaque: any status means that the proxy granted the CONNECT. The agent endpoint
-      // answering at all is what "still signs in" means.
-      assert(
-        curl(session, "-o", "/dev/null", "https://api.anthropic.com/").ok,
-        "the provider's agent endpoint is unreachable under the lockdown",
-      )
-      // Nothing inspected survives, so this session inspects nothing, and the defaults are gone.
+      // Any status means that the provider answered, which is what "still signs in" means. The token host is a
+      // tunnel, so the proxy granted its CONNECT; the model host is inspected, so curl trusted its leaf.
+      Vector("https://platform.claude.com/", "https://api.anthropic.com/").foreach: url =>
+        assert(curl(session, "-o", "/dev/null", url).ok, s"$url is unreachable under the lockdown")
+      // The catalog's hosts are gone.
       refusedAtConnect(session, "https://pypi.org/", "a defaults host survived `deny defaults`")
       refusedAtConnect(session, "https://github.com/", "a defaults host survived `deny defaults`")
+
+  test("the defaults inspect Claude Code's model host, and only deny defaults returns its tunnel"):
+    requireTestWithPodman()
+
+    // A refused CONNECT or a failed handshake prints no issuer, and "(no issuer line)" differs from any CA.
+    def reachedIssuer(session: Session, host: String): String =
+      val probe = curl(session, "-o", "/dev/null", s"https://$host/")
+      assert(probe.ok, s"$host was not reached: ${probe.err}")
+      val origin = issuer(session, host)
+      assertNotEquals(origin, "(no issuer line)", s"curl printed no issuer for $host")
+      origin
+    def caSubject(session: Session): String =
+      exec(session, "openssl", "x509", "-noout", "-subject", "-in", "/etc/ko-agent-sandbox/egress-proxy-ca.crt")
+        .text.stripPrefix("subject=").trim
+    def launched(rule: Option[String])(body: Session => Unit): Unit =
+      val workspace = scratchWorkspace()
+      var live: Option[Session] = None
+      try
+        ruleFile(workspace, rule)
+        val options = Vector("--egress=deny-unless-allowed", "--model-provider=anthropic")
+        val session = launchWith(workspace, workspace.resolve("session.log"), options)
+        live = Some(session)
+        body(session)
+      finally
+        live.foreach(stop)
+        discard(workspace)
+
+    // The leaf names the host through the launcher's reading of the ruleset (EgressRules.inspectedHostsOf).
+    launched(None): session =>
+      assertEquals(
+        reachedIssuer(session, "api.anthropic.com"), caSubject(session), "api.anthropic.com is not inspected",
+      )
+      assert(Files.readString(session.log).contains(", 2 tunnel"), Files.readString(session.log))
+
+    // The way back to the tunnel: deny defaults, then the whole ruleset (egress-proxy.md, "The rule file").
+    launched(
+      Some(
+        "deny defaults\nallow model-provider anthropic\ndeny https://api.anthropic.com/\n" +
+          "allow https://api.anthropic.com/ tunnel\n",
+      ),
+    ): session =>
+      assertNotEquals(
+        reachedIssuer(session, "api.anthropic.com"), caSubject(session), "api.anthropic.com is still inspected",
+      )
+      assert(Files.readString(session.log).contains("0 inspected, 3 tunnel"), Files.readString(session.log))
 
   test("--model-provider selects the providers a session reaches, over the catalog"):
     requireTestWithPodman()

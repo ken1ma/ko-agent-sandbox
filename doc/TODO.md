@@ -55,8 +55,8 @@ reason, so that nobody proposes it again.
       separate from a selected service. A binding also forwards a token that is not a placeholder
       and names one header, so a binding cannot refuse the placeholder beside a foreign key in
       another declared form.
-  - The property protects an API-key session only. A subscription login stays a tunnel until
-    step 6.
+  - The property protects an API-key session only. A subscription login gets the property with
+    OAuth, the provider plan's step 6.
   - A workspace that tests against the provider with its own key selects no credential for that
     host, or accepts the refusal. Every other host keeps the rule that the proxy forwards a token
     that is not a placeholder (`egress-proxy.md`, "Where the value goes").

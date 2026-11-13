@@ -146,6 +146,12 @@ class AgentEgressProxyTest extends munit.FunSuite:
     def opt(value: String) = Option(value).filter(_.nonEmpty)
     resolveRuleset(Some(profile), opt(provider), opt(rule))
 
+  /** The scopes that defaults/model-provider/anthropic gives api.anthropic.com. */
+  private val AnthropicScopes = Map(
+    "/" -> Set("read", "POST", "PUT", "PATCH", "DELETE"),
+    "/api/ws/speech_to_text/voice_stream" -> Set("read", "POST", "PUT", "PATCH", "DELETE", "upgrade=websocket"),
+  )
+
   /** Every provider the proxy defines, as a launch spells it. */
   private val Every = ModelProviders.mkString(",")
 
@@ -217,7 +223,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       "deny https://*/" -> "invalid hostname",
       "allow https://x.example/ tunnel\nallow https://x.example/api/ read" -> "inspects x.example while it is a tunnel",
       "allow https://x.example/api/ read\nallow https://x.example/ tunnel" -> "makes x.example a tunnel while it holds",
-      "allow https://api.anthropic.com/safe/ read" -> "inspects api.anthropic.com while it is a tunnel",
+      "allow https://chatgpt.com/safe/ read" -> "inspects chatgpt.com while it is a tunnel",
       "allow https://github.com/ tunnel" -> "makes github.com an opaque tunnel, which the defaults inspect",
       "deny https://github.com/\nallow https://github.com/ tunnel" -> "makes github.com an opaque tunnel",
     ).foreach: (rule, problem) =>
@@ -258,7 +264,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // A grant no line gave, a subtree over nothing, a provider after `deny defaults`, and `tunnel`
     // on an inspected host: each names its line.
     Vector(
-      "deny https://api.anthropic.com/ read" -> "matches nothing",
+      "deny https://chatgpt.com/ read" -> "matches nothing",
       "deny https://**.example.com/" -> "matches nothing",
       "deny https://github.com/ tunnel" -> "matches nothing",
       "deny defaults\ndeny model-provider google" -> "matches nothing",
@@ -288,7 +294,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
       "allow https://github.com/ read git-fetch",
       "allow https://github.com/login/device/code method=POST",
       "allow https://api.github.com/copilot_internal/v2/token read",
-      "allow https://api.anthropic.com/ tunnel",
+      "allow https://chatgpt.com/ tunnel",
+      "allow https://api.anthropic.com/ read method=POST,PUT,PATCH,DELETE",
       "allow model-provider anthropic",
       "allow model-provider github",
     ).foreach(rule => assertEquals(rulesetOf(rule = rule).warnings, Vector.empty, rule))
@@ -444,7 +451,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(
       resolved.hosts,
       Map(
-        "api.anthropic.com" -> Treatment.Tunnel,
+        "api.anthropic.com" -> Treatment.Inspected(AnthropicScopes),
         "claude.ai" -> Treatment.Tunnel,
         "platform.claude.com" -> Treatment.Tunnel,
       ),
@@ -603,7 +610,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       Set("read", "git-fetch"),
     )
     // The tunnel word takes the treatment.
-    assert(!every("deny https://api.anthropic.com/ tunnel").hosts.contains("api.anthropic.com"))
+    assert(!every("deny https://chatgpt.com/ tunnel").hosts.contains("chatgpt.com"))
     // Provider denials also remove catalog grants on the same hosts.
     val noGithub = every("deny model-provider github")
     Vector("github.com", "api.github.com", "api.githubcopilot.com").foreach: host =>
@@ -638,14 +645,14 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // After deny defaults the provider is the whole ruleset: the lockdown.
     val lockdown = rulesetOf(rule = "deny defaults\nallow model-provider anthropic")
     assertEquals(lockdown.hosts, rulesetOf(profile = "deny-unless-model", provider = "anthropic").hosts)
-    assertEquals(lockdown.inspectedScopes, Map.empty)
+    assertEquals(lockdown.inspectedScopes, Map("api.anthropic.com" -> AnthropicScopes))
     assertEquals(lockdown.warnings, Vector.empty)
     intercept[Refusal](authorize("github.com", 443, lockdown))
     // Under every profile a provider's lines meet the one-treatment check like any line.
     val ex = intercept[IllegalArgumentException](
-      rulesetOf(rule = "deny defaults\nallow model-provider anthropic\nallow https://api.anthropic.com/ read"),
+      rulesetOf(rule = "deny defaults\nallow model-provider openai\nallow https://chatgpt.com/ read"),
     )
-    assert(ex.getMessage.contains("inspects api.anthropic.com while it is a tunnel"), ex.getMessage)
+    assert(ex.getMessage.contains("inspects chatgpt.com while it is a tunnel"), ex.getMessage)
 
   test("every provider deny overrides earlier grants on its hosts and permits later exceptions"):
     ModelProviders.foreach: provider =>
@@ -689,13 +696,13 @@ class AgentEgressProxyTest extends munit.FunSuite:
           assert(!deniedAgain.allows(host), s"repeated $deny after $allow")
 
   test("a host has one treatment: narrowing a tunnel to inspected is local, widening needs deny defaults"):
-    val narrowed = rulesetOf(rule = "deny https://api.anthropic.com/ tunnel\nallow https://api.anthropic.com/ read")
-    assertEquals(narrowed.inspectedScopes("api.anthropic.com"), Map("/" -> Set("read")))
+    val narrowed = rulesetOf(rule = "deny https://chatgpt.com/ tunnel\nallow https://chatgpt.com/ read")
+    assertEquals(narrowed.inspectedScopes("chatgpt.com"), Map("/" -> Set("read")))
     assertEquals(narrowed.warnings, Vector.empty)
     val beneath = rulesetOf(
-      rule = "deny https://api.anthropic.com/ tunnel\nallow https://api.anthropic.com/v1/models read",
+      rule = "deny https://chatgpt.com/ tunnel\nallow https://chatgpt.com/backend-api/ read",
     )
-    assertEquals(beneath.inspectedScopes("api.anthropic.com"), Map("/v1/models" -> Set("read")))
+    assertEquals(beneath.inspectedScopes("chatgpt.com"), Map("/backend-api/" -> Set("read")))
     // Widened, with the whole ruleset stated after deny defaults; and a new host as a tunnel.
     assertEquals(
       rulesetOf(rule = "deny defaults\nallow https://github.com/ tunnel").hosts,
@@ -703,14 +710,25 @@ class AgentEgressProxyTest extends munit.FunSuite:
     )
     assertEquals(rulesetOf(rule = "allow https://api.example/ tunnel").hosts("api.example"), Treatment.Tunnel)
     // The tunnel taken alone denies the host.
-    val taken = rulesetOf(rule = "deny https://api.anthropic.com/ tunnel")
-    assert(!taken.hosts.contains("api.anthropic.com"))
-    intercept[Refusal](authorize("api.anthropic.com", 443, taken))
+    val taken = rulesetOf(rule = "deny https://chatgpt.com/ tunnel")
+    assert(!taken.hosts.contains("chatgpt.com"))
+    intercept[Refusal](authorize("chatgpt.com", 443, taken))
     // deny defaults with an inspected line on a defaults tunnel is valid: the defaults are cleared
     // before the line meets them.
-    val cleared = rulesetOf(rule = "deny defaults\nallow https://api.anthropic.com/ read")
-    assertEquals(cleared.inspectedScopes("api.anthropic.com"), Map("/" -> Set("read")))
+    val cleared = rulesetOf(rule = "deny defaults\nallow https://chatgpt.com/ read")
+    assertEquals(cleared.inspectedScopes("chatgpt.com"), Map("/" -> Set("read")))
     assertEquals(cleared.warnings, Vector.empty)
+    // A host the defaults inspect returns to a tunnel only under deny defaults (egress-proxy.md, "The rule file").
+    assert(
+      refusalOf("allow https://api.anthropic.com/ tunnel")
+        .contains("makes api.anthropic.com an opaque tunnel, which the defaults inspect"),
+    )
+    val tunnelBack = rulesetOf(
+      rule = "deny defaults\nallow model-provider anthropic\ndeny https://api.anthropic.com/\n" +
+        "allow https://api.anthropic.com/ tunnel",
+    )
+    assertEquals(tunnelBack.hosts("api.anthropic.com"), Treatment.Tunnel)
+    assertEquals(tunnelBack.inspectedScopes, Map.empty)
 
   test("a host left with no grant is denied whole: off the map, off the leaf, named by its line"):
     val emptied = rulesetOf(rule = "deny https://docs.python.org/ read")
@@ -823,7 +841,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
           "allow https://github.com/login/ method=POST    # the defaults grant it on two paths below\n" +
           "allow https://www.googleapis.com/oauth2/v2/userinfo read  # the defaults' own line, restated\n" +
           "allow https://www.googleapis.com/oauth2/ read  # the defaults grant it on one path below\n" +
-          "allow https://api.anthropic.com/ tunnel        # the defaults' own tunnel, restated\n" +
+          "allow https://chatgpt.com/ tunnel              # the defaults' own tunnel, restated\n" +
           "deny https://gitlab.com/\ndeny model-provider google\nallow model-provider anthropic\n" +
           "deny https://claude.ai/ tunnel\nallow https://claude.ai/ read  # a tunnel narrowed to inspected reads\n" +
           "deny https://github.com/ git-fetch\nallow https://github.com/my-org/ git-fetch\n",
@@ -899,7 +917,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
       rulesetOf(
         provider = "anthropic",
         rule =
-          "allow https://api.anthropic.com/ tunnel\nallow model-provider anthropic\n" +
+          "allow https://api.anthropic.com/ read method=POST,PUT,PATCH,DELETE\n" +
+            "allow https://api.anthropic.com/api/ws/speech_to_text/voice_stream upgrade=websocket\n" +
+            "allow model-provider anthropic\n" +
             "allow https://api.openai.com/ tunnel\nallow model-provider openai\n" +
             "allow https://github.com/ read git-fetch",
       ).provenance.widening.map(_.text),
@@ -928,7 +948,15 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assert(lines.contains("allow https://github.com/ read git-fetch"), lines.toString)
     assert(lines.contains("allow https://github.com/login/device/code read git-fetch method=POST"), lines.toString)
     assert(lines.contains("allow https://api.github.com/copilot_internal/v2/token read"), lines.toString)
-    assert(lines.contains("allow https://api.anthropic.com/ tunnel"), lines.toString)
+    assert(lines.contains("allow https://chatgpt.com/ tunnel"), lines.toString)
+    assert(lines.contains("allow https://api.anthropic.com/ read method=POST,PUT,PATCH,DELETE"), lines.toString)
+    assert(
+      lines.contains(
+        "allow https://api.anthropic.com/api/ws/speech_to_text/voice_stream read method=POST,PUT,PATCH,DELETE " +
+          "upgrade=websocket",
+      ),
+      lines.toString,
+    )
     assert(lines.contains("allow https://pypi.org/ read"), lines.toString)
     val hosts = lines.drop(1).map(_.stripPrefix("allow https://").takeWhile(_ != '/'))
     assertEquals(hosts, hosts.sorted)
@@ -982,7 +1010,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
         "defaults/model-provider/github: allow https://api.github.com/copilot_internal/v2/token read",
     )
     assert(
-      lines.contains("  tunnel: defaults/model-provider/anthropic: allow https://api.anthropic.com/ tunnel"),
+      lines.contains("  tunnel: defaults/model-provider/openai: allow https://chatgpt.com/ tunnel"),
       lines.toString,
     )
     assert(lines.contains("denied hosts:"), lines.toString)
@@ -991,7 +1019,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assert(
       provenanceLines(rulesetOf(rule = "deny defaults\nallow model-provider anthropic")).contains(
         "  tunnel: rule: allow model-provider anthropic " +
-          "(defaults/model-provider/anthropic: allow https://api.anthropic.com/ tunnel)",
+          "(defaults/model-provider/anthropic: allow https://claude.ai/ tunnel)",
       ),
     )
     // A refusal names every line that matched the host: the provider behind an expanded pattern,

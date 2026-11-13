@@ -76,8 +76,8 @@ The sections below describe the limits and costs of each.
 
 **Writing to remote hosts**, subject to the resolved egress rules.
 
-- The defaults allow opaque model-provider traffic and inspected requests for reading, Git fetch
-  (`clone` and `pull`), and GitHub device login.
+- The defaults allow every method on the model hosts, inspected or through a tunnel per host, and
+  inspected requests for reading, Git fetch (`clone` and `pull`), and GitHub device login.
 - An inspected request is refused unless its operation is granted at its path.
 - The defaults refuse `git push`. A workspace can grant `git push` through `method=POST` or an
   opaque tunnel.
@@ -430,10 +430,10 @@ defense.
 
 **Exfiltration through allowed network traffic.**
 
-- An opaque tunnel allows writes wherever the endpoint offers a write API. `api.anthropic.com`
+- A model host allows writes wherever its API offers them, inspected or not. `api.anthropic.com`
   receives the conversation by design.
-- The proxy does not see which credential a tunnel carries, so the account written to need not be
-  the user's.
+- The proxy does not refuse a credential that is not the session's, so the account written to need
+  not be the user's.
   - An injected instruction can supply the attacker's own API key. Any process in the session can
     then send workspace files under that key, to whatever the provider's API stores for the key's
     owner to retrieve later.
@@ -445,8 +445,10 @@ defense.
     workspace's rule file allows it. A launch admits the agent's own provider alone unless
     `--model-provider` names more. A file's `allow model-provider` line for a provider that the
     launch did not select is reported as a widening at every launch.
-  - Refusing a credential that is not the session's needs the proxy to terminate TLS at the model
-    host (`doc/TODO.md`, "Credential brokering").
+  - On an inspected model host, each such upload is a line with its method and path, and with the
+    fields that "The audit line grammar" defines. A tunnel logs one `CONNECT` per connection.
+  - Refusing a credential that is not the session's needs the brokered overlay, which knows the
+    session's own credential (`doc/TODO.md`, "Credential brokering").
 - At inspected hosts, the proxy constrains methods, paths and HTTP framing, but does not validate
   application payloads.
   - An allowed `GET` carries its URL. A path grant narrows the recipient, but the path suffix and
@@ -458,10 +460,10 @@ Inspection therefore does not establish that a request contains no workspace inf
 **The web reached through the model provider.**
 
 - Claude Code's WebSearch and Codex's web search run on the provider's servers. The query and its
-  results travel inside the model-endpoint tunnel, and the provider's infrastructure does the
-  searching.
-- The proxy sees one connection to `api.anthropic.com` or `chatgpt.com`. So neither the ruleset nor
-  the audit log (`--egress-log`) applies to the domains searched. A query is outbound information
+  results travel inside a model request, and the provider's infrastructure does the searching.
+- The proxy sees a request to the inspected `api.anthropic.com`, or one connection to the
+  `chatgpt.com` tunnel. The domains searched are in a body, which the proxy never logs. So neither
+  the ruleset nor the audit log (`--egress-log`) applies to them. A query is outbound information
   that the provider relays onward.
 - Claude Code's WebFetch is the opposite: a direct request from inside the sandbox, through the
   proxy. Only an allowed host answers the request, and the proxy logs it like any other connection.
@@ -765,9 +767,13 @@ lifecycle, benchmark and launcher suites binds its figures to the digest of its 
 
 - A `tunnel` host is deliberately not inspected. So the proxy sees only the handshake, and cannot
   tell a `GET` from a `POST`.
-- In the defaults, the model-provider endpoints alone are `tunnel` hosts. Those endpoints' required
-  writes cannot be refused, and inspection would expose the conversation and provider tokens in
-  plaintext to the proxy process.
+- In the defaults, two kinds of host are `tunnel` hosts:
+  - a model host whose agent's client no measurement has cleared. Inspection fails some requests
+    that a tunnel carries (`doc/plan-tls-inspect-agents.md`, "Measurement");
+  - a login or token host, whose traffic is a sign-in or a refresh.
+- An inspected model host, `api.anthropic.com` in the defaults, grants every method at its root.
+  The proxy holds each request's conversation and provider token in memory, in plaintext, whether
+  or not the launch selects a credential.
 - Inspection lets the retained log record each request's method and target. An opaque tunnel logs
   the `CONNECT` alone.
 - Every other defaults host is inspected, including the bulk package registries, at a known

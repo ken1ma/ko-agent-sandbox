@@ -32,10 +32,13 @@ events.
 The proxy's default rules are listed in the proxy image's `defaults/host` and
 `defaults/model-provider/*`, with the reason beside each line:
 
-- for every supported model provider (`anthropic`, `openai`, `google`, `aws` and `github`),
-  tunnels to model, authentication and control-plane endpoints. GitHub's rules also permit two
-  inspected login `POST`s and one token read, and Google's rules permit two inspected reads of the
-  signed-in account;
+- for every supported model provider (`anthropic`, `openai`, `google`, `aws` and `github`), the
+  model, authentication and control-plane endpoints:
+  - `api.anthropic.com` inspected, with every method, and a WebSocket at Claude Code's `/voice`
+    path. The file records, beside the lines, the measurement that cleared the host;
+  - tunnels to the other model hosts and to every login and token host;
+  - GitHub's two inspected login `POST`s and one token read, and Google's two inspected reads of
+    the signed-in account;
 - inspected documentation, package-registry and forge hosts, with `read` on every line and
   `git-fetch` on the three forges.
 
@@ -283,7 +286,9 @@ Both use the rule grammar, with hosts and paths sorted:
 
 ```text
 egress profile: deny-unless-allowed; model provider: anthropic
-allow https://api.anthropic.com/ tunnel
+allow https://api.anthropic.com/ read method=POST,PUT,PATCH,DELETE
+...
+allow https://claude.ai/ tunnel
 allow https://github.com/ read git-fetch
 allow https://github.com/login/device/code read git-fetch method=POST
 ...
@@ -520,8 +525,10 @@ No format limits that placeholder's length (`EgressCredentials.placeholderFor`):
     session that must not hold such a credential obtains the key and signs on the host.
   - An AWS client signs each request itself and never sends its key (`design.md`, "Credential
     brokering at the egress proxy").
-- Not a model provider's login or API key: model providers' hosts are tunnels, where nothing is
-  substituted. The same design.md section says why.
+- A model provider's API key at a host that the defaults inspect:
+  `ANTHROPIC_API_KEY@api.anthropic.com:x-api-key`, the header Claude Code sends the key in.
+- Not an API key at a model host that is still a tunnel, where nothing is substituted, and not an
+  agent's own login. The same design.md section says why.
 
 ## Through an upstream proxy
 

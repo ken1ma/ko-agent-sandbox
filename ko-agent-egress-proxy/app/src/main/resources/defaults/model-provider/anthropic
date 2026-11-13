@@ -1,7 +1,30 @@
-# Claude Code.
-allow https://api.anthropic.com/   tunnel  # model traffic, the WebFetch domain check, feature flags
+# Claude Code. api.anthropic.com serves model traffic, the WebFetch domain check and feature flags.
+allow https://api.anthropic.com/   read method=POST,PUT,PATCH,DELETE
+allow https://api.anthropic.com/api/ws/speech_to_text/voice_stream upgrade=websocket  # /voice under --audio=mic
 allow https://claude.ai/           tunnel  # interactive login
 allow https://platform.claude.com/ tunnel  # OAuth token exchange and refresh, every session
+
+# Measured with claude 2.1.319 on 2026-11-13 (doc/plan-tls-inspect-agents.md, "Measurement"):
+# - Modes: an interactive session with tool calls, a subagent, a compaction, WebFetch, /voice under --audio=mic and a
+#   sign-in; claude -p, as ko-review runs it.
+# - api.anthropic.com paths, <org> standing for the organization's UUID:
+#   - /v1/messages, /v1/messages/count_tokens, /v1/mcp_servers, /v1/ultrareview/quota
+#   - /api/oauth/profile, /api/oauth/claude_cli/roles, /api/oauth/account/settings
+#   - /api/oauth/organizations/<org>/: skills/list-skills, skills/<name>/download, plugins/list-plugins, marketplaces
+#   - /api/organizations/<org>/model_selector/cc
+#   - /api/claude_cli/bootstrap, /api/claude_code_grove, /api/claude_code_penguin_mode, /api/eval/sdk-<key>,
+#     /api/event_logging/v2/batch, /api/artifacts/mcp
+#   - without a credential: /api/hello, /api/web/domain_info, /api/directory/plugins, /mcp-registry/v0/servers
+#   - the WebSocket at /api/ws/speech_to_text/voice_stream, one per recording
+# - Every request body declared a Content-Length. Within each launch, every request that carried a credential showed
+#   one index, the sign-in's included.
+# - A /v1/messages body names the previous response that it continues, and holds only the messages after it. The
+#   client sends the whole transcript when the server's thread is gone or idle, so a request's size is not the
+#   conversation's.
+# - Other hosts: platform.claude.com through its tunnel; github.com, where the interactive mode's git child clones the
+#   plugin marketplace.
+# - Refusals accepted: mcp-proxy.anthropic.com, downloads.claude.ai and http-intake.logs.us5.datadoghq.com, all absent
+#   below.
 
 # These hosts of Claude Code's own list are absent (code.claude.com/docs/en/network-config):
 # - mcp-proxy.anthropic.com serves the claude.ai connectors, which a claude.ai sign-in turns on by default.
@@ -10,5 +33,5 @@ allow https://platform.claude.com/ tunnel  # OAuth token exchange and refresh, e
 #   - ENABLE_CLAUDEAI_MCP_SERVERS=false silences the fetch.
 # - The two Datadog intake hosts receive telemetry and error reports. Each attempt leaves a refusal in the log, or
 #   none with CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC set.
-# - downloads.claude.ai serves the auto-updater.
+# - downloads.claude.ai serves the auto-updater, its version checks and plugin executables.
 # - claude.com and *.claudeusercontent.com serve the sign-in redirect page and artifact content.

@@ -104,18 +104,15 @@ The order follows the state of the evidence, best first.
     `/api/ws/speech_to_text/voice_stream` (`mic.md`, "Claude Code"). The defaults grant
     `upgrade=websocket` at that path.
   - The 2.1.319 binary builds other WebSocket URLs at run time: it holds
-    `/v2/session_ingress/mcp/ws/` and several conversions of an `http` URL to `ws`. Which hosts
-    and features those serve is not read.
+    `/v2/session_ingress/mcp/ws/` and several conversions of an `http` URL to `ws`. The
+    measurement's session sent no other `Upgrade` to `api.anthropic.com`.
   - Documented: `HTTPS_PROXY`; a custom CA through `NODE_EXTRA_CA_CERTS`, which the launcher sets
     (`AgentSandboxLauncher.scala`); `CLAUDE_CODE_CERT_STORE`, which selects the bundled Mozilla set,
     the OS store or both (https://code.claude.com/docs/en/network-config). A streamed response is
     `text/event-stream` (the gateway protocol page, "Response headers").
-  - Measure:
-    - a session with tool calls, a subagent and a compaction;
-    - `/voice` under `--audio=mic`, through the grant;
-    - every other `Upgrade` the client sends to `api.anthropic.com`, each a `deny` line with its
-      path, and the feature that sent it;
-    - `claude -p`, as `ko-review` runs the reviewer (`ko-review.md`).
+  - Measured on 2026-11-13, and inspected by default: `defaults/model-provider/anthropic` holds
+    the record. The session had tool calls, a subagent, a compaction, WebFetch, `/voice` under
+    `--audio=mic` and a sign-in, and `claude -p` ran as `ko-review` runs the reviewer.
 - `codex` 0.166.0, `api.openai.com` and `chatgpt.com`.
   - The defaults give these hosts no `upgrade=websocket` line while the HTTP fallback below
     works: with the line, Codex's model traffic would move into the WebSocket, and the log would
@@ -508,17 +505,18 @@ bother to, and prove nothing.
 - [x] The grant's commit: a WebSocket at a path that a workspace's line names is relayed and
   logged with its bytes, and every other `Upgrade` is refused. `design.md`, SECURITY.md and
   `egress-proxy.md` change in that commit.
-- [ ] Claude Code's `/voice` works with `api.anthropic.com` inspected, and its handshake and
+- [x] Claude Code's `/voice` works with `api.anthropic.com` inspected, and its handshake and
   `websocket-end` lines are in the log.
-- [ ] The first agent's measurement is recorded, and its model hosts are inspected. A session's log
+- [x] The first agent's measurement is recorded, and its model hosts are inspected. A session's log
   shows an `allow` line per model request sent over HTTP, with the fields.
-- [ ] A `curl` upload to that model host from inside the session shows as a line with
+- [x] A `curl` upload to that model host from inside the session shows as a line with
   `client=curl`, its size, and a second credential index. The same upload, chunked and cut short,
   shows as an `incomplete` line with its size.
-- [ ] The workspace override restores the tunnel, and the banner's counts say so.
+- [x] The workspace override restores the tunnel, and the banner's counts say so.
 - [ ] Each other agent's model hosts are inspected, or stay tunnels with the failing rule recorded,
   in one commit per agent.
-- [ ] The other documents above change in the same commit as the first agent's change.
+- [ ] Each document above changes in the commit of the agent it names, and the others in the first
+  agent's commit.
 
 ## Deliberate exclusions
 

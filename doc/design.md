@@ -504,22 +504,21 @@ provider drops the HTTP path.
 
 ### No inspecting every allowed host
 
-The credential broker needs the proxy to terminate TLS at a host before it can substitute or
-refuse a credential there. That is no reason to terminate TLS everywhere and drop `tunnel`. The
-broker gets termination per launch, at its own targets (`plan-provider-credential-proxy.md`,
-"Brokered provider traffic"; `TODO.md`, "Credential brokering", for the refusal). Terminating TLS
-everywhere would have these costs, the most serious first:
+The defaults inspect an agent's model hosts once the agent's client passes a measurement over an
+inspected connection (`plan-tls-inspect-agents.md`, "Measurement"). That is no reason to terminate
+TLS everywhere and drop `tunnel`. Terminating TLS everywhere would have these costs, the most
+serious first:
 
 - It would break the agents whose clients an inspected connection cannot carry.
   - A certificate-pinned client cannot be terminated at all.
   - An HTTP/2-only client needs a relay that the proxy lacks, and a WebSocket client needs a line
     for each path it streams at.
-  - Which installed agents these are is not yet measured ("Brokered provider traffic" lists the
-    clients and the measurement).
-- It would take away the per-launch consent to the proxy seeing the conversation and provider
-  tokens in plaintext.
-  - The provider plan requires the launch banner to state that consent (its use case 5 and
-    guarantee 12).
+  - The measurement finds these clients one agent at a time. Each provider's defaults file records
+    the result beside its lines.
+- It would take away a workspace's way to keep a host out of the proxy's plaintext view: a
+  `tunnel` line of its own, or a defaults tunnel restored under `deny defaults`.
+  - For a measured model host, the defaults accept that view without a per-launch consent
+    (`plan-tls-inspect-agents.md`, "Outcome").
   - SECURITY.md has the exposure ("Not defended", "What is inside TLS").
 - It would gain nothing at two kinds of hosts, while costing every request a handshake (SECURITY.md,
   "What is inside TLS"):
@@ -528,8 +527,8 @@ everywhere would have these costs, the most serious first:
   - a signed cloud API, where no header holds a value to substitute ("Credential brokering at the
     egress proxy").
 
-Revisit per agent, once one brokered turn through its model host is measured. Making that agent's
-model hosts inspected by default is a separate decision: it changes the privacy boundary above.
+Revisit per agent, with that agent's measurement (`plan-tls-inspect-agents.md`, "The agents, in
+order").
 
 ### No HTTP query endpoint on the proxy
 
@@ -680,6 +679,9 @@ The binding:
   - A binding the proxy cannot substitute is refused at launch, and again at the proxy's start.
   - Otherwise the binding would show as a 401 inside the sandbox, with nothing in the log to
     explain it.
+  - A model host that the defaults inspect takes a binding, such as
+    `ANTHROPIC_API_KEY@api.anthropic.com:x-api-key`, with a fixed header and no lifecycle. Claude
+    Code sends that key in `X-Api-Key`, not in `Authorization`, which a binding defaults to.
 - The launcher and the proxy compile one grammar object (`CredentialGrammar`), rather than the
   launcher asking the proxy's dry run:
   - The dry run mounts nothing by design.
@@ -710,17 +712,14 @@ Left out:
   - Broader rewriters recurrently fail by breaking applications that carry tokens of their own
     (docker/sbx-releases #8).
   - A declared header or one named parameter is the durable form.
-- Brokering at a tunnel host, where no substitution can happen, and with it the agents' own logins:
-  - Claude Code's endpoints are tunnels by design, since model traffic has to write.
-    - Its login is an OAuth pair with local expiry bookkeeping and a refresh exchange. The proxy
-      would mirror that lifecycle per release.
+- Brokering at a tunnel host, where no substitution can happen.
+  - The launcher refuses such a binding: `OPENAI_API_KEY@api.openai.com`, or
+    `AWS_BEARER_TOKEN_BEDROCK` at a workspace's `bedrock-runtime.<region>.amazonaws.com`.
+- Brokering the agents' own logins:
+  - Claude Code's login is an OAuth pair with local expiry bookkeeping and a refresh exchange. The
+    proxy would mirror that lifecycle per release.
     - A stolen model token is a nuisance to the account holder. A stolen forge token reaches every
       private repository. Hiding the model token does not pay for a per-release contract.
-  - `ANTHROPIC_API_KEY@api.anthropic.com` would fit, with a fixed header and no lifecycle.
-    - The launcher refuses that binding because the host is a tunnel. The launcher refuses
-      `AWS_BEARER_TOKEN_BEDROCK` at a workspace's `bedrock-runtime.<region>.amazonaws.com` for the
-      same reason.
-    - If model endpoints are ever inspected for another reason, the binding works unchanged.
   - The Codex CLI trusts the CA in `SSL_CERT_FILE`. The CLI's built-in provider opens a websocket
     first, which the proxy refuses on an inspected connection.
     - Measured with codex-cli 0.155.1 on an API key, against a local server that refuses the

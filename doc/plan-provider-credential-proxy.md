@@ -57,7 +57,9 @@ Each fact is specified in one place:
 4. Select one credential mechanism for a model provider, so that no unrelated stored service or
    workspace file can change that choice.
 5. Broker an API-key or OAuth-backed model provider only when the installed client accepts the
-   launch CA and the host explicitly accepts, for that run, that the proxy sees plaintext.
+   launch CA. At a provider host that is otherwise a tunnel, the host also explicitly accepts, for
+   that run, that the proxy sees plaintext. A model host that the defaults inspect is read in
+   plaintext without a selected credential (`plan-tls-inspect-agents.md`, "Outcome").
 
 Registry login, SSH agent forwarding and cloud request re-signing are different protocols. This
 plan does not require them.
@@ -89,9 +91,10 @@ plan does not require them.
     with a credential-unavailable response and no uncredentialed retry.
 11. Selecting one service cannot change another service's mechanism, adapter, source, targets,
     placeholder or cache generation.
-12. The launch banner and the `--egress-effective` output state TLS termination at an otherwise
-    opaque provider endpoint. Without a selected credential, the endpoint keeps its configured
-    opaque behavior.
+12. The launch banner and the `--egress-effective` output state TLS termination at a provider
+    endpoint that is otherwise a tunnel. Without a selected credential, that endpoint keeps its
+    opaque behavior. An inspected model host needs no such line, since the ruleset shows its
+    treatment.
 13. The proxy never sends a real credential before it validates the origin's TLS identity. The proxy
     never forwards the credential across an origin redirect, unless the new target independently
     matches the service.
@@ -546,7 +549,8 @@ image:
 ### TLS and clients
 
 - Test inspected and configured-tunnel targets with no credential, with a selected credential and
-  with a denied overlay. With no selection, opaque behavior stays byte-for-byte the same.
+  with a denied overlay. With no selection, a tunnel host's opaque behavior stays byte-for-byte the
+  same.
 - Prove that the origin identity, SNI and public-address checks precede injection, and stay on the
   original hostname across every target and upstream-proxy mode.
 - Exercise request and response framing, long server-sent-event streams, reconnects, cancellation,
