@@ -1928,7 +1928,7 @@ commands execute outside the container, so the profile provides their confinemen
     poisoned artifact to wherever you run the result.
     - Run `sbt shutdown` first before building anything you run outside the sandbox.
     - A build can refuse such a task in that server (`doc/run-on-host.md`, "Telling a host command
-      apart in a build"). This repository's `dist` refuses there.
+      apart in a build"). This repository's `dist` and `assembly` refuse there.
     - `doc/TODO.md`, "A terminal's sbt in a launch's server", tracks a fix in the launcher.
   - The build output in the workspace has no such separation. A session writes `target/` as it
     writes the sources, and `git diff` shows neither the class files nor the jars there. Your own

@@ -20,6 +20,8 @@
 */
 
 import agentsandbox.launcher.AgentEvents.*
+import agentsandbox.launcher.JsonText
+import agentsandbox.launcher.JsonText.Json
 
 import java.io.File
 import java.lang.ProcessBuilder.Redirect
@@ -58,7 +60,7 @@ object MeasureAgents:
 
   /** Runs an agent's turn with stdin from /dev/null and each output stream to a file, and gives its events. codex exec
     * reads stdin when it is not a terminal. */
-  private def turn(work: Path, name: String, command: String*): Vector[agentsandbox.launcher.JsonText.Json] =
+  private def turn(work: Path, name: String, command: String*): Vector[Json] =
     val (out, err) = (work.resolve(s"$name.jsonl"), work.resolve(s"$name.err"))
     val process = ProcessBuilder(command*).directory(work.toFile).redirectInput(NoInput)
       .redirectOutput(out.toFile).redirectError(err.toFile).start()
@@ -76,6 +78,31 @@ object MeasureAgents:
 
   private def tail(file: Path): String =
     if Files.isRegularFile(file) then Files.readString(file, UTF_8).takeRight(300).replace('\n', ' ') else ""
+
+  private def lacked(lacks: Vector[String]): Option[String] =
+    Option.when(lacks.nonEmpty)(s"the run lacked ${lacks.mkString(", ")}")
+
+  /** Ends the mode of the first turn that `turn` ran as `name`. `problem` judges only a run that succeeded. */
+  private def finishFirstTurn(work: Path, name: String, succeeded: Boolean, outcome: String)(
+    problem: => Option[String],
+  ): Unit =
+    def seen = s"${tail(work.resolve(s"$name.err"))} ${tail(work.resolve(s"$name.jsonl"))}"
+    finish(if succeeded then problem else Some(s"no successful $outcome; see $seen"))
+
+  /** Runs the turn that resumes the first turn's session, and ends its mode. `sessionWord` is the agent's own word for
+    * a session. A first turn that named no session leaves nothing to resume, and the mode fails. */
+  private def resumedTurn(
+    work: Path,
+    name: String,
+    sessionWord: String,
+    id: Option[String],
+    ok: Vector[Json] => Boolean,
+  )(command: String => Seq[String]): Unit =
+    val run = id.toVector.flatMap(known => turn(work, name, command(known)*))
+    finish(Option.unless(ok(run))(
+      s"no successful resumed turn with a shell call${id.fold("")(known => s" of $sessionWord $known")}; see " +
+        tail(work.resolve(s"$name.err")),
+    ))
 
   /** A foreign credential's upload to a model host: whole, then chunked and cut short. Each shows on the host as a
     * line with client=curl and a credential index of its own, and the cut one as an incomplete chunked-end line. */
@@ -119,12 +146,7 @@ object MeasureAgents:
         "notes directory with its own Bash tool. Answer in one line with the line count and the file names. Do not " +
         "modify anything.",
     )
-    if !claudeSucceeded(run) then
-      val seen = s"${tail(work.resolve("claude.err"))} ${tail(work.resolve("claude.jsonl"))}"
-      finish(Some(s"no successful result; see $seen"))
-    else
-      val lacks = claudeLacks(run)
-      finish(Option.when(lacks.nonEmpty)(s"the run lacked ${lacks.mkString(", ")}"))
+    finishFirstTurn(work, "claude", claudeSucceeded(run), "result")(lacked(claudeLacks(run)))
     upload(work, "api.anthropic.com", "https://api.anthropic.com/v1/files",
       "-H", "x-api-key: sk-ant-api03-measurement-not-a-key", "-H", "anthropic-version: 2023-06-01",
       "-H", "Content-Type: text/plain")
@@ -168,22 +190,13 @@ object MeasureAgents:
       "Use the shell to run 'wc -l words.txt'. Then start one subagent with your invoke_subagent tool, and have it " +
         "list the notes directory with its own shell tool. Answer in one line with the line count and the file " +
         "names. Do not modify anything.")*)
-    if !agySucceeded(first) then
-      val seen = s"${tail(work.resolve("agy.err"))} ${tail(work.resolve("agy.jsonl"))}"
-      finish(Some(s"no successful result; see $seen"))
-    else
-      val lacks = agyLacks(first)
-      finish(Option.when(lacks.nonEmpty)(s"the run lacked ${lacks.mkString(", ")}"))
-    val conversation = agyConversation(first)
+    finishFirstTurn(work, "agy", agySucceeded(first), "result")(lacked(agyLacks(first)))
     start("agy --conversation -p")
-    val resumed = conversation.toVector.flatMap(id =>
-      turn(work, "agy-resume", (Vector("agy", "--conversation", id) ++ prompt.drop(1) :+
-        "Now run 'cat words.txt' in the shell and answer with its last line. Do not modify anything.")*),
-    )
-    finish(Option.unless(agySucceeded(resumed) && agyRanShell(resumed))(
-      s"no successful resumed turn with a shell call${conversation.fold("")(id => s" of conversation $id")}; see " +
-        tail(work.resolve("agy-resume.err")),
-    ))
+    resumedTurn(
+      work, "agy-resume", "conversation", agyConversation(first), run => agySucceeded(run) && agyRanShell(run),
+    ): id =>
+      Vector("agy", "--conversation", id) ++ prompt.drop(1) :+
+        "Now run 'cat words.txt' in the shell and answer with its last line. Do not modify anything."
     // The consumer accounts' host, which the measured sign-in uses.
     upload(work, "daily-cloudcode-pa.googleapis.com",
       "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent",
@@ -193,27 +206,16 @@ object MeasureAgents:
   // (https://kiro.dev/docs/cli/headless/), and defaults/model-provider/aws has no line for V2's model host.
   private def measureKiro(work: Path): Unit =
     val chat = Vector("kiro-cli", "chat", "--no-interactive", "--trust-all-tools", "--output-format", "stream-json")
-    def ran(run: Vector[agentsandbox.launcher.JsonText.Json]) = kiroSucceeded(run) && kiroEngine(run).contains("v3")
+    def ran(run: Vector[Json]) = kiroSucceeded(run) && kiroEngine(run).contains("v3")
     start("kiro-cli chat --v3 with a shell call and a subagent")
     val first = turn(work, "kiro", (chat ++ Vector("--v3",
       "Use the shell to run 'wc -l words.txt'. Then start one subagent, and have it list the notes directory with " +
         "its own shell tool. Answer in one line with the line count and the file names. Do not modify anything."))*)
-    if !ran(first) then
-      val seen = s"${tail(work.resolve("kiro.err"))} ${tail(work.resolve("kiro.jsonl"))}"
-      finish(Some(s"no successful V3 run; see $seen"))
-    else
-      val lacks = kiroLacks(first)
-      finish(Option.when(lacks.nonEmpty)(s"the run lacked ${lacks.mkString(", ")}"))
-    val session = kiroSession(first)
+    finishFirstTurn(work, "kiro", ran(first), "V3 run")(lacked(kiroLacks(first)))
     start("kiro-cli chat --v3 --resume-id")
-    val resumed = session.toVector.flatMap(id =>
-      turn(work, "kiro-resume", (chat ++ Vector("--v3", "--resume-id", id,
-        "Now run 'cat words.txt' in the shell and answer with its last line. Do not modify anything."))*),
-    )
-    finish(Option.unless(ran(resumed) && kiroRanShell(resumed))(
-      s"no successful resumed turn with a shell call${session.fold("")(id => s" of session $id")}; see " +
-        tail(work.resolve("kiro-resume.err")),
-    ))
+    resumedTurn(work, "kiro-resume", "session", kiroSession(first), run => ran(run) && kiroRanShell(run)): id =>
+      chat ++ Vector("--v3", "--resume-id", id,
+        "Now run 'cat words.txt' in the shell and answer with its last line. Do not modify anything.")
     // The model path, which V3 sends every model call to.
     upload(work, "runtime.us-east-1.kiro.dev", "https://runtime.us-east-1.kiro.dev/v1/responses",
       "-H", "Authorization: Bearer aoa-measurement-not-a-token", "-H", "Content-Type: application/json")
@@ -227,22 +229,13 @@ object MeasureAgents:
       "Use the shell to run 'wc -l words.txt'. Then start one general-purpose subagent with your task tool, and " +
         "have it list the notes directory with its own shell tool. Answer in one line with the line count and the " +
         "file names. Do not modify anything.")*)
-    if !copilotSucceeded(first) then
-      val seen = s"${tail(work.resolve("copilot.err"))} ${tail(work.resolve("copilot.jsonl"))}"
-      finish(Some(s"no successful result; see $seen"))
-    else
-      val lacks = copilotLacks(first)
-      finish(Option.when(lacks.nonEmpty)(s"the run lacked ${lacks.mkString(", ")}"))
-    val session = copilotSession(first)
+    finishFirstTurn(work, "copilot", copilotSucceeded(first), "result")(lacked(copilotLacks(first)))
     start("copilot --resume -p")
-    val resumed = session.toVector.flatMap(id =>
-      turn(work, "copilot-resume", (Vector("copilot", s"--resume=$id") ++ prompt.drop(1) :+
-        "Now run 'cat words.txt' in the shell and answer with its last line. Do not modify anything.")*),
-    )
-    finish(Option.unless(copilotSucceeded(resumed) && copilotRanShell(resumed))(
-      s"no successful resumed turn with a shell call${session.fold("")(id => s" of session $id")}; see " +
-        tail(work.resolve("copilot-resume.err")),
-    ))
+    resumedTurn(
+      work, "copilot-resume", "session", copilotSession(first), run => copilotSucceeded(run) && copilotRanShell(run),
+    ): id =>
+      Vector("copilot", s"--resume=$id") ++ prompt.drop(1) :+
+        "Now run 'cat words.txt' in the shell and answer with its last line. Do not modify anything."
     start("copilot -p with the GitHub MCP server")
     val mcp = turn(work, "mcp", (prompt :+
       "Use your GitHub MCP tools, not the shell, to read the title of issue 1 in the repository github/copilot-cli. " +
@@ -261,13 +254,13 @@ object MeasureAgents:
 
   /** A subagent's session as `opencode export` prints it, with its output and errors kept beside the turns' files, or
     * why the export gave none. */
-  private def opencodeExport(work: Path, session: String): Either[String, agentsandbox.launcher.JsonText.Json] =
+  private def opencodeExport(work: Path, session: String): Either[String, Json] =
     val (out, err) = (work.resolve(s"export-$session.json"), work.resolve(s"export-$session.err"))
     val process = ProcessBuilder("opencode", "export", session).redirectInput(NoInput)
       .redirectOutput(out.toFile).redirectError(err.toFile).start()
     if !process.waitFor(TurnTimeoutSeconds, TimeUnit.SECONDS) then process.destroyForcibly().waitFor()
     if process.exitValue != 0 then Left(s"opencode export $session exited ${process.exitValue}; see ${tail(err)}")
-    else agentsandbox.launcher.JsonText.parse(Files.readString(out, UTF_8))
+    else JsonText.parse(Files.readString(out, UTF_8))
       .left.map(why => s"opencode export $session printed no JSON ($why); see $out")
 
   private def measureOpencode(work: Path): Unit =
@@ -277,27 +270,18 @@ object MeasureAgents:
       "Use your bash tool to run 'wc -l words.txt'. Then start one subagent with your task tool, and have it list " +
         "the notes directory with its own bash tool. Answer in one line with the line count and the file names. Do " +
         "not modify anything.")*)
-    if !opencodeSucceeded(first) then
-      val seen = s"${tail(work.resolve("opencode.err"))} ${tail(work.resolve("opencode.jsonl"))}"
-      finish(Some(s"no successful turn; see $seen"))
-    else
+    finishFirstTurn(work, "opencode", opencodeSucceeded(first), "turn"):
       val exports = opencodeSubagentSessions(first).map(opencodeExport(work, _))
       val unexported = exports.collect { case Left(why) => why }
-      val lacks = opencodeLacks(first, exports.collect { case Right(session) => session })
-      finish(
-        if unexported.nonEmpty then Some(unexported.mkString("; "))
-        else Option.when(lacks.nonEmpty)(s"the run lacked ${lacks.mkString(", ")}"),
-      )
-    val session = opencodeSession(first)
+      if unexported.nonEmpty then Some(unexported.mkString("; "))
+      else lacked(opencodeLacks(first, exports.collect { case Right(session) => session }))
     start("opencode run --session")
-    val resumed = session.toVector.flatMap(id =>
-      turn(work, "opencode-resume", (prompt ++ Vector("--session", id,
-        "Now run 'cat words.txt' with your bash tool and answer with its last line. Do not modify anything."))*),
-    )
-    finish(Option.unless(opencodeSucceeded(resumed) && opencodeRanShell(resumed))(
-      s"no successful resumed turn with a shell call${session.fold("")(id => s" of session $id")}; see " +
-        tail(work.resolve("opencode-resume.err")),
-    ))
+    resumedTurn(
+      work, "opencode-resume", "session", opencodeSession(first),
+      run => opencodeSucceeded(run) && opencodeRanShell(run),
+    ): id =>
+      prompt ++ Vector("--session", id,
+        "Now run 'cat words.txt' with your bash tool and answer with its last line. Do not modify anything.")
     // The ChatGPT sign-in's model path, which no other agent's upload reaches.
     upload(work, "chatgpt.com", "https://chatgpt.com/backend-api/codex/responses",
       "-H", "Authorization: Bearer measurement-not-a-token", "-H", "Content-Type: application/json")

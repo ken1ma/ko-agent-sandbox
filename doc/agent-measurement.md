@@ -85,14 +85,10 @@ The reader (`MeasurementReport.scala`):
   `refused <host> <method> [</path>]` and `error <host> <reason prefix>`. A `<name>` stands for one
   segment, part of one, or one label of a host.
 
-`sbt "testWithPodman *AgentMeasurementTest"` runs the driver and the reader per agent:
-
-- It launches this workspace, not a scratch one, so the session has the workspace's volume and the
-  sign-ins there. `--persistent-volume` refuses the generated volume names.
-- A test skips when its agent is not signed in in that volume. It fails on a turn that did not
-  complete, on a finding, or when a probe's whole or cut upload is missing from the log.
-- The turns run on the signed-in accounts.
-- Each test writes the driver's output and the report to `log/measurement-report-<agent>.log`.
+`sbt "testWithPodman *AgentMeasurementTest"` runs the driver and the reader per agent. A test
+fails on a turn that did not complete, on a finding, or when a probe's whole or cut upload is
+missing from the log. The suite's header says which session and accounts the turns run on, when a
+test skips, and where each report goes (`AgentMeasurementTest.scala`).
 
 ## Measurement
 
@@ -186,9 +182,7 @@ The agents are measured in the README's order.
     the OS store or both (https://code.claude.com/docs/en/network-config). A streamed response is
     `text/event-stream` (the gateway protocol page, "Response headers").
   - Measured on 2026-11-13 with 2.1.319 and 2.1.323, and inspected by default with
-    `platform.claude.com`: `defaults/model-provider/anthropic` holds the record. The sessions had
-    tool calls, a subagent, a compaction, WebFetch, `/voice` under `--audio=mic`, `/logout`, a
-    sign-in and a token refresh, and `claude -p` ran as `ko-review` runs the reviewer.
+    `platform.claude.com`: `defaults/model-provider/anthropic` holds the record.
 - `codex` 0.169.0, `api.openai.com` and `chatgpt.com`.
   - The defaults give these hosts no `upgrade=websocket` line while the HTTP fallback below
     works: with the line, Codex's model traffic would move into the WebSocket, and the log would
@@ -219,9 +213,7 @@ The agents are measured in the README's order.
     (`container/ko-agent-sandbox/codex/config.toml`).
   - Codex passes with refused upgrades when the first turn completes over inspected HTTP, and no
     later turn in the same process tries an upgrade again.
-    - The number of refusals is recorded, not required. In each new process, `codex exec resume`
-      and each subagent included, 0.169.0 sends one to `chatgpt.com`, which answers `426`, and
-      seven over about seven seconds to `api.openai.com`, which answers `403`.
+    - The number of refusals is recorded, not required.
     - When retries end the turn, or a later turn tries an upgrade again, the hosts are inspected
       with `upgrade=websocket` at the path of Codex's WebSocket, which the refused upgrades' `deny`
       lines name. Codex is then measured again with that line, and passes on the WebSocket
@@ -246,13 +238,8 @@ The agents are measured in the README's order.
       `streamGenerateContent`, directly (#875, open).
   - Measured on 2026-11-14 with 1.5.8 under a consumer sign-in, and inspected by default with
     `cloudcode-pa.googleapis.com` and `oauth2.googleapis.com`: `defaults/model-provider/google`
-    holds the record. The client trusted the launch CA, and every request went over HTTP/1.1.
-    - Every model call went to `daily-cloudcode-pa.googleapis.com`, as `POST /v1internal:<method>`;
-      `streamGenerateContent` sends a chunked body.
-    - The TUI, with a compaction, a sign-out and a sign-in, passed. The sign-in sent
-      `accounts.google.com` nothing, so the defaults have no line for that host.
-    - In a repository, the TUI sends `github.com` a `HEAD` of the repository's path. Under
-      `deny-unless-model` the proxy refuses it, and the turn completes.
+    holds the record.
+    - Every model call went to `daily-cloudcode-pa.googleapis.com`, as `POST /v1internal:<method>`.
   - The API-key and Business modes' hosts have no line, and a workspace adds them as tunnels
     (`model-provider/google`). Still to measure: the GCP-licensed accounts on `cloudcode-pa`, the
     Business sign-in, which waits for such an account, and where a `GEMINI_API_KEY` session sends
@@ -274,19 +261,14 @@ The agents are measured in the README's order.
       (#9860, closed as completed).
   - Measured on 2026-11-14 with 3.3.0 under a Google sign-in, and inspected by default with the
     sign-in hosts: `defaults/model-provider/aws` holds the record.
-    - Every mode ran the V3 engine, in a Node child that kept the proxy and CA variables. Every
-      client trusted the launch CA, and every request went over HTTP/1.1.
+    - Every mode ran the V3 engine, in a Node child that kept the proxy and CA variables.
     - Every request to `runtime` and `management` carried `cred=`: a bearer token, not a SigV4
       signature.
-    - V3's model calls are `POST /v1/responses` on `runtime`. Its other calls are `POST /`, which
-      names its operation in a header, so their lines do not tell the operations apart.
+    - V3's model calls are `POST /v1/responses` on `runtime`, and its other calls are `POST /`.
     - Under `deny-unless-model`, which admits the provider file alone, a TUI turn completed.
-    - The device-flow sign-in, a logout and a refresh at the token's expiry passed on the inspected
-      sign-in host. A refresh forced before the expiry is answered `401`, and kiro-cli signs out.
   - The V2 engine, kiro-cli's own `acp` child, sends its model calls to
     `q.us-east-1.amazonaws.com`, and its turns completed under inspection. Kiro removes V2 in
     January, so `q` has no line, and a workspace that runs V2 adds it (README, `kiro-cli`).
-  - Still to measure: `eu-central-1`, and the Builder ID, Identity Center and GitHub sign-ins.
 - `copilot` 1.0.111, `api.githubcopilot.com` and the three plan hosts.
   - Documented: `proxyUrl` in the CLI's configuration reference, overridden by `HTTP_PROXY` or
     `HTTPS_PROXY`
@@ -316,17 +298,6 @@ The agents are measured in the README's order.
     request went over HTTP/1.1 with `COPILOT_ENABLE_HTTP2` unset.
     - The model path is `POST /responses` on `api.individual.githubcopilot.com`, and the GitHub MCP
       server is `POST /mcp/readonly` there.
-    - Copilot tries a WebSocket at `/responses` once per turn, and sends the turn over HTTP after
-      the `403`. The defaults give it no `upgrade=websocket` line, for Codex's reason above.
-    - Every request carried the same credential index on the plan host and on `api.github.com`. No
-      mode called `/copilot_internal/v2/token`.
-  - The interactive TUI, with a compaction and `/login`, passed. `/logout` fails in the sandbox
-    before any request: the client deletes the token through the Secret Service, which the
-    container lacks.
-  - Under `deny-unless-model`, every message failed when the provider file granted only the
-    token exchange on `api.github.com`. So the file grants the three `/copilot_internal/` reads
-    that the client makes at every start, and a turn then completed. The TUI's repository reads
-    stay refused under that profile.
   - Still to measure: session sync, which waits for an account whose organization allows it, and
     the business and enterprise hosts, which wait for an account on those plans.
 - `opencode` 1.19.5, the image's on 2026-11-14. OpenCode has no provider file: a launch names the
@@ -334,13 +305,9 @@ The agents are measured in the README's order.
   - Documented: `HTTPS_PROXY`, `NO_PROXY`, and a custom CA through `NODE_EXTRA_CA_CERTS`, which
     the launcher sets (https://opencode.ai/docs/network/).
   - Measured on 2026-11-14 under a ChatGPT sign-in: `defaults/model-provider/openai` holds the
-    record beside Codex's. Every request went to a path that Codex's record lists, and OpenCode
-    tried no WebSocket.
-    - The headless sign-in, the TUI with a compaction, and a token refresh forced by an earlier
-      stored expiry passed. Under `deny-unless-model`, a TUI turn completed.
-  - GitHub Copilot: the device sign-in passed, but no turn ran. OpenCode lists only the models that
-    Copilot's `/models` marks for its model picker, and the account's answer marked none
-    (`defaults/model-provider/github`).
+    record beside Codex's.
+  - GitHub Copilot: the device sign-in passed, but no turn ran. `defaults/model-provider/github`
+    records why.
   - Still to measure: a Copilot turn, which waits for an account whose answer marks a model, and
     the Anthropic and Google API keys, which wait for keys. OpenCode's Google provider posts to
     `generativelanguage.googleapis.com`, which the defaults refuse (README, `opencode`).

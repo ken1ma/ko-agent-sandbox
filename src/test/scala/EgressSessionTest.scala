@@ -98,12 +98,13 @@ class EgressSessionTest extends munit.FunSuite:
 
   private val OriginAttempts = 6
 
-  private def withSession(rule: Option[String])(body: Session => Unit): Unit =
+  private def withSession(rule: Option[String], providers: Option[String] = None)(body: Session => Unit): Unit =
     val workspace = scratchWorkspace()
     var live: Option[Session] = None
     try
       ruleFile(workspace, rule)
-      val session = launch(workspace, workspace.resolve("session.log"))
+      val options = Vector("--egress=deny-unless-allowed") ++ providers.map(names => s"--model-provider=$names")
+      val session = launchWith(workspace, workspace.resolve("session.log"), options)
       live = Some(session)
       body(session)
     finally
@@ -320,17 +321,7 @@ class EgressSessionTest extends munit.FunSuite:
       exec(session, "openssl", "x509", "-noout", "-subject", "-in", "/etc/ko-agent-sandbox/egress-proxy-ca.crt")
         .text.stripPrefix("subject=").trim
     def launched(rule: Option[String])(body: Session => Unit): Unit =
-      val workspace = scratchWorkspace()
-      var live: Option[Session] = None
-      try
-        ruleFile(workspace, rule)
-        val options = Vector("--egress=deny-unless-allowed", "--model-provider=anthropic,openai,google,aws,github")
-        val session = launchWith(workspace, workspace.resolve("session.log"), options)
-        live = Some(session)
-        body(session)
-      finally
-        live.foreach(stop)
-        discard(workspace)
+      withSession(rule, providers = Some("anthropic,openai,google,aws,github"))(body)
 
     // The leaf names the host through the launcher's reading of the ruleset (EgressRules.inspectedHostsOf).
     launched(None): session =>

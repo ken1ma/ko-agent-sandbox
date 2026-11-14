@@ -32,6 +32,19 @@ object AgentEvents:
   private val True = Json.Bool(true)
   private val Zero = Json.Num("0")
 
+  /** What a first turn lacks of its three parts, each named with the agent's word for its shell tool. */
+  private def lacking(
+    shell: Boolean,
+    subagent: Boolean,
+    subagentShell: Boolean,
+    tool: String = "shell",
+  ): Vector[String] =
+    Vector(
+      Option.unless(shell)(s"a $tool call"),
+      Option.unless(subagent)("a subagent"),
+      Option.unless(subagentShell)(s"the subagent's $tool call"),
+    ).flatten
+
   /** Whether `claude -p --output-format stream-json` ended in success. A run can exit 0 with the error in the result
     * (anthropics/claude-code#79500), so the result event decides. */
   def claudeSucceeded(run: Vector[Json]): Boolean =
@@ -55,14 +68,9 @@ object AgentEvents:
     val done = calls.filter(_.id.exists(succeeded))
     val agents = done.filter(_.name.exists(Set("Agent", "Task"))).flatMap(_.id).toSet
     val denied = run.filter(_.is("type", "result")).flatMap(_.items("permission_denials"))
-    Vector(
-      Option.when(denied.nonEmpty)("no denied call"),
-      Option.unless(done.exists(call => call.name.contains("Bash") && call.parent.isEmpty))("a Bash call"),
-      Option.when(agents.isEmpty)("a subagent"),
-      Option.unless(done.exists(call => call.name.contains("Bash") && call.parent.exists(agents)))(
-        "the subagent's Bash call",
-      ),
-    ).flatten
+    def ranBash(by: ToolCall => Boolean) = done.exists(call => call.name.contains("Bash") && by(call))
+    Option.when(denied.nonEmpty)("no denied call").toVector ++
+      lacking(ranBash(_.parent.isEmpty), agents.nonEmpty, ranBash(_.parent.exists(agents)), tool = "Bash")
 
   def codexCompleted(run: Vector[Json]): Boolean = run.exists(_.is("type", "turn.completed"))
 
@@ -131,11 +139,9 @@ object AgentEvents:
   /** What the run lacks of a shell call, a subagent, and that subagent's own shell call. */
   def agyLacks(run: Vector[Json]): Vector[String] =
     val transcripts = agySubagentTranscripts(run)
-    Vector(
-      Option.unless(agyRanShell(run))("a shell call"),
-      Option.when(transcripts.isEmpty)("a subagent"),
-      Option.unless(transcripts.exists(path => agyTranscriptRanShell(events(path))))("the subagent's shell call"),
-    ).flatten
+    lacking(
+      agyRanShell(run), transcripts.nonEmpty, transcripts.exists(path => agyTranscriptRanShell(events(path))),
+    )
 
   def agyConversation(run: Vector[Json]): Option[String] =
     run.flatMap(_.at("result")).flatMap(_.text("conversation_id")).headOption
@@ -175,11 +181,7 @@ object AgentEvents:
     val agents = kiroUpdates(run, "tool_call_update").filter(update =>
       update.is("status", "completed") && update.text("_meta", "kiro", "kind").contains("agent-subtask"),
     ).flatMap(kiroSubtask).toSet
-    Vector(
-      Option.unless(shells.contains(None))("a shell call"),
-      Option.when(agents.isEmpty)("a subagent"),
-      Option.unless(shells.exists(_.exists(agents)))("the subagent's shell call"),
-    ).flatten
+    lacking(shells.contains(None), agents.nonEmpty, shells.exists(_.exists(agents)))
 
   /** Whether `copilot -p --output-format json` ended in success: its result event's exit code. A subagent's failed
     * model call leaves a session.error in a run that still succeeds. */
@@ -195,11 +197,10 @@ object AgentEvents:
   def copilotLacks(run: Vector[Json]): Vector[String] =
     val shells = copilotShellCalls(run)
     val agents = run.filter(_.is("type", "subagent.completed")).flatMap(_.text("data", "toolCallId")).toSet
-    Vector(
-      Option.unless(shells.exists(_.at("parentToolCallId").isEmpty))("a shell call"),
-      Option.when(agents.isEmpty)("a subagent"),
-      Option.unless(shells.exists(_.text("parentToolCallId").exists(agents)))("the subagent's shell call"),
-    ).flatten
+    lacking(
+      shells.exists(_.at("parentToolCallId").isEmpty), agents.nonEmpty,
+      shells.exists(_.text("parentToolCallId").exists(agents)),
+    )
 
   def copilotRanShell(run: Vector[Json]): Boolean = copilotShellCalls(run).nonEmpty
 
@@ -244,10 +245,7 @@ object AgentEvents:
   /** What the run lacks of a shell call, a subagent that completed, and that subagent's own shell call, read from the
     * subagents' exported sessions. */
   def opencodeLacks(run: Vector[Json], subagentExports: Vector[Json]): Vector[String] =
-    Vector(
-      Option.unless(opencodeRanShell(run))("a shell call"),
-      Option.when(opencodeSubagentSessions(run).isEmpty)("a subagent"),
-      Option.unless(subagentExports.exists(session =>
-        opencodePartsRanShell(session.items("messages").flatMap(_.items("parts"))),
-      ))("the subagent's shell call"),
-    ).flatten
+    lacking(
+      opencodeRanShell(run), opencodeSubagentSessions(run).nonEmpty,
+      subagentExports.exists(session => opencodePartsRanShell(session.items("messages").flatMap(_.items("parts")))),
+    )

@@ -13,6 +13,9 @@ import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path, Paths}
 import java.util.regex.Pattern
 
+import scala.jdk.CollectionConverters.*
+import scala.util.Using
+
 import agentsandbox.egress.LogHelper
 
 object MeasurementReport:
@@ -46,10 +49,7 @@ object MeasurementReport:
     def names(host: String): Boolean =
       hosts(host) || paths.exists((pattern, _) => matches(pattern, host, HostPart))
 
-    def recordsPath(host: String, path: String): Boolean =
-      paths.exists((hostPattern, pathPattern) =>
-        matches(hostPattern, host, HostPart) && matches(pathPattern, path, PathPart),
-      )
+    def recordsPath(host: String, path: String): Boolean = paths.exists(pathMatches(_, host, path))
 
   private val AllowLine = raw"allow https://([^/\s]+)/.*".r
   private val PathLine = raw"#\s+path (\S+) (.+)".r
@@ -69,11 +69,8 @@ object MeasurementReport:
     )
 
   def records(directory: Path = RecordDirectory): Vector[Record] =
-    val files = Files.list(directory)
-    try
-      files.toArray.toVector.map(_.asInstanceOf[Path]).sortBy(_.getFileName.toString)
-        .map(file => parseRecord(file.getFileName.toString, Files.readString(file, UTF_8)))
-    finally files.close()
+    Using.resource(Files.list(directory))(_.iterator.asScala.toVector).sortBy(_.getFileName.toString)
+      .map(file => parseRecord(file.getFileName.toString, Files.readString(file, UTF_8)))
 
   private val HostPart = "[^./]+"
   private val PathPart = "[^/]+"
@@ -83,6 +80,10 @@ object MeasurementReport:
     val regex = pattern.split("(?=<)|(?<=>)").map: piece =>
       if piece.startsWith("<") && piece.endsWith(">") then part else Pattern.quote(piece)
     value.matches(regex.mkString)
+
+  /** Whether a record's `path` line, as its host and path patterns, lists the path on the host. */
+  private def pathMatches(recorded: (String, String), host: String, path: String): Boolean =
+    matches(recorded(0), host, HostPart) && matches(recorded(1), path, PathPart)
 
   private def pathOf(target: String): String = target.takeWhile(_ != '?')
 
@@ -172,9 +173,7 @@ object MeasurementReport:
             findings += s"$host $method $path (${same.size}): ${names.mkString(" and ")} " +
               s"${if names.size == 1 then "names" else "name"} no such path"
       val called = own.map(line => (line.host, pathOf(line.target.get)))
-      val uncalled = record.paths.filterNot((hostPattern, pathPattern) =>
-        called.exists((host, path) => matches(hostPattern, host, HostPart) && matches(pathPattern, path, PathPart)),
-      )
+      val uncalled = record.paths.filterNot(recorded => called.exists(pathMatches(recorded, _, _)))
       if uncalled.nonEmpty then
         out += s"  recorded, not called in this run: ${uncalled.map((host, path) => s"$host $path").mkString(", ")}"
       own.flatMap(_.id).flatMap(ends.get).filter(_.action == "websocket-end").foreach: end =>
@@ -228,7 +227,7 @@ object MeasurementReport:
     val log = args.headOption.map(Paths.get(_)).orElse(latestProxyLog()).getOrElse:
       System.err.println("measurement report: no proxy log; name one, or run sbt in a workspace that ran a session")
       sys.exit(2)
-    val result = report(Files.readAllLines(log, UTF_8).toArray.toVector.map(_.toString), records())
+    val result = report(Files.readAllLines(log, UTF_8).asScala.toVector, records())
     val text = s"proxy log: $log\n${result.text}"
     println(text)
     println(s"report: ${saved(ReportFile, text)}")

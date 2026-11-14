@@ -150,10 +150,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
   private val ReadWriteScopes = Map("/" -> Set("read", "POST", "PUT", "PATCH", "DELETE"))
 
   /** The scopes that defaults/model-provider/anthropic gives api.anthropic.com. */
-  private val AnthropicScopes = Map(
-    "/" -> Set("read", "POST", "PUT", "PATCH", "DELETE"),
-    "/api/ws/speech_to_text/voice_stream" -> Set("read", "POST", "PUT", "PATCH", "DELETE", "upgrade=websocket"),
-  )
+  private val AnthropicScopes =
+    ReadWriteScopes + ("/api/ws/speech_to_text/voice_stream" -> (ReadWriteScopes("/") + "upgrade=websocket"))
 
   /** Every provider the proxy defines, as a launch spells it. */
   private val Every = ModelProviders.mkString(",")
@@ -386,7 +384,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     )
     assertEquals(
       resolved.hosts("api.githubcopilot.com"),
-      Treatment.Inspected(Map("/" -> Set("read", "POST", "PUT", "PATCH", "DELETE"))),
+      Treatment.Inspected(ReadWriteScopes),
     )
     assertEquals(resolved.warnings, Vector.empty)
 
@@ -513,14 +511,13 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
   test("deny-unless-model for copilot allows two login POSTs, four api.github.com reads and the model hosts"):
     val resolved = rulesetOf(profile = "deny-unless-model", provider = "github")
-    val model = Map("/" -> Set("read", "POST", "PUT", "PATCH", "DELETE"))
     assertEquals(
       resolved.inspectedScopes,
       Map(
         "github.com" -> Map("/login/device/code" -> Set("POST"), "/login/oauth/access_token" -> Set("POST")),
         "api.github.com" -> CopilotInternalReads.map(_ -> Set("read")).toMap,
       ) ++ Vector("api", "api.individual", "api.business", "api.enterprise")
-        .map(name => s"$name.githubcopilot.com" -> model),
+        .map(name => s"$name.githubcopilot.com" -> ReadWriteScopes),
     )
     assertEquals(resolved.tunnelHosts, Set.empty)
     // The forge is readable nowhere and clonable nowhere: the provider grants no read of it.
@@ -552,13 +549,12 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
   test("deny-unless-model for agy inspects its two model hosts and the token endpoint, and tunnels nothing"):
     val resolved = rulesetOf(profile = "deny-unless-model", provider = "google")
-    val model = Map("/" -> Set("read", "POST", "PUT", "PATCH", "DELETE"))
     assertEquals(
       resolved.inspectedScopes,
       Map(
-        "cloudcode-pa.googleapis.com" -> model,
-        "daily-cloudcode-pa.googleapis.com" -> model,
-        "oauth2.googleapis.com" -> model,
+        "cloudcode-pa.googleapis.com" -> ReadWriteScopes,
+        "daily-cloudcode-pa.googleapis.com" -> ReadWriteScopes,
+        "oauth2.googleapis.com" -> ReadWriteScopes,
         "www.googleapis.com" -> Map("/oauth2/v2/userinfo" -> Set("read")),
         "lh3.googleusercontent.com" -> Map("/" -> Set("read")),
       ),
@@ -895,6 +891,37 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // Printed after the ruleset lines and outside their digest: metadata about the file, not the ruleset.
     assert(!rulesetLines(resolved).exists(_.startsWith("widening")), rulesetLines(resolved).toString)
     assertEquals(metadataLines(resolved)(1), wideningLine(resolved).get)
+    // `deny defaults` widens, and under it a defaults host may go tunnel: both listed.
+    assertEquals(
+      rulesetOf(
+        rule = "deny defaults\nallow https://github.com/ tunnel\nallow https://pypi.org/ read",
+      ).provenance.widening.map(_.text),
+      Vector("deny defaults", "allow https://github.com/ tunnel"),
+    )
+    // Against the launch's own defaults: a provider that the launch did not select is a new recipient, by its line
+    // or by its hosts, and the selected provider's restated rules are not.
+    assertEquals(
+      rulesetOf(
+        provider = "anthropic",
+        rule =
+          "allow https://api.anthropic.com/ read method=POST,PUT,PATCH,DELETE\n" +
+            "allow https://api.anthropic.com/api/ws/speech_to_text/voice_stream upgrade=websocket\n" +
+            "allow model-provider anthropic\n" +
+            "allow https://auth.openai.com/ read method=POST,PUT,PATCH,DELETE\nallow model-provider openai\n" +
+            "allow https://github.com/ read git-fetch",
+      ).provenance.widening.map(_.text),
+      Vector("allow https://auth.openai.com/ read method=POST,PUT,PATCH,DELETE", "allow model-provider openai"),
+    )
+    // Nothing widens under a profile the file cannot widen; a file that only takes prints no line.
+    Vector("deny-all", "deny-unless-model").foreach: profile =>
+      assertEquals(
+        rulesetOf(profile = profile, rule = "allow https://new.example/ read").provenance.widening,
+        Vector.empty,
+        profile,
+      )
+    val narrowing = rulesetOf(rule = "deny https://github.com/")
+    assertEquals(wideningLine(narrowing), None)
+    assertEquals(metadataLines(narrowing).size, 1)
 
   test("upgrade=websocket resolves at its path, prints in the grammar's order, widens, and a deny takes it"):
     val rule = "allow https://new.example/ read\nallow https://new.example/raw upgrade=websocket\n"
@@ -940,37 +967,6 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val alone = rulesetOf(rule = "allow https://new.example/raw upgrade=websocket").scopesOf("new.example")
     assertEquals(refusal("GET /raw", "", alone), "read not granted")
     request(alone, "GET /raw", handshake)
-    // `deny defaults` widens, and under it a defaults host may go tunnel: both listed.
-    assertEquals(
-      rulesetOf(
-        rule = "deny defaults\nallow https://github.com/ tunnel\nallow https://pypi.org/ read",
-      ).provenance.widening.map(_.text),
-      Vector("deny defaults", "allow https://github.com/ tunnel"),
-    )
-    // Against the launch's own defaults: a provider that the launch did not select is a new recipient, by its line
-    // or by its hosts, and the selected provider's restated rules are not.
-    assertEquals(
-      rulesetOf(
-        provider = "anthropic",
-        rule =
-          "allow https://api.anthropic.com/ read method=POST,PUT,PATCH,DELETE\n" +
-            "allow https://api.anthropic.com/api/ws/speech_to_text/voice_stream upgrade=websocket\n" +
-            "allow model-provider anthropic\n" +
-            "allow https://auth.openai.com/ read method=POST,PUT,PATCH,DELETE\nallow model-provider openai\n" +
-            "allow https://github.com/ read git-fetch",
-      ).provenance.widening.map(_.text),
-      Vector("allow https://auth.openai.com/ read method=POST,PUT,PATCH,DELETE", "allow model-provider openai"),
-    )
-    // Nothing widens under a profile the file cannot widen; a file that only takes prints no line.
-    Vector("deny-all", "deny-unless-model").foreach: profile =>
-      assertEquals(
-        rulesetOf(profile = profile, rule = "allow https://new.example/ read").provenance.widening,
-        Vector.empty,
-        profile,
-      )
-    val narrowing = rulesetOf(rule = "deny https://github.com/")
-    assertEquals(wideningLine(narrowing), None)
-    assertEquals(metadataLines(narrowing).size, 1)
 
   test("--print-ruleset is the rule grammar, one line per resolved scope, sorted: what the leaf's names derive from"):
     val resolved = rulesetOf(provider = Every)
@@ -2270,8 +2266,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       credentials,
       scopes,
       send = tls =>
-        tls.getOutputStream.write(ascii(request))
-        tls.getOutputStream.flush()
+        writeFlushed(tls, request)
         tls.getInputStream.readAllBytes(),
       serve = tls =>
         received.set(String(readHttpHeader(tls.getInputStream, 64 * 1024), StandardCharsets.ISO_8859_1))
@@ -2298,7 +2293,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       val answer = java.util.concurrent.atomic.AtomicReference("")
       val originHeard = java.util.concurrent.atomic.AtomicBoolean(false)
       inspectedExchange(
-        host, Vector.empty, Map("/" -> Set("read", "POST", "PUT", "PATCH", "DELETE")),
+        host, Vector.empty, ReadWriteScopes,
         send = tls =>
           tls.getOutputStream.write(
             ascii(
@@ -2317,6 +2312,10 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assert(!codexHeaders.linesIterator.exists(_.toLowerCase.startsWith("upgrade:")), codexHeaders)
     assert(codexHeaders.contains("http_request_denied"), codexHeaders)
     assertEquals(statusAndHeaders("docs.example", "/backend-api/codex/responses")._1, "HTTP/1.1 403 Forbidden")
+
+  private def writeFlushed(socket: java.net.Socket, text: String): Unit =
+    socket.getOutputStream.write(ascii(text))
+    socket.getOutputStream.flush()
 
   /**
    * One connection over the whole inspected path between a TLS client that `send` drives and a TLS origin that
@@ -2463,13 +2462,10 @@ class AgentEgressProxyTest extends munit.FunSuite:
       assertEquals(log.headOption, Some("allow docs.example POST /upload chunked id=1 -> 127.0.0.1"))
       // The upload's thread prints the chunked-end line before the relay's thread learns of the failure.
       log.tail
-    def write(tls: java.net.Socket, bytes: String): Unit =
-      tls.getOutputStream.write(ascii(bytes))
-      tls.getOutputStream.flush()
     def readAll(tls: java.net.Socket): Unit =
       readHttpHeader(tls.getInputStream, 64 * 1024)
       tls.getInputStream.readAllBytes()
-    val closedMidBody = upload(send = write(_, head + "3\r\none\r\n5\r\nab"), serve = readAll)
+    val closedMidBody = upload(send = writeFlushed(_, head + "3\r\none\r\n5\r\nab"), serve = readAll)
     assertEquals(
       closedMidBody,
       Vector(
@@ -2479,7 +2475,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     )
     val malformed = upload(
       send = tls =>
-        write(tls, head + "3\r\none\r\nzz\r\n")
+        writeFlushed(tls, head + "3\r\none\r\nzz\r\n")
         tls.getInputStream.readAllBytes(),
       serve = readAll,
     )
@@ -2493,9 +2489,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val firstChunk = "3\r\none\r\n"
     val answeredFirst = upload(
       send = tls =>
-        write(tls, head + firstChunk)
+        writeFlushed(tls, head + firstChunk)
         readHttpHeader(tls.getInputStream, 64 * 1024)
-        write(tls, "3\r\ntwo\r\n0\r\n\r\n"),
+        writeFlushed(tls, "3\r\ntwo\r\n0\r\n\r\n"),
       serve = tls =>
         readHttpHeader(tls.getInputStream, 64 * 1024)
         tls.getInputStream.readNBytes(firstChunk.length)
@@ -2511,8 +2507,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       val log = inspectedExchange(
         "docs.example", Vector.empty, Map("/" -> Set("read")),
         send = tls =>
-          tls.getOutputStream.write(ascii("GET /x HTTP/1.1\r\nHost: docs.example\r\n\r\n"))
-          tls.getOutputStream.flush()
+          writeFlushed(tls, "GET /x HTTP/1.1\r\nHost: docs.example\r\n\r\n")
           // After the proxy relayed the head, so the reset meets no TLS handshake still under way.
           relayed.await()
           tls.setSoLinger(true, 0)
@@ -2522,8 +2517,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
           readHttpHeader(tls.getInputStream, 64 * 1024)
           relayed.countDown()
           reset.await()
-          tls.getOutputStream.write(ascii(answer))
-          tls.getOutputStream.flush(),
+          writeFlushed(tls, answer),
       )
       assertEquals(log.headOption, Some("allow docs.example GET /x id=1 -> 127.0.0.1"))
       assert(log.length == 2 && log(1).startsWith("error docs.example GET /x id=1 client: "), log.toString)
@@ -2534,22 +2528,19 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val switching =
       s"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n$WebSocketAccept\r\n"
     val allowLine = "allow docs.example GET /raw upgrade=websocket id=1 -> 127.0.0.1"
-    def write(tls: java.net.Socket, bytes: String): Unit =
-      tls.getOutputStream.write(ascii(bytes))
-      tls.getOutputStream.flush()
     // The client sends five bytes, reads their echo and closes; the origin echoes and reads on.
     val echoed = java.util.concurrent.atomic.AtomicReference("")
     val clientClosed = inspectedExchange(
       "docs.example", Vector.empty, granted,
       send = tls =>
-        write(tls, handshake)
+        writeFlushed(tls, handshake)
         readHttpHeader(tls.getInputStream, 64 * 1024)
-        write(tls, "ping!")
+        writeFlushed(tls, "ping!")
         echoed.set(String(tls.getInputStream.readNBytes(5), StandardCharsets.ISO_8859_1)),
       serve = tls =>
         readHttpHeader(tls.getInputStream, 64 * 1024)
-        write(tls, switching)
-        write(tls, String(tls.getInputStream.readNBytes(5), StandardCharsets.ISO_8859_1))
+        writeFlushed(tls, switching)
+        writeFlushed(tls, String(tls.getInputStream.readNBytes(5), StandardCharsets.ISO_8859_1))
         tls.getInputStream.readAllBytes(),
     )
     assertEquals(echoed.get, "ping!")
@@ -2559,12 +2550,12 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val originClosed = inspectedExchange(
       "docs.example", Vector.empty, granted,
       send = tls =>
-        write(tls, handshake)
+        writeFlushed(tls, handshake)
         readHttpHeader(tls.getInputStream, 64 * 1024)
         received.set(String(tls.getInputStream.readAllBytes(), StandardCharsets.ISO_8859_1)),
       serve = tls =>
         readHttpHeader(tls.getInputStream, 64 * 1024)
-        write(tls, switching + "bye"),
+        writeFlushed(tls, switching + "bye"),
     )
     assertEquals(received.get, "bye")
     assertEquals(originClosed, Vector(allowLine, "websocket-end docs.example GET /raw id=1 send=0 recv=3"))

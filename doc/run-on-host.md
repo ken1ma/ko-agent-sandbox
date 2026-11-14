@@ -237,8 +237,8 @@ result you run outside the sandbox.
 - A task whose result you run outside the sandbox, such as a launcher jar, needs the refusal
   because the launch's server builds from the run-on-host caches, which the agent's commands write
   (`SECURITY.md`, "Cache poisoning stops at the workspace").
-- This repository's `build.sbt` wraps `dist`, the jar you run, and `testWithPodman`, which starts
-  containers.
+- This repository's `build.sbt` wraps `dist` and `assembly`, which build the jar you run, and
+  `testWithPodman`, which starts containers.
 
 ## The run-on-host cache
 
