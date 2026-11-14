@@ -123,9 +123,9 @@ def worktree_entry(root, path):
         return b"link\0" + os.readlink(absolute).encode("utf-8", "surrogateescape")
     if stat.S_ISDIR(status.st_mode):
         if (absolute / ".git").exists():
-            # A submodule's status record carries dirty flags, not what changed, and a nested repository is one
-            # untracked directory. The helper digests each of them as a tree of its own.
-            return b"repository\0" + observe(absolute)["digest"].encode()
+            # Git lists a submodule or a nested repository as one path, so the helper digests the files in it as a
+            # tree of its own. Its HEAD is not content, so a commit inside it changes nothing here.
+            return b"repository\0" + observe(absolute)["contentDigest"].encode()
         return b"dir"
     if stat.S_ISREG(status.st_mode):
         # git's status record carries no mode for an untracked file
@@ -137,8 +137,7 @@ def worktree_entry(root, path):
 def status_records(root):
     """Returns every path whose working tree or index differs from HEAD, as `git status` reports it.
 
-    Renames are off, so a moved file appears as its deletion and its addition. Each record carries the index and
-    HEAD object ids and the modes, so staged content is part of the digest without reading the index."""
+    Renames are off, so a moved file appears as its deletion and its addition."""
     output = git(
         root, "status", "--porcelain=v2", "-z", "--untracked-files=all", "--no-renames",
         "--ignore-submodules=none",
@@ -167,16 +166,16 @@ def status_records(root):
 
 
 def observe(root):
-    """Scans the checkout once: HEAD, the status records, and every reviewable file's raw entry.
+    """Scans the checkout once: HEAD's commit id and every reviewable file's raw entry.
 
-    - The status records carry the index's and HEAD's object ids and modes per changed path.
     - The manifest maps every file that Git would review to a hash of its raw working-tree content with its
       executable bit, or of its symlink target. Those files are tracked, or untracked and not ignored, and nested
       repositories count recursively. The manifest leaves an absent path out, so staging a deletion or a rename
       changes nothing there.
     - The manifest hashes raw content because `git status` calls a file clean when its content after the clean
-      filter matches the index. The records alone would therefore miss a change that a filter strips.
-    The content digest is the manifest's. The digest covers HEAD, the records and the content together."""
+      filter matches the index, and so misses a change that a filter strips.
+    The content digest is the manifest's, and only the content digest tells whether the reviewed files changed.
+    HEAD's id names the commit that a round's scope is against."""
     head = git(root, "rev-parse", "--verify", "--quiet", "HEAD", check=False)
     head_id = head.stdout.decode().strip() if head.returncode == 0 else "unborn"
     listed = git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard").stdout
@@ -192,14 +191,8 @@ def observe(root):
             content.update(path + b"\0" + entry_hash.encode() + b"\0")
             if entry.startswith(b"repository\0"):
                 repositories.append(path.decode("utf-8", "surrogateescape"))
-    content_digest = "sha256:" + content.hexdigest()
-    digest = hashlib.sha256()
-    digest.update(b"HEAD " + head_id.encode() + b"\n")
-    for path, record in status_records(root):
-        digest.update(record + b"\0")
-    digest.update(content_digest.encode() + b"\n")
     return {
-        "head": head_id, "digest": "sha256:" + digest.hexdigest(), "contentDigest": content_digest,
+        "head": head_id, "contentDigest": "sha256:" + content.hexdigest(),
         "manifest": manifest, "repositories": repositories,
     }
 
@@ -230,24 +223,6 @@ def tree_of_worktree(root, index):
             if completed.returncode != 0:
                 raise GitFailure(
                     " ".join(command) + " failed while writing the working tree as a Git tree",
-                    stderr=completed.stderr.decode(errors="replace")[-500:],
-                )
-        return completed.stdout.decode().strip()
-    finally:
-        index.unlink(missing_ok=True)
-
-
-def tree_of_index(root, index):
-    """Writes the user's index as a Git tree object through a scratch copy, and leaves the index untouched."""
-    env = {**os.environ, "GIT_INDEX_FILE": str(index)}
-    index.unlink(missing_ok=True)
-    try:
-        entries = git(root, "ls-files", "-z", "--stage").stdout
-        for command, stdin in ((["git", "update-index", "-z", "--index-info"], entries), (["git", "write-tree"], None)):
-            completed = subprocess.run(command, cwd=root, env=env, input=stdin, capture_output=True, check=False)
-            if completed.returncode != 0:
-                raise GitFailure(
-                    " ".join(command) + " failed while writing the index as a Git tree",
                     stderr=completed.stderr.decode(errors="replace")[-500:],
                 )
         return completed.stdout.decode().strip()
@@ -494,43 +469,29 @@ class Review:
     def freshness(self, observation=None):
         """Returns whether the approval covers the current tree, and if not, why not.
 
-        The check compares digests first. The digest moves with HEAD or the index, as after the user stages or
-        commits the reviewed changes. The approval then still holds when both of these hold:
-        - the files' raw content is still the approved content;
-        - the index, written as a tree, equals the approved snapshot's tree, so nothing unreviewed is staged.
-        A changed HEAD alone is therefore never a reason when the round has a snapshot.
-
-        Without a snapshot, no approved tree exists to compare the index with, and a changed HEAD or index is itself
-        a reason."""
+        The approval holds for the files' raw content, the instructions it was given, and the paths that its
+        reviewer was told to look at. Staging or committing keeps it, and so does a failed turn. Moving HEAD keeps
+        it unless a path that no reviewer looked at enters the scope."""
         observation = observation or observe(self.root)
         approved = self.state.get("approved")
-        fresh = approved is not None and approved["worktreeDigest"] == observation["digest"]
         reasons = []
-        if not fresh and approved:
+        changed = []
+        if approved and approved.get("contentDigest") != observation["contentDigest"]:
             manifest = self.manifest_of(approved["round"])
-            if approved.get("contentDigest") != observation["contentDigest"]:
-                paths = manifest_changes(manifest, observation["manifest"]) if manifest is not None else []
-                reasons.append({"reason": "working files changed", "paths": paths})
-            elif approved.get("tree"):
-                try:
-                    index_tree = tree_of_index(self.root, self.dir / f"verify-index.{os.getpid()}")
-                    if index_tree == approved["tree"]:
-                        fresh = True
-                    else:
-                        staged = git(self.root, "diff-tree", "-r", "-z", "--name-only", approved["tree"], index_tree)
-                        paths = sorted(
-                            field.decode("utf-8", "surrogateescape") for field in staged.stdout.split(b"\0") if field
-                        )
-                        reasons.append({"reason": "unreviewed content staged", "paths": paths})
-                except GitFailure as ex:
-                    reasons.append({"reason": "the index could not be compared: " + ex.message, "paths": []})
+            changed = manifest_changes(manifest, observation["manifest"]) if manifest is not None else []
+            reasons.append({"reason": "working files changed", "paths": changed})
+        if approved:
+            reviewed = reviewed_paths(self, approved)
+            if reviewed is None:
+                reasons.append({"reason": "the approved round recorded no scope", "paths": []})
             else:
-                reasons.append({
-                    "reason": "HEAD or the index changed, and the round has no snapshot tree to compare with",
-                    "paths": [],
-                })
-        if approved is None and self.state.get("approvalCleared"):
-            reasons.append({"reason": self.state["approvalCleared"]["reason"], "paths": []})
+                scope = scope_paths(self.root, scope_commit(self.state.get("base"), observation["head"]))
+                entered = [path for path in scope if path not in reviewed and path not in changed]
+                if entered:
+                    reasons.append({"reason": "paths entered the scope since the approval", "paths": entered})
+        if approved and not same_instructions(approved.get("instructions"), self.state.get("instructions")):
+            reasons.append({"reason": "the review instructions changed after the approval", "paths": []})
+        fresh = approved is not None and not reasons
         status = self.state["status"]
         if status == "APPROVED" and not fresh:
             status = "STALE_APPROVAL"
@@ -603,7 +564,7 @@ class Review:
             "staleReasons": reasons if status == "STALE_APPROVAL" else [],
             "activity": self.activity(),
             "currentHead": observation["head"],
-            "currentWorktreeDigest": observation["digest"],
+            "currentContentDigest": observation["contentDigest"],
             "lastError": self.state["lastError"],
             "createdAt": self.state["createdAt"],
             "updatedAt": self.state["updatedAt"],
@@ -686,7 +647,7 @@ class Claude:
     slash commands and every MCP server.
     `--permission-prompts none` denies every tool that a permission prompt would gate. Outside a bypass-permissions
     policy, the reviewer can therefore only read files and run the git commands listed. Inside such a policy, the
-    digest check enforces reading only, as for Codex."""
+    check after each turn discards a turn that changed a file, as for Codex."""
 
     name = "claude"
     display = "Claude"
@@ -1167,13 +1128,15 @@ def review_turn(review, message):
     answered = [entry["round"] for entry in entries if entry["actor"] == "reviewer"]
     # Failed rounds do not count, so retries after a usage limit do not use up the review.
     if len(answered) >= state["maxRounds"]:
-        state["status"] = "LOOP_LIMIT_REACHED"
-        review.save()
+        if not state.get("approved"):  # a refused turn is no outcome, so an approval stays
+            state["status"] = "LOOP_LIMIT_REACHED"
+            review.save()
         raise ReviewError("LOOP_LIMIT_REACHED", f"review {review.id} reached {state['maxRounds']} answered rounds")
     check_signed_in(review.reviewer)
     check_egress(review.reviewer)
     round_number = state["round"] + 1
     before = observe(review.root)
+    scope = scope_paths(review.root, scope_commit(state.get("base"), before["head"]))
     prompt_file = "reviewer.md" if first else "continue.md"
     heading = "# Review request from the author" if first else f"# The author's response, round {round_number}"
     prompt = (PLUGIN_ROOT / "prompts" / prompt_file).read_text()
@@ -1184,25 +1147,33 @@ def review_turn(review, message):
             " above.\n\n" + state["instructions"].rstrip("\n") + "\n"
         )
     base = state.get("base")
-    scope = (
-        f"Review the changes since `{base['ref']}`, commit {base['commit']}: `git diff {base['commit']}` shows"
-        " them, committed since then or not, plus untracked files."
-        if base else
-        "Review the working tree's changes against HEAD: `git diff HEAD` plus untracked files."
-    )
-    prompt += "\n---\n\n# Scope\n\n" + scope + "\n"
+    # The scope names a commit id, not HEAD, so a commit or checkout during the turn does not move what the
+    # reviewer reads; the check after the turn compares only the files' content.
+    if base:
+        scope_text = (
+            f"Review the changes since `{base['ref']}`, commit {base['commit']}: `git diff {base['commit']}` shows"
+            " them, committed since then or not, plus untracked files."
+        )
+    elif before["head"] == "unborn":
+        scope_text = (
+            "The repository has no commit yet. Review every file in the working tree, untracked files included."
+        )
+    else:
+        scope_text = (
+            f"Review the working tree's changes against commit {before['head']}, HEAD when this turn started:"
+            f" `git diff {before['head']}` plus untracked files."
+        )
+    prompt += "\n---\n\n# Scope\n\n" + scope_text + "\n"
     if not first:
         # The reviewer last read the tree in the round it last answered, whatever failed since.
         last_answered = max(answered)
         previous = review.manifest_of(last_answered)
         if previous is not None:
             changed = manifest_changes(previous, before["manifest"])
-            entered = []
-            if state["lastReviewed"].get("tree"):
-                in_scope_then = reviewed_paths(review.root, base, state["lastReviewed"])
-                entered = [
-                    path for path in scope_paths(review.root, base) if path not in changed and path not in in_scope_then
-                ]
+            in_scope_then = reviewed_paths(review, state["lastReviewed"])
+            entered = [] if in_scope_then is None else [
+                path for path in scope if path not in changed and path not in in_scope_then
+            ]
             sentences = [
                 f"Since your turn of round {last_answered}, the content of these paths changed: "
                 + ", ".join(f"`{path}`" for path in changed) + "."
@@ -1239,20 +1210,21 @@ def review_turn(review, message):
     review.save()
     try:
         write_json_atomically(review.round_path(round_number, "manifest.json"), before["manifest"])
+        write_json_atomically(review.round_path(round_number, "scope.json"), scope)
         taken = snapshot(review, round_number, before)
         state.setdefault("snapshots", []).append(taken)
         review.journal({
             "round": round_number, "actor": "author", "kind": "review-request" if first else "review-response",
-            "text": message, "head": before["head"], "worktreeDigest": before["digest"], "snapshot": taken,
+            "text": message, "head": before["head"], "contentDigest": before["contentDigest"], "snapshot": taken,
         })
         result = run_reviewer(review, round_number, prompt, state["threadId"], state["timeoutSeconds"])
         after = observe(review.root)  # a second observation: what the reviewer read must be what is still there
-        if after["digest"] != before["digest"]:
+        if after["contentDigest"] != before["contentDigest"]:
             raise ReviewError(
                 "WORKTREE_CHANGED_DURING_REVIEW",
-                f"the working tree changed while {review.reviewer.name} reviewed it; the result is discarded,"
+                f"the working files changed while {review.reviewer.name} reviewed them; the result is discarded,"
                 " review again",
-                before=before["digest"], after=after["digest"],
+                before=before["contentDigest"], after=after["contentDigest"],
                 paths=manifest_changes(before["manifest"], after["manifest"]),
             )
     except BaseException as raised:
@@ -1269,13 +1241,12 @@ def review_turn(review, message):
         raise ex
     state["status"] = {"USER_DECISION_REQUIRED": "USER_PROPOSED"}.get(result["disposition"], result["disposition"])
     reviewed = {
-        "head": before["head"], "worktreeDigest": before["digest"], "contentDigest": before["contentDigest"],
+        "head": before["head"], "contentDigest": before["contentDigest"],
         "round": round_number, "ref": taken["ref"], "tree": taken["tree"], "excludes": taken["excludes"],
     }
     state["lastReviewed"] = reviewed
-    state["approvalCleared"] = None
     if result["disposition"] == "APPROVED":
-        state["approved"] = {**reviewed, "at": now()}
+        state["approved"] = {**reviewed, "instructions": state.get("instructions"), "at": now()}
     else:
         state["approved"] = None
     review.save()
@@ -1327,31 +1298,52 @@ def check_scope(root, base):
     )
 
 
-def scope_paths(root, base):
-    """Returns the paths that the reviewer is told to look at: those that differ from the base commit, or from HEAD
-    without `--base`, plus the untracked ones. When HEAD is unborn, returns every listed file."""
+def same_instructions(first, second):
+    """Compares two instruction texts, where None stands for no instructions. Whitespace around the text does not
+    count, since the skill writes the user's words to a file and a file may end with a newline or not."""
+    return (first or "").strip() == (second or "").strip()
+
+
+def scope_commit(base, head):
+    """Returns the commit that the scope is against: the base commit, else HEAD's id, else None for an unborn HEAD."""
+    if base:
+        return base["commit"]
+    return None if head == "unborn" else head
+
+
+def scope_paths(root, against):
+    """Returns the paths that the reviewer is told to look at: those that differ from the commit `against`, plus
+    the untracked ones. Without a commit, returns every listed file.
+
+    Renames are off: `--name-only` names only a rename's new path, and git detects a rename only once it is
+    staged, so staging or unstaging a rename would change the scope without changing a file."""
     untracked = {
         path.decode("utf-8", "surrogateescape") for path, record in status_records(root) if record[:1] == b"?"
     }
-    if base is None and git(root, "rev-parse", "--verify", "--quiet", "HEAD", check=False).returncode != 0:
+    if against is None:
         listed = git(root, "ls-files", "-z").stdout
     else:
         listed = git(
-            root, "diff", "--name-only", "-z", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none",
-            base["commit"] if base else "HEAD",
+            root, "diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", "--no-textconv",
+            "--ignore-submodules=none", against,
         ).stdout
     return sorted(untracked | {field.decode("utf-8", "surrogateescape") for field in listed.split(b"\0") if field})
 
 
-def reviewed_paths(root, base, reviewed):
-    """Returns the paths that the reviewer of the round recorded in `reviewed` was told to look at: the round's tree
-    against the review's base commit, or against HEAD as it was then. When HEAD was unborn, returns every path of
-    the tree."""
-    against = base["commit"] if base else reviewed["head"]
-    if against == "unborn":
-        listed = git(root, "ls-tree", "-r", "-z", "--name-only", reviewed["tree"]).stdout
+def reviewed_paths(review, reviewed):
+    """Returns the paths that the reviewer of the round recorded in `reviewed` was told to look at, or None when the
+    round recorded neither its scope nor a snapshot tree. A round before scope.json existed has its scope recomputed
+    from its tree."""
+    recorded = review.round_path(reviewed["round"], "scope.json")
+    if recorded.exists():
+        return set(json.loads(recorded.read_text()))
+    if not reviewed.get("tree"):
+        return None
+    against = scope_commit(review.state.get("base"), reviewed["head"])
+    if against is None:
+        listed = git(review.root, "ls-tree", "-r", "-z", "--name-only", reviewed["tree"]).stdout
     else:
-        listed = git(root, "diff-tree", "-r", "-z", "--name-only", against, reviewed["tree"]).stdout
+        listed = git(review.root, "diff-tree", "-r", "-z", "--name-only", against, reviewed["tree"]).stdout
     return {field.decode("utf-8", "surrogateescape") for field in listed.split(b"\0") if field}
 
 
@@ -1361,12 +1353,13 @@ def command_approvals(args):
     discussion in context, instead of starting anew.
 
     A path is covered when the approved round's reviewer was told to look at it and its content is the approved
-    content; staging or committing the path changes neither. A candidate review has the same base as the review the
-    author would start, and a snapshot tree, which names the reviewed paths."""
+    content; staging or committing the path changes neither. A candidate review has the base and the instructions
+    that the review the author would start has, because an approval holds for the instructions it was given."""
     root = repository_root(args.repository)
     base = resolve_base(root, args.base) if args.base else None
+    instructions = read_message(args.instructions_file) if args.instructions_file else None
     observation = observe(root)
-    scope = scope_paths(root, base)
+    scope = scope_paths(root, scope_commit(base, observation["head"]))
     approvals = []
     reviews_dir = repository_dir(root) / "reviews"
     for entry in sorted(reviews_dir.iterdir()) if reviews_dir.exists() else []:
@@ -1378,14 +1371,21 @@ def command_approvals(args):
             continue
         state = review.state
         approved = state.get("approved")
-        if state["status"] != "APPROVED" or not approved or not approved.get("tree"):
+        if state["status"] != "APPROVED" or not approved:
             continue
         if (state.get("base") or {}).get("commit") != (base or {}).get("commit"):
             continue
-        manifest = review.manifest_of(approved["round"])
-        if manifest is None:
+        # The approval's own instructions decide what it covers; the review's decide what a continuation uses.
+        # They differ after a failed turn that brought new instructions.
+        if not (
+            same_instructions(approved.get("instructions"), instructions)
+            and same_instructions(state.get("instructions"), instructions)
+        ):
             continue
-        reviewed = reviewed_paths(root, state.get("base"), approved)
+        manifest = review.manifest_of(approved["round"])
+        reviewed = reviewed_paths(review, approved)
+        if manifest is None or reviewed is None:
+            continue
         covered = [
             path for path in scope if path in reviewed and observation["manifest"].get(path) == manifest.get(path)
         ]
@@ -1439,14 +1439,7 @@ def command_continue(args):
     instructions = read_message(args.instructions_file) if args.instructions_file else None
     review = Review.open(root, args.review_id)
     if instructions is not None:
-        # The reviewer never approved the tree under these instructions.
         review.state["instructions"] = instructions
-        if review.state.get("approved"):
-            review.state["approvalCleared"] = {
-                "reason": "the review instructions changed after the approval", "round": review.state["round"] + 1,
-                "at": now(),
-            }
-        review.state["approved"] = None
         review.save()
         review.journal({
             "round": review.state["round"] + 1, "actor": "user", "kind": "instructions", "text": instructions,
@@ -1963,8 +1956,8 @@ def command_digest(args):
     root = repository_root(args.repository)
     observation = observe(root)
     return {
-        "repository": str(root), "head": observation["head"], "worktreeDigest": observation["digest"],
-        "contentDigest": observation["contentDigest"], "files": len(observation["manifest"]),
+        "repository": str(root), "head": observation["head"], "contentDigest": observation["contentDigest"],
+        "files": len(observation["manifest"]),
     }
 
 
@@ -2029,12 +2022,15 @@ def build_parser():
         "defaults", command_defaults,
         "print the model and reasoning effort the reviewer would use, and the models it offers", reviewer=True,
     )
-    add("digest", command_digest, "print the working-tree digest")
+    add("digest", command_digest, "print the content digest of the reviewable files")
     approvals = add(
         "approvals", command_approvals,
         "list the approved reviews whose approval covers part of the current scope, to continue one of them",
     )
     approvals.add_argument("--base", help="the base the new review would have, as `start --base`")
+    approvals.add_argument(
+        "--instructions-file", help="the instructions the new review would have, as `start --instructions-file`",
+    )
     return parser
 
 

@@ -31,11 +31,15 @@ questions and their numbered options.
      reliably which commits are this session's.
    - Without a base, run `git status --porcelain`. On an empty output, stop as `NOTHING_TO_REVIEW`
      under "Errors" says.
-   - Run `ko-review approvals`, with `--base REF` for the argument's base. Offer an entry only when
-     the argument names no instructions, and no reviewer, model or effort other than the entry's.
-     - When the first such entry has `approvalFresh` true and an empty `newPaths`, tell the user
-       that review REVIEW_ID already approves the tree, and ask whether to stop or start a new
-       review. For a new review, offer no entry.
+   - When the argument names instructions for the reviewer, write them verbatim, without the
+     reviewer, base, model and effort, to a file outside the repository, where step 3 puts the
+     brief.
+   - Run `ko-review approvals`, with `--base REF` for the argument's base and, when you wrote the
+     instructions file, `--instructions-file FILE`. Offer an entry only when the argument names no
+     reviewer, model or effort other than the entry's.
+     - When the first such entry has `approvalFresh` true, tell the user that review REVIEW_ID
+       already approves the tree, and ask whether to stop or start a new review. For a new review,
+       offer no entry.
    - Ask for the reviewer, unless the argument names one and you offer no entry. Offer those
      entries first, as "continue REVIEW_ID (REVIEWER, MODEL, EFFORT): it approved N of the M paths
      in scope", then `codex` and `claude`, each under its own sign-in and usage limit in this
@@ -74,8 +78,7 @@ questions and their numbered options.
    `ko-review continue REVIEW_ID --message-file FILE` instead, with none of the options below.
    - Pass the values from step 2 with `--model NAME` and `--effort LEVEL`. Omit an option whose
      value is null.
-   - Write the argument's instructions for the reviewer verbatim, without the reviewer, base,
-     model and effort, to a second file, and add `--instructions-file FILE`.
+   - Add `--instructions-file FILE` when step 1 wrote the instructions file.
    - Add `--base REF` for the argument's base.
 5. Tell the user how the round went: the outcome, each open finding and suggestion by id in one
    sentence, and what you do next.

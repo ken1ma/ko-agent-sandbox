@@ -79,6 +79,8 @@ else:
     started = {"type": "system", "subtype": "init", "session_id": thread_id, "model": "fake-model"}
 if step.get("touch"):
     open(step["touch"], "a").write("changed during review\n")
+for git_args in step.get("git", []):  # as the user on the host would, staging or committing during the turn
+    subprocess.run(["git", *git_args], check=True, stdout=subprocess.DEVNULL)
 if step.get("background"):
     # a process the reviewer leaves behind, so only a kill ends it: in the reviewer's process group,
     # or, "escaped", as the child of a shell in a session of its own; holding none of the reviewer's
@@ -293,7 +295,7 @@ class HelperTest(unittest.TestCase):
         self.assertEqual(output["findings"][0]["id"], "F1")
         state = self.state_of(output["reviewId"])
         self.assertEqual((state["reviewer"], state["threadId"]), (self.reviewer, "thread-1"))
-        self.assertEqual(state["lastReviewed"]["worktreeDigest"], output["currentWorktreeDigest"])
+        self.assertEqual(state["lastReviewed"]["contentDigest"], output["currentContentDigest"])
         self.assertIsNone(state["approved"])
         call = self.calls()[0]
         self.assert_opens_a_thread(call["argv"])
@@ -308,7 +310,7 @@ class HelperTest(unittest.TestCase):
         rounds = Path(state["reviewId"] and output["statePath"]).parent / "rounds"
         self.assertEqual(sorted(path.name for path in rounds.iterdir()),
                          [f"001-{self.reviewer}.jsonl", f"001-{self.reviewer}.stderr", "001-input.md",
-                          "001-manifest.json", "001-result.json"])
+                          "001-manifest.json", "001-result.json", "001-scope.json"])
         self.assertEqual(json.loads((rounds / "001-result.json").read_text()), CHANGES)
         kinds = [(entry["seq"], entry["actor"], entry["kind"]) for entry in self.journal_of(output["reviewId"])]
         self.assertEqual(kinds, [(1, "author", "review-request"), (2, "reviewer", "review-result")])
@@ -371,11 +373,9 @@ class HelperTest(unittest.TestCase):
         self.assertEqual(self.helper("check-approval", review_id)["effectiveStatus"], "APPROVED")
         self.write("app.py", "print('staged, unreviewed')\n")
         self.git("add", "app.py")
-        self.write("app.py", "print('fixed')\n")  # the working tree is back at the approved content
-        staged = self.helper("check-approval", review_id, expect=1)["error"]
-        self.assertEqual(staged["effectiveStatus"], "STALE_APPROVAL")
-        self.git("reset", "-q", "app.py")
+        self.write("app.py", "print('fixed')\n")  # only the files' content decides, not what the index holds
         self.assertEqual(self.helper("check-approval", review_id)["effectiveStatus"], "APPROVED")
+        self.git("reset", "-q", "app.py")
         self.write("app.py", "print('edited after approval')\n")
         stale = self.helper("check-approval", review_id, expect=1)["error"]
         self.assertEqual(stale["code"], "NOT_APPROVED")
@@ -468,6 +468,22 @@ class HelperTest(unittest.TestCase):
         call = self.calls()[1]
         self.assert_resumes(call["argv"], "thread-1")
         self.assertIn("You are an independent code reviewer", call["prompt"])
+
+    @both_reviewers
+    def test_staging_or_committing_during_a_turn_keeps_the_result(self):
+        head = self.git_out("rev-parse", "HEAD").strip()
+        self.write("app.py", "print('reviewed')\n")
+        self.plan({"result": APPROVED, "git": [["add", "app.py"]]})  # work.py stays unstaged
+        output = self.helper("start", self.reviewer, "--message-file", self.message())
+        self.assertEqual(output["status"], "APPROVED")
+        self.assertIn(f"`git diff {head}` plus untracked files", self.calls()[0]["prompt"])
+        self.assertEqual(self.helper("check-approval", output["reviewId"])["effectiveStatus"], "APPROVED")
+        commit = ["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "during the turn"]
+        self.plan({"result": APPROVED, "git": [["add", "-A"], commit]})
+        output = self.helper("continue", output["reviewId"], "--message-file", self.message("again\n"))
+        self.assertEqual((output["status"], output["round"]), ("APPROVED", 2))
+        self.assertNotEqual(self.git_out("rev-parse", "HEAD").strip(), head)
+        self.assertEqual(self.helper("check-approval", output["reviewId"])["effectiveStatus"], "APPROVED")
 
     @both_reviewers
     def test_a_thread_named_before_an_interrupted_or_truncated_turn_is_kept(self):
@@ -931,6 +947,15 @@ class HelperTest(unittest.TestCase):
             self.helper("check-approval", review_id, expect=1)["error"]["effectiveStatus"], "STALE_APPROVAL",
         )
 
+    def test_an_approved_staged_rename_survives_unstaging(self):
+        self.write("old.txt", "to be renamed\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "one file")
+        self.git("mv", "old.txt", "new.txt")  # git now detects the rename
+        review_id = self.start(APPROVED)["reviewId"]
+        self.git("reset", "-q")  # old.txt deleted, new.txt untracked; no file changes
+        self.assertEqual(self.helper("check-approval", review_id)["effectiveStatus"], "APPROVED")
+
     def test_a_usage_limit_names_codex_s_words_and_the_retry_resends_the_lost_message(self):
         limit = "You've hit your usage limit. Try again at 3:05 PM."
         self.plan(
@@ -1060,6 +1085,27 @@ class HelperTest(unittest.TestCase):
         self.assertEqual(self.helper("show", review_id)["status"], "LOOP_LIMIT_REACHED")
         self.assertEqual(len(self.calls()), 1)
 
+    def test_round_limit_refuses_a_turn_without_ending_an_approval(self):
+        self.plan({"result": APPROVED})
+        review_id = self.helper("start", "codex", "--max-rounds", "1", "--message-file", self.message())["reviewId"]
+        error = self.helper("continue", review_id, "--message-file", self.message(), expect=1)["error"]
+        self.assertEqual(error["code"], "LOOP_LIMIT_REACHED")
+        self.assertEqual(self.helper("check-approval", review_id)["effectiveStatus"], "APPROVED")
+
+    def test_an_approval_does_not_cover_paths_that_entered_the_scope(self):
+        self.write("lib.py", "print('committed before the review')\n")
+        self.git("add", "lib.py")
+        self.git("commit", "-q", "-m", "lib")
+        review_id = self.start(APPROVED)["reviewId"]  # the scope is work.py
+        self.git("reset", "-q", "--soft", "HEAD~1")  # lib.py enters the scope; no file changes
+        stale = self.helper("check-approval", review_id, expect=1)["error"]
+        self.assertEqual(stale["staleReasons"],
+                         [{"reason": "paths entered the scope since the approval", "paths": ["lib.py"]}])
+        offered = self.helper("approvals")["approvals"]
+        self.assertEqual([(row["coveredPaths"], row["newPaths"]) for row in offered], [(["work.py"], ["lib.py"])])
+        self.git("commit", "-q", "-m", "lib again")
+        self.assertEqual(self.helper("check-approval", review_id)["effectiveStatus"], "APPROVED")
+
     @both_reviewers
     def test_preconditions_are_checked_before_the_reviewer_runs(self):
         def start_fails_with(code):
@@ -1093,7 +1139,8 @@ class HelperTest(unittest.TestCase):
         self.plan({"result": APPROVED})
         recovered = self.helper("start", self.reviewer, "--message-file", self.message(), cwd=outside)
         self.assertEqual(recovered["status"], "APPROVED")
-        self.assertIn("`git diff HEAD` plus untracked files", self.calls()[-1]["prompt"])
+        head = subprocess.run(["git", "-C", str(outside), "rev-parse", "HEAD"], capture_output=True, text=True).stdout
+        self.assertIn(f"`git diff {head.strip()}` plus untracked files", self.calls()[-1]["prompt"])
         listed = subprocess.run(["git", "-C", str(outside), "ls-tree", "--name-only", recovered["snapshots"][0]["ref"]],
                                 capture_output=True, text=True)
         self.assertEqual(listed.stdout.split(), ["program.py"])
@@ -1107,7 +1154,7 @@ class HelperTest(unittest.TestCase):
         self.assertEqual(len(list(self.state.glob("repositories/*"))), 2)
 
     def digest(self):
-        return self.helper("digest")["worktreeDigest"]
+        return self.helper("digest")["contentDigest"]
 
     def test_digest_covers_every_kind_of_change(self):
         clean = self.digest()
@@ -1121,13 +1168,13 @@ class HelperTest(unittest.TestCase):
             return digest
 
         self.write("app.py", "print('unstaged')\n")
-        changed("unstaged edit")
+        edited = changed("unstaged edit")
         self.git("add", "app.py")
-        changed("staged edit")
+        self.assertEqual(self.digest(), edited)  # staging is no change of content
         self.write("app.py", "print('staged and unstaged')\n")
         changed("staged plus unstaged")
         self.git("restore", "--source=HEAD", "--worktree", "app.py")
-        changed("staged edit with the tree back at HEAD")
+        self.assertEqual(self.digest(), clean)  # the staged edit alone is not in the files
         self.git("reset", "-q", "--hard")
         self.assertEqual(self.digest(), clean)
         (self.repo / "app.py").unlink()
@@ -1170,8 +1217,9 @@ class HelperTest(unittest.TestCase):
         shutil.rmtree(nested)
         self.assertEqual(self.digest(), clean)
         self.write("app.py", "print('committed')\n")
+        edited = changed("edit")
         self.git("commit", "-q", "-am", "next")
-        changed("new HEAD")
+        self.assertEqual(self.digest(), edited)  # a new HEAD is no change of content
 
     def test_digest_follows_a_submodule_past_its_dirty_flags(self):
         library = self.root / "library"
@@ -1199,6 +1247,9 @@ class HelperTest(unittest.TestCase):
             committed = self.digest()
             self.assertNotIn(committed, {clean, once, twice})
             twice = committed
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-C", str(vendor),
+                        "commit", "-q", "--allow-empty", "-m", "empty"], check=True, capture_output=True)
+        self.assertEqual(self.digest(), twice)  # a commit inside the submodule changes no content
 
     def git_out(self, *args):
         return self.git(*args).stdout
@@ -1370,16 +1421,14 @@ class HelperTest(unittest.TestCase):
             f"ko-review transcript {output['reviewId']}", "ko-review list", f"ko-review delete {output['reviewId']}",
         ])
         self.assertEqual(self.helper("check-approval", output["reviewId"])["approvalFresh"], True)
-        self.assertEqual(self.helper("approvals")["approvals"], [])  # no tree names the reviewed paths
+        offered = self.helper("approvals")["approvals"]  # the recorded scope names the reviewed paths
+        self.assertEqual([(row["reviewId"], row["coveredPaths"], row["newPaths"]) for row in offered],
+                         [(output["reviewId"], ["untracked.txt", "work.py"], [])])
         for path in [git_dir, *git_dir.rglob("*")]:
             if path.is_dir():
                 path.chmod(0o755)
-        # Staging the approved content moves the digest, and the round has no tree to compare the index with.
-        self.git("add", "untracked.txt")
-        stale = self.helper("check-approval", output["reviewId"], expect=1)["error"]
-        self.assertEqual(stale["staleReasons"], [{
-            "reason": "HEAD or the index changed, and the round has no snapshot tree to compare with", "paths": [],
-        }])
+        self.git("add", "untracked.txt")  # the round has no tree, and the files' content alone decides
+        self.assertEqual(self.helper("check-approval", output["reviewId"])["approvalFresh"], True)
 
     def test_a_failed_round_still_carries_its_transcript_on_the_ref(self):
         self.plan({"exit": 1, "stderr": "boom"})
@@ -1455,6 +1504,7 @@ class HelperTest(unittest.TestCase):
         self.plan({"result": APPROVED})
         output = self.helper("start", "codex", "--message-file", self.message(), cwd=unborn)
         self.assertEqual(output["currentHead"], "unborn")
+        self.assertIn("Review every file in the working tree", self.calls()[-1]["prompt"])
         ref = output["snapshots"][0]["ref"]
         listed = subprocess.run(
             ["git", "-C", str(unborn), "ls-tree", "--name-only", ref], capture_output=True, text=True,
@@ -1515,7 +1565,8 @@ class HelperTest(unittest.TestCase):
         unknown = self.helper("start", "codex", "--base", "nowhere", "--message-file", self.message(), expect=1)
         self.assertEqual(unknown["error"]["code"], "BASE_UNKNOWN")
         self.start()
-        self.assertIn("`git diff HEAD` plus untracked files", self.calls()[-1]["prompt"])
+        head = self.git_out("rev-parse", "HEAD").strip()
+        self.assertIn(f"`git diff {head}` plus untracked files", self.calls()[-1]["prompt"])
 
     def test_a_stale_approval_says_why(self):
         self.write("untracked.txt", "new\n")
@@ -1536,9 +1587,11 @@ class HelperTest(unittest.TestCase):
         self.write("app.py", "print('staged only')\n")
         self.git("add", "app.py")
         self.write("app.py", "print('hi')\n")
-        stale = self.helper("check-approval", review_id, expect=1)["error"]
-        self.assertEqual(stale["staleReasons"], [{"reason": "unreviewed content staged", "paths": ["app.py"]}])
+        self.assertEqual(self.helper("show", review_id)["staleReasons"], [])  # the index is no reason
         self.git("reset", "-q", "app.py")
+        self.plan({"exit": 1, "stderr": "boom"})
+        self.helper("continue", review_id, "--message-file", self.message(), expect=1)
+        self.assertEqual(self.helper("check-approval", review_id)["effectiveStatus"], "APPROVED")  # a failed turn
         self.plan({"exit": 1, "stderr": "boom"})
         self.helper("continue", review_id, "--instructions-file", self.message("Be strict.\n"),
                     "--message-file", self.message(), expect=1)
@@ -1548,6 +1601,10 @@ class HelperTest(unittest.TestCase):
         self.plan({"result": APPROVED})
         self.helper("continue", review_id, "--message-file", self.message())
         self.assertEqual(self.helper("show", review_id)["staleReasons"], [])
+        self.plan({"exit": 1, "stderr": "boom"})
+        self.helper("continue", review_id, "--instructions-file", self.message("Be strict.\n"),
+                    "--message-file", self.message(), expect=1)
+        self.assertEqual(self.helper("check-approval", review_id)["effectiveStatus"], "APPROVED")  # the same text
 
     def test_approvals_names_the_paths_an_earlier_approval_still_covers(self):
         """An approved review covers the paths that its reviewer was told to look at and whose content is still the
@@ -1593,6 +1650,23 @@ class HelperTest(unittest.TestCase):
         self.git("add", "-A")
         self.git("commit", "-q", "-m", "approved work")
         self.assertEqual((self.helper("approvals")["scopePaths"], self.helper("approvals")["approvals"]), ([], []))
+
+    def test_approvals_offers_only_reviews_with_the_requested_instructions(self):
+        self.plan({"result": APPROVED})
+        review_id = self.helper("start", "codex", "--instructions-file", self.message("Be strict.\n"),
+                                "--message-file", self.message())["reviewId"]
+        self.assertEqual(self.helper("approvals")["approvals"], [])
+        same = self.helper("approvals", "--instructions-file", self.message("Be strict."))  # without the newline
+        self.assertEqual([row["reviewId"] for row in same["approvals"]], [review_id])
+        other = self.helper("approvals", "--instructions-file", self.message("Be lenient.\n"))
+        self.assertEqual(other["approvals"], [])
+        self.plan({"exit": 1, "stderr": "boom"})  # the review takes new instructions; its approval keeps the old
+        self.helper("continue", review_id, "--instructions-file", self.message("Be lenient.\n"),
+                    "--message-file", self.message(), expect=1)
+        for text in ("Be strict.\n", "Be lenient.\n"):
+            with self.subTest(instructions=text):
+                listed = self.helper("approvals", "--instructions-file", self.message(text))
+                self.assertEqual(listed["approvals"], [])
 
     def test_new_instructions_void_the_approval_until_codex_approves_again(self):
         review_id = self.start(APPROVED)["reviewId"]

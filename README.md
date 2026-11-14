@@ -159,8 +159,8 @@ credentials in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#
    image's managed setting overrides `/tui fullscreen`.
 1. `/ko-review`, the skill of the image's `ko-review` plugin, reviews the working tree.
    Choose Codex or a separate Claude Code session as the reviewer. Claude fixes or disputes each
-   finding on the same reviewer thread until the reviewer approves the exact tree or asks for a
-   decision only you can make.
+   finding on the same reviewer thread until the reviewer approves every change in the scope or
+   asks for a decision only you can make.
    - A Codex reviewer needs `--model-provider` to name `openai` (the launch example above).
    - Claude adopts or disputes the reviewer's suggestions, which are opinions on the design that
      do not block approval. Claude brings you the suggestions that are yours to decide, and names

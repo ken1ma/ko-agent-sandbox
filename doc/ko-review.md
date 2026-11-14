@@ -5,16 +5,17 @@ tree. The user chooses the reviewer.
 
 - The author, the session that made the changes, fixes or disputes each finding on the same
   reviewer thread.
-- The cycle ends when the reviewer approves the exact tree, or when the reviewer asks for a
-  decision only the user can make.
+- The cycle ends when the reviewer approves every change in the scope, or when the reviewer asks
+  for a decision only the user can make.
 - The reviewer's suggestions never block approval ("The cycle", step 2).
 
 Each new review has its own reviewer thread, and so audits the scope independently.
 
 - Before the skill opens a new review, the skill offers to continue an approved review whose
   approval still covers part of the scope (`approvals`, below).
-- The skill makes no such offer when the argument names instructions, or a reviewer, model or
-  effort, that a continuation would not keep.
+- `approvals` offers only reviews with the instructions that the argument names, since an approval
+  holds for the instructions it was given. The skill makes no offer when the argument names a
+  reviewer, model or effort that a continuation would not keep.
 - When such a review already approves the current tree, the skill asks whether to stop or to open
   a new review, such as one with a stronger model or a higher effort.
 
@@ -81,8 +82,9 @@ Where the parts are:
      not.
      - The helper records the commit id that the ref resolves to at `start`, so a branch that
        moves during the review does not move the scope.
-     - Without `--base`, the reviewer reviews the working tree against HEAD, so work committed
-       during the session is out of scope.
+     - Without `--base`, each turn's prompt names the commit that HEAD points at when the turn
+       starts, and the reviewer reviews the working tree against it. Work committed during the
+       session is out of scope. Before the first commit, the reviewer reviews every file.
      - The skill passes a base only from its argument, for the reason `SKILL.md` step 1 gives.
      - The reviewer compares the working tree with the base's tree, so commits merged or pulled
        since the base are in scope too.
@@ -134,16 +136,18 @@ Where the parts are:
      without reading the transcript.
    - `continue --instructions-file FILE` sends instructions that the user gives during a review.
      - The new instructions replace the earlier instructions from that round on.
-     - The new instructions invalidate the current approval, since the reviewer has not approved
-       the tree under them.
+     - An approval holds for the instructions it was given, so instructions with a different text
+       make it stale until a turn under them ends in a new approval.
 4. The review repeats until `APPROVED`, or until `maxRounds` completed rounds end it with
    `LOOP_LIMIT_REACHED`.
    - The default limit is 12; `start REVIEWER --max-rounds` sets another.
+   - A `continue` that the limit refuses leaves an approval in place.
    - A request for a user decision ends the review only when the author agrees and runs
      `ko-review escalate REVIEW_ID --message-file FILE`. Otherwise the author argues the point on
      the same thread.
 5. Before the author reports an approval, `ko-review check-approval REVIEW_ID` confirms that the
-   approval covers the current working tree ("Approval binds to the exact tree", below).
+   approval covers the current working tree ("Approval binds to the reviewed changes and the
+   review's instructions", below).
 
 The author reports each round's outcome, and when the review ends, a table of every round and the
 command `ko-review transcript REVIEW_ID`.
@@ -172,7 +176,7 @@ The commands:
   other commands take.
   - A review whose state this helper cannot read is listed with the error's code as its
     `effectiveStatus`, so that `delete` can be given its id.
-- `digest`: the working-tree digest.
+- `digest`: the content digest of the reviewable files, with HEAD's commit id.
 - `show REVIEW_ID`: the review's state.
   - For a round in progress, `show` adds `activity`: the event log's path, the time elapsed, and
     the type and time of the last event received.
@@ -190,19 +194,19 @@ The commands:
 - `defaults REVIEWER`: the model and effort that the reviewer's local configuration selects for
   this repository, the models to offer with each model's efforts, and the `recommended` pair
   ("Defaults", below).
-- `approvals [--base REF]`: the approved reviews whose approval still covers part of the scope that
-  a `start` with that base would have, newest approval first.
+- `approvals [--base REF] [--instructions-file FILE]`: the approved reviews whose approval still
+  covers part of the scope that a `start` with that base would have, newest approval first.
   - Each entry has `coveredPaths` and `newPaths`, so that the skill can offer to continue a review
     instead of opening a thread.
   - A path is covered when two conditions hold:
-    - the approved round's reviewer was told to look at the path, by the approved tree against
-      the review's base or against the HEAD of that round;
+    - the path is in the scope that the approved round recorded beside its manifest;
     - the path's content is the one in that round's manifest.
   - Content decides, so staging or committing the approved paths keeps them covered.
   - A path that no reviewer was told to look at is not covered, however long its content has been
     the approved one, as when HEAD moves under an untouched file.
-  - A candidate has the same base as the new review would have, and a snapshot tree. An approval
-    without a snapshot tree, as in a linked worktree, is never offered.
+  - A candidate has the same base as the new review would have. The instructions of its approval and
+    the review's current instructions both equal the new review's, so a continuation keeps them.
+    Whitespace around the instructions does not count, as in `check-approval`.
 
 The helper never commits, stages or moves HEAD. The author's fixes during a review are
 working-tree edits like any other, and the user commits them when and as they choose.
@@ -218,25 +222,23 @@ working-tree edits like any other, and the user commits them when and as they ch
     - Claude Code: the `system` `init` event's `session_id`, resumed with
       `claude -p --resume <that id>`.
   - The author never chooses a thread, and nothing uses `--last` or `--continue`.
-- **Approval binds to the exact tree.** After any change since the approval, `check-approval` fails
-  with `NOT_APPROVED` and the `effectiveStatus` `STALE_APPROVAL`. The error's `staleReasons` says
-  what changed, and `continue` obtains a new approval.
-  - The digest covers HEAD, the index and every file's raw content ("The digest", below).
-  - When the approved round has a snapshot, staging or committing the approved changes keeps the
-    approval, a staged deletion or rename included.
-    - The digest moves, but the content digest recorded with the approval still matches.
-    - The index, written as a tree, equals the approved snapshot's tree. Unreviewed staged content
-      fails this second check.
-    - A changed HEAD alone is then never a reason.
-  - Without a snapshot, as in a linked worktree ("Each round's tree and transcript are kept in
-    Git", below), a changed HEAD or index makes the approval stale, even when every
-    file's content is the approved one.
+- **Approval binds to the reviewed changes and the review's instructions.** After a file changes,
+  an unreviewed path enters the scope, or the instructions change, `check-approval` fails with
+  `NOT_APPROVED` and the `effectiveStatus` `STALE_APPROVAL`. The error's `staleReasons` says what
+  changed, and `continue` obtains a new approval.
+  - The content digest covers every reviewable file's raw content ("The digest", below).
+  - Staging, committing or moving HEAD keeps the approval, because the reviewer approved the
+    files, not the index or HEAD. Content that is staged and then removed from the files can
+    therefore reach a commit unreviewed.
+  - A path that enters the scope without a content change, as after `git reset --soft`, makes the
+    approval stale: no reviewer looked at it. The rule is the one that `approvals` applies.
+  - A failed turn keeps the approval, since neither the files nor the instructions changed.
+    Approvals of other reviews of the same content, by other reviewers, models or efforts, hold
+    alongside it.
   - `staleReasons`, in `show` and in `check-approval`'s error, gives these reasons:
     - "working files changed", with the paths, from the manifest of hashes that the round saved
       beside its snapshot;
-    - "unreviewed content staged", with the paths;
-    - HEAD or the index changed, and the round has no snapshot;
-    - the index could not be compared;
+    - "paths entered the scope since the approval", with the paths;
     - the instructions changed after the approval.
 - **Each round's tree and transcript are kept in Git**, under
   `refs/ko-review/<review id>/round-NNN`, without touching the user's index, HEAD or files.
@@ -256,14 +258,17 @@ working-tree edits like any other, and the user commits them when and as they ch
 
   - A clone or push copies the refs only when it names them, as `--mirror` does.
   - A tree holds a submodule or nested repository as a commit id, not as its working tree. The
-    snapshot names those paths in `excludes`, and the digest alone covers their contents.
-  - In a linked worktree, whose Git directory is read-only, the round records no snapshot, and the
-    digest alone binds the round.
+    snapshot names those paths in `excludes`, and the content digest alone covers their contents.
+  - In a linked worktree, whose Git directory is read-only, the round records no snapshot. The
+    manifest and the recorded scope still bind the round.
   - When the transcript cannot be written, the tree stays on the ref, and the snapshot's
     `transcriptError` holds the diagnostic.
-- **A change to the tree during a turn discards the turn's result.** The helper takes the digest
-  before and after the reviewer runs. A difference fails with `WORKTREE_CHANGED_DURING_REVIEW`,
-  with the paths.
+- **A change to the files during a turn discards the turn's result.** The helper compares the
+  content digest before and after the reviewer runs. A difference fails with
+  `WORKTREE_CHANGED_DURING_REVIEW`, with the changed paths.
+  - Staging, committing or moving HEAD during a turn keeps the result. The prompt names a commit
+    id rather than `HEAD`, so a commit does not move what the reviewer reads.
+  - The check therefore misses a reviewer that stages or commits without editing a file.
   - Nothing is reverted.
   - The helper does not say who changed the tree: a host editor, another session or the reviewer
     itself may have.
@@ -323,10 +328,11 @@ The state directory:
 $HOME/persistent-volume/ko-review/repositories/<sha256 of the checkout path>/
 ├── repository.json          the unhashed path
 └── reviews/<review id>/
-    ├── state.json           reviewer, status, round, thread id, reviewed and approved digests
+    ├── state.json           reviewer, status, round, thread id, reviewed and approved content
     ├── journal.jsonl        every author message, reviewer result, escalation and error
     ├── review.lock
-    └── rounds/NNN-{input.md,manifest.json,<reviewer>.jsonl,<reviewer>.stderr,result.json}
+    └── rounds/NNN-{input.md,manifest.json,scope.json,result.json,
+                    <reviewer>.jsonl,<reviewer>.stderr}
 ```
 
 The repository's own Git directory holds `refs/ko-review/<review id>/round-NNN` for each round's
@@ -361,23 +367,18 @@ transcript and tree. `delete` removes those refs together with the review's dire
 
 ### The digest
 
-- The working-tree digest is SHA-256 over three parts:
-  - the HEAD id;
-  - every record of
-    `git status --porcelain=v2 -z --untracked-files=all --no-renames --ignore-submodules=none`,
-    sorted by path, which carries the index's and HEAD's object ids and modes;
-  - a content digest.
 - The content digest covers every file Git would review, from
   `git ls-files --cached --others --exclude-standard`.
   - Each file contributes its raw content with its executable bit, or its symlink target. An absent
     path contributes nothing.
   - The digest reads raw content because `git status` calls a file clean when its content after
-    the clean filter matches the index. The status records alone miss a change that a filter
-    strips.
-- A submodule or nested repository is digested the same way, as a tree of its own, since its
-  status record carries dirty flags, not what changed.
+    the clean filter matches the index, and so misses a change that a filter strips.
+- HEAD, the index and other refs are not part of the digest, because the reviewer reviews the
+  files. A round records HEAD's commit id separately, as the commit its scope is against.
+- A submodule or nested repository is digested the same way, as a tree of its own, since Git
+  lists it as one path. A commit inside it changes no content and leaves the digest alone.
 - No `git diff` runs, so no diff or textconv driver shapes the digest.
-- One scan of the checkout produces the digest, the content digest and the manifest. A command
+- One scan of the checkout produces HEAD's commit id, the content digest and the manifest. A command
   scans once, and a turn scans twice, before and after the reviewer runs, since those are two
   observations.
 
@@ -496,8 +497,8 @@ Further rules of the review:
 - Every round after the first names two sets of paths:
   - the paths whose content changed since the round the reviewer last answered, from the rounds'
     manifests;
-  - the paths that entered the scope without changing, as when HEAD moves under a file, from that
-    round's snapshot tree.
+  - the paths that entered the scope without changing, as when HEAD moves under a file, from the
+    scope that round recorded.
 - That round's prompt says the rest of the tree is as the reviewer read it. So a continued review
   after an approval sends the reviewer to the new work first.
 - The journal records an instruction change in the round it takes effect, and the transcript shows
@@ -513,7 +514,7 @@ Further rules of the review:
   - Codex's Linux sandbox cannot set up under podman's masked `/proc` (the Containerfile has the
     measurement). So the image sets `danger-full-access`, and the reviewer prompt tells Codex not
     to write.
-  - The digest check enforces that rule, and the container stays the boundary.
+  - The check after each turn enforces that rule for files, and the container stays the boundary.
 - The helper does not use native `codex exec review`. That command starts a fresh reviewer each
   time, so a fix could not be re-reviewed with the earlier debate in context.
   - openai/codex-plugin-cc #375 found the same and fell back to ordinary turns.
@@ -521,7 +522,7 @@ Further rules of the review:
   (openai/codex #24833).
 - `codex app-server` would add JSON-RPC lifecycle handling for no gain over `codex exec`.
 - A persistent review primitive from Codex would replace the helper's Codex transport alone. The
-  digest binding, the snapshots and the retries serve Claude reviews the same way.
+  content binding, the snapshots and the retries serve Claude reviews the same way.
 - Measured with codex-cli 0.155.1:
   - `exec` and `exec resume` both accept `--json`, `--output-schema` and `--output-last-message`;
   - the resumed turn emits the persisted id and answers from the earlier turn's context;
@@ -555,8 +556,8 @@ helper keeps Codex's final message.
   `--permission-prompts none`, which denies every tool call that a permission prompt would gate.
   `--allowedTools` admits the git read commands and the web tools.
   - On a host with the default permission mode, the reviewer can therefore only read.
-  - Under the image's managed `bypassPermissions`, nothing prompts, and the digest check is the
-    enforcement, as for Codex.
+  - Under the image's managed `bypassPermissions`, nothing prompts, and the check after each turn
+    is the enforcement, as for Codex.
 - The failure is in the result object, not in the exit status. An API error can end a print-mode
   run with exit status 0, `is_error` true and the error text in `result`
   (anthropics/claude-code #79500).
