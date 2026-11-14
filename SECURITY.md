@@ -771,7 +771,7 @@ lifecycle, benchmark and launcher suites binds its figures to the digest of its 
   tell a `GET` from a `POST`.
 - The defaults hold no `tunnel` host. A host stays opaque only through a workspace's own `tunnel`
   line, such as agy's `/voice` host, where inspection fails the client's HTTP/2
-  (`doc/plan-tls-inspect-agents.md`, "Measurement").
+  (`doc/agent-measurement.md`, "Measurement").
 - An inspected model host, such as `api.anthropic.com`, `chatgpt.com`, `api.openai.com`, agy's two
   `cloudcode-pa.googleapis.com` hosts, Kiro's `runtime` and `management` hosts and Copilot's four
   hosts in the defaults, grants every method at its root.
@@ -1177,8 +1177,9 @@ with the longest literal path match (`doc/egress-proxy.md`, "The rule file"):
     allowed network traffic" apply here too.
   - A session can initiate device authorization for a GitHub OAuth app. Completing that flow
     requires user authorization on GitHub's device page.
-- `method=` on a workspace's own line: the listed HTTP methods at that path, inspected and logged.
-  The defaults have no such line beyond the login pair.
+- `method=`: the listed HTTP methods at that path, inspected and logged. Beyond the login pair, the
+  defaults grant every method at the roots of the inspected model and login hosts alone ("What is
+  inside TLS").
   - `doc/egress-rule-example/npm-audit/rule` is the measured case: a `POST` to the audit endpoint
     that the image's npm uses at install time. Older npm endpoints are refused and logged without
     failing the installation.
@@ -1186,8 +1187,9 @@ with the longest literal path match (`doc/egress-proxy.md`, "The rule file"):
     inventory includes names that the registry's own `GET`s never carried, such as private-registry
     and Git dependencies in a lockfile. The request does not send dependency edges. Enabling
     install-time vulnerability warnings allows that disclosure.
-- `upgrade=websocket` on a workspace's own line: a WebSocket handshake at that path, and the stream
-  after a checked `101`, relayed unparsed. The defaults have no such line.
+- `upgrade=websocket`: a WebSocket handshake at that path, and the stream after a checked `101`,
+  relayed unparsed. The defaults' one such line is Claude Code's `/voice` path
+  (`defaults/model-provider/anthropic`).
   - The handshake is a `GET` with one `Upgrade: websocket` and one `Sec-WebSocket-Key`, and the
     word grants no other request there.
   - The stream is a channel of its own size each way, which the log records as byte totals
@@ -1281,7 +1283,7 @@ read-only.
   ruleset it resolved:
   - a missing name would cause a TLS error for an allowed inspected host;
   - an extra name would let the proxy authenticate as a host outside its inspection set,
-    potentially including an opaque model endpoint.
+    potentially including a host that a workspace's `tunnel` line keeps opaque.
 
 The sandbox trusts that CA through:
 

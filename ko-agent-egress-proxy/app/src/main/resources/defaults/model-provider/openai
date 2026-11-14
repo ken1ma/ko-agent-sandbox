@@ -3,11 +3,11 @@ allow https://chatgpt.com/     read method=POST,PUT,PATCH,DELETE  # model traffi
 allow https://api.openai.com/  read method=POST,PUT,PATCH,DELETE  # API-key use
 allow https://auth.openai.com/ read method=POST,PUT,PATCH,DELETE  # issues the device code and the tokens
 
-# Measured with codex 0.169.0 on 2026-11-13 (doc/plan-tls-inspect-agents.md, "Measurement"):
+# Measured with codex 0.169.0 on 2026-11-13 (doc/agent-measurement.md, "Measurement"):
 # - Modes: the interactive TUI, with two turns and two compactions; codex exec with tool calls, codex exec resume and
 #   a turn that spawns a subagent. Signed in with ChatGPT, and codex exec also with an API key. codex logout, codex
 #   login --device-auth, and a token refresh that a rejected access token forced.
-# - The path, refused and error lines are what MeasurementReport accepts (doc/plan-tls-inspect-agents.md, "The
+# - The path, refused and error lines are what MeasurementReport accepts (doc/agent-measurement.md, "The
 #   measurement suite"). Each <...> stands for one label of a host name.
 #   path chatgpt.com /backend-api/codex/responses /backend-api/codex/models /backend-api/codex/analytics-events/events
 #   path chatgpt.com /backend-api/wham/accounts/check /backend-api/wham/usage /backend-api/wham/security-setup

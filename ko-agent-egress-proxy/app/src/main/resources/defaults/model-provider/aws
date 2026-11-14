@@ -39,12 +39,12 @@ allow https://oidc.us-east-1.amazonaws.com/         read method=POST,PUT,PATCH,D
 # - cli.kiro.dev serves the install script.
 
 # Measured with kiro-cli 3.3.0 on 2026-11-14, signed in with a Google account in us-east-1, under deny-unless-allowed
-# (doc/plan-tls-inspect-agents.md, "Measurement"):
+# (doc/agent-measurement.md, "Measurement"):
 # - Modes: kiro-cli chat --v3 --no-interactive with a shell call and a subagent that makes its own shell call;
 #   --resume-id with a shell call; the V3 TUI in this repository, with two turns, /compact and a message; kiro-cli
 #   logout, kiro-cli login --use-device-flow and a turn; a token refresh at the token's expiry; the TUI with a turn
 #   under deny-unless-model.
-# - The path, refused and error lines are what MeasurementReport accepts (doc/plan-tls-inspect-agents.md, "The
+# - The path, refused and error lines are what MeasurementReport accepts (doc/agent-measurement.md, "The
 #   measurement suite").
 #   path runtime.us-east-1.kiro.dev / /v1/responses
 #   path management.us-east-1.kiro.dev /

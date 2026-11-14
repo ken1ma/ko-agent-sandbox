@@ -59,7 +59,7 @@ Each fact is specified in one place:
 5. Broker an API-key or OAuth-backed model provider only when the installed client accepts the
    launch CA. At a provider host that is otherwise a tunnel, the host also explicitly accepts, for
    that run, that the proxy sees plaintext. A model host that the defaults inspect is read in
-   plaintext without a selected credential (`plan-tls-inspect-agents.md`, "Outcome").
+   plaintext without a selected credential (`design.md`, "Model hosts inspected by default").
 
 Registry login, SSH agent forwarding and cloud request re-signing are different protocols. This
 plan does not require them.

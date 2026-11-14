@@ -20,11 +20,11 @@ allow https://api.github.com/copilot_internal/managed_settings    read
 allow https://api.github.com/copilot_internal/team_customizations read
 
 # Measured with copilot 1.0.111 on 2026-11-14, signed in on an individual plan, under deny-unless-allowed
-# (doc/plan-tls-inspect-agents.md, "Measurement"):
+# (doc/agent-measurement.md, "Measurement"):
 # - Modes: copilot -p with a shell call and a subagent that makes its own shell call; copilot --resume -p with a shell
 #   call; copilot -p with a read through the built-in GitHub MCP server; the interactive TUI in this repository, with
 #   three turns and a compaction, then /login and a message; the TUI with a turn under deny-unless-model.
-# - The path, refused and error lines are what MeasurementReport accepts (doc/plan-tls-inspect-agents.md, "The
+# - The path, refused and error lines are what MeasurementReport accepts (doc/agent-measurement.md, "The
 #   measurement suite"). Each <...> stands for one segment.
 #   path api.individual.githubcopilot.com /responses /chat/completions /auto /models /meta /mcp/readonly
 #   path api.individual.githubcopilot.com /agents/swe/internal/memory/v0/enabled

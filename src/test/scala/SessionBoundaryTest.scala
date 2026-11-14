@@ -332,7 +332,8 @@ class SessionBoundaryTest extends munit.FunSuite:
 
     Vector("pypi.org", "github.com", "api.anthropic.com", "platform.claude.com", "chatgpt.com").foreach: host =>
       assertEquals(issuer(host), ca, s"$host is not inspected")
-    // The session's providers decide its tunnel hosts, and one of them stands for the rest.
+    // Only the workspace's rule file makes a tunnel, since the defaults hold none, and one tunnel stands for the
+    // rest. A workspace without one checks no opaque host here; EgressSessionTest launches one.
     raw"allow https://([^/\s]+)/ tunnel".r
       .findAllMatchIn(env("KO_AGENT_SANDBOX_EGRESS_RULESET").getOrElse(""))
       .map(_.group(1))

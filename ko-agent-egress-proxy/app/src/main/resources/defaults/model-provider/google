@@ -48,12 +48,12 @@ allow https://lh3.googleusercontent.com/            read
 # model-provider/openai.
 
 # Measured with agy 1.5.8 on 2026-11-14, signed in with a consumer account, under deny-unless-allowed
-# (doc/plan-tls-inspect-agents.md, "Measurement"):
+# (doc/agent-measurement.md, "Measurement"):
 # - Modes: agy -p with a shell call and a subagent that makes its own shell call; agy --conversation -p with a shell
 #   call; the interactive TUI in this repository, with two turns and /compact, a sign-out, a sign-in and a message,
 #   then /voice under --audio=mic; a token refresh, forced by moving the token file's expiry into the past; the TUI
 #   with a turn under deny-unless-model.
-# - The path, refused and error lines are what MeasurementReport accepts (doc/plan-tls-inspect-agents.md, "The
+# - The path, refused and error lines are what MeasurementReport accepts (doc/agent-measurement.md, "The
 #   measurement suite"). Each <...> stands for one segment.
 #   path daily-cloudcode-pa.googleapis.com /v1internal:loadCodeAssist /v1internal:fetchAvailableModels
 #   path daily-cloudcode-pa.googleapis.com /v1internal:fetchAdminControls /v1internal:fetchUserInfo
@@ -93,4 +93,4 @@ allow https://lh3.googleusercontent.com/            read
 # - /voice and fetchConfig went through a tunnel to aicode.googleapis.com, which the measurement allowed. No mode or
 #   turn failed.
 # - Unmeasured: the GCP-licensed accounts on cloudcode-pa, inspected on this client's evidence; the Business sign-in;
-#   GEMINI_API_KEY, whose key may travel in the query (doc/plan-tls-inspect-agents.md, "Guarantees", 3).
+#   GEMINI_API_KEY, whose key may travel in the query (doc/agent-measurement.md, "Rules").

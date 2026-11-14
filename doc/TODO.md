@@ -60,7 +60,7 @@ reason, so that nobody proposes it again.
   - A workspace that tests against the provider with its own key selects no credential for that
     host, or accepts the refusal. Every other host keeps the rule that the proxy forwards a token
     that is not a placeholder (`egress-proxy.md`, "Where the value goes").
-  - Measure first, with the model host inspected at the root (`plan-tls-inspect-agents.md`,
+  - Measure first, with the model host inspected at the root (`agent-measurement.md`,
     "Measurement").
   - Rejected: exact-path grants on the model host without brokering (`/v1/messages` alone).
     - The path list is the per-release contract with the CLI that brokering declines.
@@ -70,8 +70,6 @@ reason, so that nobody proposes it again.
 
 ## TLS inspection of the agents' model traffic
 
-- [ ] Carry out `plan-tls-inspect-agents.md`:
-  - inspect each agent's model hosts by default, one agent at a time after its measurement.
 - [ ] Note at `--build` when an installed client's version differs from the measured version
   beside its lines in `defaults/model-provider/<name>`, as `--build` notes a podman machine that
   is behind. The build still succeeds: the image then runs that client over inspection unmeasured.
@@ -529,7 +527,7 @@ SECURITY.md, "The supply chain", has npm's seven-day window and why uv gets none
     the two cases that is has not been measured.
   - The values are the client's free text. So each field needs the rule that `client=` has: the
     line prints a value's start, as far as its characters are in a fixed set
-    (`plan-tls-inspect-agents.md`, "Audit line additions").
+    (SECURITY.md, "The audit line grammar").
   - `x-claude-code-prev-tool-durations` stays out: it is up to 4 KB of timing data.
   - The proxy would hold a list of a client's header names, which each release can change.
 
@@ -669,8 +667,9 @@ unreachable from a session. If such a site is ever needed, this design keeps the
 
 - [ ] Trust an upstream proxy's interception CA, so that a TLS-terminating upstream proxy stops
   failing closed with certificate errors (`egress-proxy.md`, "Through an upstream proxy").
-  - Including the CA is authority: the CA lets that proxy read and change opaque model traffic. So
-    the trust needs a launch-time selection and a banner line of its own.
+  - Including the CA is authority: the CA lets that proxy read and change every host's traffic,
+    the model hosts' included. So the trust needs a launch-time selection and a banner line of its
+    own.
   - Four stores are extended: the proxy's origin trust, the sandbox PEM bundle, the image JDK's
     `cacerts`, and `ko-sandbox-jdk-use-proxy`'s certificate.
   - An endpoint CA, for an `https` endpoint under a private CA, is carried the same way but extends
@@ -1131,8 +1130,8 @@ bans sources`, compilation, binary identity, and the installed FUSE backend's mo
 - [ ] Keep the checks above in `--build`, and keep the FUSE backend's mounted suites in
   `--self-test`; CI does not prove the FUSE backend on a user's own machine.
 - [ ] Repeat, on the image CI builds, the measurement of each agent whose model hosts the defaults
-  inspect (`plan-tls-inspect-agents.md`, "Measurement"), signed in to that agent with a test
-  account. The plan's measurement suite runs it ("The measurement suite").
+  inspect (`agent-measurement.md`, "Measurement"), signed in to that agent with a test
+  account. The measurement suite runs it ("The measurement suite").
   - A run that passes at another client version is the evidence for recording that version beside
     the agent's lines in `defaults/model-provider/<name>`.
   - CI runs no `/voice`, which needs a microphone. `/voice` is measured by hand.

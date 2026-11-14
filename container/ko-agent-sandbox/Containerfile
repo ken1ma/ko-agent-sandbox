@@ -730,8 +730,8 @@ RUN --mount=type=bind,target=/mnt/context \
     #   prompts.
     # - The agent has no resources entry. A custom agent inherits the global steering, where the instructions link
     #   below lands, unless chat.disableInheritingDefaultResources is set.
-    # app.disableAutoupdates: the proxy would refuse the startup update check, because the check's host is absent
-    # from model-provider/aws. Updates arrive by rebuilding like the others.
+    # app.disableAutoupdates: updates arrive by rebuilding like the others. kiro-cli 3.3.0's TUI still asks
+    # prod.download.cli.kiro.dev once at start, which the proxy refuses (model-provider/aws).
     install -d -o nonroot -g nonroot -m 0700 \
         $KO_SANDBOX_VOLUME_SEED/kiro/config/settings \
         $KO_SANDBOX_VOLUME_SEED/kiro/config/agents; \
@@ -764,8 +764,8 @@ RUN --mount=type=bind,target=/mnt/context \
     #   (doc/agent-settings.md, "Restoring permission prompts").
     # - share disabled: /share would post the session to opncd.ai, or to an enterprise's own URL, and a workspace
     #   rule line could allow either destination.
-    # - autoupdate false: the binary belongs to the image, and the check alone reads the GitHub release API at
-    #   every start.
+    # - autoupdate false: the binary belongs to the image. OpenCode 1.19.5's TUI still reads its latest version
+    #   from registry.npmjs.org at every start (model-provider/openai).
     install -d -m 0755 /etc/opencode; \
     printf '%s\n' \
         '{' \

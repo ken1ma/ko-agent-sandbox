@@ -486,8 +486,8 @@ headers. Chosen instead: the `upgrade=websocket` grant, at a path that a line na
   up to the switch, the connection still carries one request that the proxy reads (`SECURITY.md`,
   "Reading without being able to write").
 - A grant at a host's root would let any client move its traffic into streams that the log shows
-  as one line each. The defaults grant at a path, never at a root (`plan-tls-inspect-agents.md`,
-  "Guarantees").
+  as one line each. The defaults grant at a path, never at a root (`agent-measurement.md`,
+  "Rules").
 - The Codex CLI's built-in provider opens a WebSocket to its model host, and falls back to HTTP
   after the refusal (`defaults/model-provider/openai` has the measurement). Its hosts take no grant
   while the fallback works: with the grant, the log would show one line per connection in place of
@@ -503,6 +503,9 @@ headers. Chosen instead: the `upgrade=websocket` grant, at a path that a line na
   - The client's `supports_websockets = false` cannot be set for that provider: codex-cli 0.169.0
     keeps a built-in provider's routing and accepts only `model_catalog_url` from an override
     (`codex-rs/model-provider-info/src/lib.rs`, `merge_configured_providers`).
+  - The image's Codex configuration defines no custom `[model_providers.NAME]` with
+    `supports_websockets = false` either. The image would then select a provider for every user,
+    and follow Codex's configuration schema across releases.
 - Copilot CLI opens a WebSocket at its plan host's `/responses`, and after the `403` sends the
   turn over HTTP at once (`defaults/model-provider/github` has the measurement). Its hosts take no
   grant, for Codex's reason above.
@@ -516,10 +519,60 @@ fallback, or the provider drops the HTTP path. Remove the `426` once Codex gains
 option (openai/codex #27381) or stops retrying before the fallback (#19821), and a measurement shows
 that a `403` costs no retries.
 
+### Model hosts inspected by default
+
+Considered: keeping the agents' model and login hosts as tunnels. Chosen instead: the defaults
+inspect each agent's model and login hosts once a measurement shows that the agent's client works
+over an inspected connection (`agent-measurement.md`).
+
+- Under a tunnel, an upload to a model host under an attacker's key leaves one `CONNECT` line,
+  and nothing tells it from a turn (SECURITY.md, "Exfiltration through allowed network traffic").
+  Inspected, each request is a line with its path, size, client and credential index.
+- The proxy already reads forge tokens in plaintext on the inspected `api.github.com`, and a forge
+  token rates above a model token ("Credential brokering at the egress proxy").
+- agy's control-plane writes share its model host, such as `writeTrajectoryAcls` beside
+  `streamGenerateContent`. Inspected, each write is a line with its path, as Copilot's GitHub MCP
+  calls are.
+
+Inspection reads no conversation for intent ("No DLP/entropy/LLM firewall"). Inspection refuses no
+foreign key either: refusing that key needs the session's own key, and so the brokered overlay
+(`TODO.md`, "Credential brokering", the `require-placeholder` item).
+
+The costs, accepted:
+
+- The proxy holds every inspected model request's conversation and provider token in memory, in
+  plaintext, whether or not the launch selects a credential. No launch asks for consent, and the
+  banner's `N inspected, M tunnel` counts are its only mention.
+- Returning a host to a tunnel takes a workspace's whole ruleset: `deny defaults` and a `tunnel`
+  line of its own (`egress-proxy.md`, "The rule file"). `deny-unless-model` ignores both lines, so
+  under that profile an inspected host has no way back. A client release that fails over
+  inspection leaves the user no lighter way back.
+
+Not done:
+
+- Refusing paths on a model host, such as a Files API endpoint. Such a refusal is a per-release
+  contract with each CLI ("Credential brokering at the egress proxy"), and a storage behavior added
+  at an allowed endpoint reopens the attack (`TODO.md`, the `require-placeholder` item).
+- Logging a credential's value, prefix or digest. The credential index tells a reader the one fact
+  needed: that the credential changed.
+- Removing query values from the logged target. The URL is the message that an allowed `GET`
+  carries, and the log records it whole (SECURITY.md, "The audit line grammar"). So a host whose
+  client sends its credential in the query stays a tunnel.
+- A launch option that returns the model hosts to tunnels. A host's treatment is chosen in the
+  ruleset alone, where a reviewer of the rule file reads it.
+- Request headers beyond the `User-Agent` and the credential as log fields. Claude Code's hint
+  headers wait in `TODO.md` ("Deferred — Claude Code's hint headers on the audit line"). Neither
+  Codex's nor Copilot CLI's documentation names a request header (read 2026-09-28). Revisit per
+  agent with a documented header list.
+- Any log field from a body.
+- A relay change for a client that fails the measurement, beyond the `upgrade=websocket` grant.
+- Any `upgrade=` value but `websocket`. Cleartext HTTP/2 (`h2c`) would turn the one request into a
+  stream of requests that the proxy does not read.
+
 ### No inspecting every allowed host
 
 The defaults inspect an agent's model hosts once the agent's client passes a measurement over an
-inspected connection (`plan-tls-inspect-agents.md`, "Measurement"). That is no reason to terminate
+inspected connection ("Model hosts inspected by default"). That is no reason to terminate
 TLS everywhere and drop `tunnel`. Terminating TLS everywhere would have these costs, the most
 serious first:
 
@@ -532,14 +585,13 @@ serious first:
 - It would take away a workspace's way to keep a host out of the proxy's plaintext view: a
   `tunnel` line of its own, under `deny defaults` for a host the defaults inspect.
   - For a measured model host, the defaults accept that view without a per-launch consent
-    (`plan-tls-inspect-agents.md`, "Outcome").
+    ("Model hosts inspected by default").
   - SECURITY.md has the exposure ("Not defended", "What is inside TLS").
 - It would gain no substitution at a signed cloud API, where no header holds a value to
   substitute, while costing every request a handshake ("Credential brokering at the egress
   proxy").
 
-Revisit per agent, with that agent's measurement (`plan-tls-inspect-agents.md`, "The agents, in
-order").
+Revisit per agent, with that agent's measurement (`agent-measurement.md`, "The agents, in order").
 
 ### No HTTP query endpoint on the proxy
 

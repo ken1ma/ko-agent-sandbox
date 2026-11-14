@@ -383,7 +383,7 @@ class HostileInputTest extends munit.FunSuite:
   // - each profile, with the provider selected and not;
   // - files with `deny defaults` and without;
   // - providers allowed and denied, and `tunnel` taken and re-granted;
-  // - hosts the defaults lack and hosts the defaults tunnel;
+  // - hosts the defaults lack and hosts the defaults inspect (the defaults hold no tunnel);
   // - requests to hosts that no line names, to inspected hosts under a denied subtree, and at both sides of a
   //   boundary.
   // ---------------------------------------------------------------------------

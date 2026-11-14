@@ -1,4 +1,4 @@
-// Reads one run's proxy log against the measurement records in defaults/model-provider (doc/plan-tls-inspect-agents.md,
+// Reads one run's proxy log against the measurement records in defaults/model-provider (doc/agent-measurement.md,
 // "The measurement suite"). src/test/measurement/MeasureAgents.scala runs the modes that need no person; the manual
 // items add to the same run. On the host:
 //

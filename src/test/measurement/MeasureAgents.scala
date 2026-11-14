@@ -4,7 +4,7 @@
 
 /*
   Runs the measurement modes that need no person, inside a session whose agents are signed in
-  (doc/plan-tls-inspect-agents.md, "The measurement suite"). The session's proxy log then goes to MeasurementReport on
+  (doc/agent-measurement.md, "The measurement suite"). The session's proxy log then goes to MeasurementReport on
   the host. Each mode prints its UTC start and end, so that the report can be matched with the modes.
 
   Run it in the session, from the repository root. Every agent runs when none is named:
@@ -302,7 +302,7 @@ object MeasureAgents:
     upload(work, "chatgpt.com", "https://chatgpt.com/backend-api/codex/responses",
       "-H", "Authorization: Bearer measurement-not-a-token", "-H", "Content-Type: application/json")
 
-  // What stays manual (doc/plan-tls-inspect-agents.md, "The measurement suite"). The record names each item with the
+  // What stays manual (doc/agent-measurement.md, "The measurement suite"). The record names each item with the
   // version it was measured at.
   private val ManualItems = Map(
     "claude" ->

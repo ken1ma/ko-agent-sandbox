@@ -3,11 +3,11 @@ allow https://api.anthropic.com/   read method=POST,PUT,PATCH,DELETE
 allow https://api.anthropic.com/api/ws/speech_to_text/voice_stream upgrade=websocket  # /voice under --audio=mic
 allow https://platform.claude.com/ read method=POST,PUT,PATCH,DELETE  # OAuth token exchange, refresh and revocation
 
-# Measured with claude 2.1.319 and 2.1.323 on 2026-11-13 (doc/plan-tls-inspect-agents.md, "Measurement"):
+# Measured with claude 2.1.319 and 2.1.323 on 2026-11-13 (doc/agent-measurement.md, "Measurement"):
 # - Modes: an interactive session with tool calls, a subagent, a compaction, WebFetch and /voice under --audio=mic;
 #   claude -p, as ko-review runs it. 2.1.323 repeated all but the subagent and WebFetch, and added /logout, a sign-in,
 #   and a token refresh forced by moving the token's expiry into the past.
-# - The path, refused and error lines are what MeasurementReport accepts (doc/plan-tls-inspect-agents.md, "The
+# - The path, refused and error lines are what MeasurementReport accepts (doc/agent-measurement.md, "The
 #   measurement suite"). Each <...> stands for one segment or part of one; <org> is the organization's UUID.
 #   path api.anthropic.com /v1/messages /v1/messages/count_tokens /v1/mcp_servers /v1/ultrareview/quota
 #   path api.anthropic.com /api/oauth/profile /api/oauth/claude_cli/roles /api/oauth/account/settings
