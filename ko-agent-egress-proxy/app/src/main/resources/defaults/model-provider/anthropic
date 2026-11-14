@@ -20,13 +20,15 @@ allow https://platform.claude.com/ read method=POST,PUT,PATCH,DELETE  # OAuth to
 #   path api.anthropic.com /api/hello /api/web/domain_info /api/directory/plugins /api/directory/server-urls
 #   path api.anthropic.com /mcp-registry/v0/servers /api/ws/speech_to_text/voice_stream
 #   path platform.claude.com /v1/oauth/hello /v1/oauth/token /v1/oauth/token/revoke
+#   path github.com /anthropics/claude-plugins-official.git/info/refs
+#   path github.com /anthropics/claude-plugins-official.git/git-upload-pack
 #   refused mcp-proxy.anthropic.com CONNECT
 #   refused downloads.claude.ai CONNECT
 #   refused http-intake.logs.us5.datadoghq.com CONNECT
 #   error api.anthropic.com client:
-#   error api.anthropic.com relay: Broken pipe
+#   error api.anthropic.com relay: client: Broken pipe
 # - The refusals are of hosts absent below. The errors: Claude Code reset three connections, two before the response
-#   head reached it and one mid-upload; `relay: Broken pipe` as a client exited.
+#   head reached it and one mid-upload; `relay: client: Broken pipe` as a client exited.
 # - Requests without a credential: /api/hello, /api/web/domain_info, /api/directory/plugins,
 #   /api/directory/server-urls and /mcp-registry/v0/servers; one /api/event_logging/v2/batch after /logout; every
 #   request to platform.claude.com, whose codes and tokens travel in bodies.
@@ -36,7 +38,7 @@ allow https://platform.claude.com/ read method=POST,PUT,PATCH,DELETE  # OAuth to
 # - A /v1/messages body names the previous response that it continues, and holds only the messages after it. The
 #   client sends the whole transcript when the server's thread is gone or idle, so a request's size is not the
 #   conversation's.
-# - Other hosts: github.com, where the interactive mode's git child clones the plugin marketplace.
+# - The interactive mode's git child fetches the official plugin marketplace from github.com, without a credential.
 
 # These hosts of Claude Code's own list are absent (code.claude.com/docs/en/network-config):
 # - claude.ai serves the sign-in pages, which open in the host's browser. No measured mode sent a request there.

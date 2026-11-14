@@ -70,7 +70,7 @@ allow https://lh3.googleusercontent.com/            read
 #   refused aicode.googleapis.com CONNECT
 #   error daily-cloudcode-pa.googleapis.com tunnel: Connection reset
 #   error daily-cloudcode-pa.googleapis.com client closed before sending a request
-#   error daily-cloudcode-pa.googleapis.com relay: Broken pipe
+#   error daily-cloudcode-pa.googleapis.com relay: client: Broken pipe
 # - The client negotiated HTTP/1.1 and trusted the launch CA. The language server sends the model requests as
 #   antigravity/cli/1.5.8; the sign-in, userinfo and picture requests are Go-http-client/1.1.
 # - Within each sign-in, the model host's requests and the userinfo read carried the same credential index. The token

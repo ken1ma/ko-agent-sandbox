@@ -10,7 +10,7 @@
   Run it in the session, from the repository root. Every agent runs when none is named:
 
       scala $KO_AGENT_SANDBOX_JAVA_OPTS run --workspace ~/.cache/measure-agents \
-          src/test/measurement/MeasureAgents.scala -- [claude] [codex] [agy] [kiro-cli] [copilot]
+          src/test/measurement/MeasureAgents.scala -- [claude] [codex] [agy] [kiro-cli] [copilot] [opencode]
 
   - The image's native scala launcher reads no proxy settings, so the options go on its command line.
   - --workspace keeps Scala CLI's build state out of the workspace, where a host's run of another script would trip
@@ -34,7 +34,7 @@ import scala.util.Using
 
 object MeasureAgents:
 
-  val Agents = Vector("claude", "codex", "agy", "kiro-cli", "copilot")
+  val Agents = Vector("claude", "codex", "agy", "kiro-cli", "copilot", "opencode")
   val TurnTimeoutSeconds = 900L
   // The turns read these files, so that their tool calls have something to find.
   val NoteNames = Vector("a.txt", "b.txt")
@@ -254,6 +254,54 @@ object MeasureAgents:
     upload(work, "api.githubcopilot.com", "https://api.githubcopilot.com/responses",
       "-H", "Authorization: Bearer gho_measurement-not-a-token")
 
+  // OpenCode has no provider of its own, and the ChatGPT sign-in is the one route measured
+  // (defaults/model-provider/openai). Without --model, opencode run takes opencode/big-pickle, whose posts to
+  // opencode.ai the defaults refuse.
+  val OpencodeModel = "openai/gpt-6-astra"
+
+  /** A subagent's session as `opencode export` prints it, with its output and errors kept beside the turns' files, or
+    * why the export gave none. */
+  private def opencodeExport(work: Path, session: String): Either[String, agentsandbox.launcher.JsonText.Json] =
+    val (out, err) = (work.resolve(s"export-$session.json"), work.resolve(s"export-$session.err"))
+    val process = ProcessBuilder("opencode", "export", session).redirectInput(NoInput)
+      .redirectOutput(out.toFile).redirectError(err.toFile).start()
+    if !process.waitFor(TurnTimeoutSeconds, TimeUnit.SECONDS) then process.destroyForcibly().waitFor()
+    if process.exitValue != 0 then Left(s"opencode export $session exited ${process.exitValue}; see ${tail(err)}")
+    else agentsandbox.launcher.JsonText.parse(Files.readString(out, UTF_8))
+      .left.map(why => s"opencode export $session printed no JSON ($why); see $out")
+
+  private def measureOpencode(work: Path): Unit =
+    val prompt = Vector("opencode", "run", "--format", "json", "--auto", "--model", OpencodeModel)
+    start("opencode run with a shell call and a subagent")
+    val first = turn(work, "opencode", (prompt :+
+      "Use your bash tool to run 'wc -l words.txt'. Then start one subagent with your task tool, and have it list " +
+        "the notes directory with its own bash tool. Answer in one line with the line count and the file names. Do " +
+        "not modify anything.")*)
+    if !opencodeSucceeded(first) then
+      val seen = s"${tail(work.resolve("opencode.err"))} ${tail(work.resolve("opencode.jsonl"))}"
+      finish(Some(s"no successful turn; see $seen"))
+    else
+      val exports = opencodeSubagentSessions(first).map(opencodeExport(work, _))
+      val unexported = exports.collect { case Left(why) => why }
+      val lacks = opencodeLacks(first, exports.collect { case Right(session) => session })
+      finish(
+        if unexported.nonEmpty then Some(unexported.mkString("; "))
+        else Option.when(lacks.nonEmpty)(s"the run lacked ${lacks.mkString(", ")}"),
+      )
+    val session = opencodeSession(first)
+    start("opencode run --session")
+    val resumed = session.toVector.flatMap(id =>
+      turn(work, "opencode-resume", (prompt ++ Vector("--session", id,
+        "Now run 'cat words.txt' with your bash tool and answer with its last line. Do not modify anything."))*),
+    )
+    finish(Option.unless(opencodeSucceeded(resumed) && opencodeRanShell(resumed))(
+      s"no successful resumed turn with a shell call${session.fold("")(id => s" of session $id")}; see " +
+        tail(work.resolve("opencode-resume.err")),
+    ))
+    // The ChatGPT sign-in's model path, which no other agent's upload reaches.
+    upload(work, "chatgpt.com", "https://chatgpt.com/backend-api/codex/responses",
+      "-H", "Authorization: Bearer measurement-not-a-token", "-H", "Content-Type: application/json")
+
   // What stays manual (doc/plan-tls-inspect-agents.md, "The measurement suite"). The record names each item with the
   // version it was measured at.
   private val ManualItems = Map(
@@ -277,6 +325,11 @@ object MeasureAgents:
     "copilot" ->
       """- copilot: an interactive session with two turns and /compact; /login and a message (/logout fails in the
         |  sandbox); a launch under --egress=deny-unless-model, with copilot as its command""".stripMargin,
+    "opencode" ->
+      s"""- opencode: the TUI on $OpencodeModel with two turns and /compact; opencode auth login --provider openai
+        |  --method "ChatGPT Pro/Plus (headless)"; a turn after a token refresh, forced by moving openai.expires in
+        |  ~/.local/share/opencode/auth.json into the past; a launch under --egress=deny-unless-model
+        |  --model-provider=openai, with opencode as its command""".stripMargin,
   )
 
   private def deleteTree(root: Path): Unit =
@@ -307,7 +360,8 @@ object MeasureAgents:
           case "codex"    => measureCodex(work)
           case "agy"      => measureAgy(work)
           case "kiro-cli" => measureKiro(work)
-          case _          => measureCopilot(work)
+          case "copilot"  => measureCopilot(work)
+          case _          => measureOpencode(work)
     // A failed mode's event files are the evidence for its message.
     finally if failed then println(s"measure: the turns' files stay in $work") else deleteTree(work)
     println()

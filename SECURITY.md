@@ -1093,6 +1093,7 @@ The stages emit the following kinds of events:
     error github.com CONNECT tried 140.82.112.3: upstream proxy http://proxy.example:3128: refused
     error github.com GET /owner/repo origin: certificate expired
     error github.com GET /owner/repo id=7 relay: connection reset
+    error api.anthropic.com POST /v1/messages id=10 relay: client: Broken pipe
     error api.anthropic.com POST /v1/messages id=8 client: Connection reset by peer
     error github.com GET /a.tar id=9 relay: 8192-byte response truncated: body ended 100 bytes early
     error github.com - client closed before sending a request
@@ -1100,6 +1101,8 @@ The stages emit the following kinds of events:
 - The `relay:` error records response-body framing and I/O failures after the proxy forwarded the
   response head, including timeouts and resets in close-delimited bodies. The proxy aborts the
   client connection without a clean TLS shutdown, so the client can detect the incomplete download.
+  - `relay: client:` is a failed write to the client, such as a client that exits mid-stream. Any
+    other `relay:` error is the origin's.
 - The `client:` error records the client's failure before the response body: its request body
   ended early, broke or stalled, or the client reset before a response head reached it. `origin:`
   records only the origin leg's failures.

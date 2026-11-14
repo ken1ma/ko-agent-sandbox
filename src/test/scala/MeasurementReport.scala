@@ -32,6 +32,9 @@ object MeasurementReport:
    * - `paths`, `refusals` and `errors` come from the comment lines `path <host> </path>...`, `refused <host> <method>
    *   [</path>]` and `error <host> <why prefix>`. A `<name>` in a host or path stands for one label or segment, or
    *   part of one.
+   * - The record names the hosts of its `allow` and `path` lines, and judges every path on them. A `refused` line
+   *   accepts a refusal without naming its host: OpenCode is refused at registry.npmjs.org, where every session's
+   *   npm installs read packages that no record lists.
    */
   final case class Record(
     provider: String,
@@ -41,8 +44,7 @@ object MeasurementReport:
     errors: Vector[(String, String)],
   ):
     def names(host: String): Boolean =
-      hosts(host) || paths.exists((pattern, _) => matches(pattern, host, HostPart)) ||
-        refusals.exists(refusal => matches(refusal.host, host, HostPart))
+      hosts(host) || paths.exists((pattern, _) => matches(pattern, host, HostPart))
 
     def recordsPath(host: String, path: String): Boolean =
       paths.exists((hostPattern, pathPattern) =>
@@ -136,7 +138,9 @@ object MeasurementReport:
   def report(log: Vector[String], all: Vector[Record]): Report =
     val lines = log.flatMap(parseLine)
     val requests = lines.filter(line => line.action == "allow" && line.target.nonEmpty)
-    val probeIds = requests.filter(_.fields.get("client").exists(_.startsWith("curl/"))).flatMap(_.id).toSet
+    val probeIds = requests.filter(_.fields.get("client").exists(client =>
+      client.startsWith("curl/") || client == "ko-sandbox-egress-check",
+    )).flatMap(_.id).toSet
     def probe(line: AuditLine): Boolean = line.id.exists(probeIds)
     val ends = lines.filter(line => line.action.endsWith("-end")).flatMap(line => line.id.map(_ -> line)).toMap
     // A record without path lines was never measured, so its hosts' requests are listed with the other hosts.

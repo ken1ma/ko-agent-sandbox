@@ -54,6 +54,7 @@ allow https://oidc.us-east-1.amazonaws.com/         read method=POST,PUT,PATCH,D
 #   refused app.kiro.dev CONNECT
 #   refused prod.download.cli.kiro.dev CONNECT
 #   refused cognito-identity.us-east-1.amazonaws.com CONNECT
+#   error management.us-east-1.kiro.dev tunnel: expected 5 bytes, got 0
 # - Each mode ran in a Node child of kiro-cli, which sent the model calls as KiroCLI/3.3.0 and the rest as
 #   aws-sdk-js. kiro-cli itself sent the sign-in requests as Kiro-CLI, and read the profile at management as
 #   aws-sdk-rust. Every client negotiated HTTP/1.1 and trusted the launch CA.
@@ -66,6 +67,7 @@ allow https://oidc.us-east-1.amazonaws.com/         read method=POST,PUT,PATCH,D
 #   /logout.
 # - The refusals: telemetry every few seconds while Kiro runs; app.kiro.dev twice at each start; the update host at the
 #   TUI's start.
+# - The error: once, at a V3 start, a CONNECT to management sent no byte before closing, and the turn completed.
 # - Signed out, kiro-cli whoami sent cognito-identity two requests without a credential. With the host refused,
 #   kiro-cli tried it three to six times at each start, and the turns completed.
 # - At the token's expiry, kiro-cli refreshed the token at /refreshToken, and the turn completed. A refresh forced by

@@ -498,6 +498,20 @@ object HTTPHelper:
         // Request parsing never produces UntilClose (see the enum case), so reaching here is a proxy bug.
         throw IllegalStateException("request bodies cannot be close-delimited")
 
+  /** A failed write to the client. The JDK names a reset alike on either leg, so only this type tells a relay's
+    * failure at the client from one at the origin. */
+  final class ClientWriteFailure(cause: IOException) extends IOException(cause.getMessage, cause)
+
+  /** The client's output, whose failures are ClientWriteFailures. */
+  final class ClientOutput(out: OutputStream) extends OutputStream:
+    override def write(byte: Int): Unit = marked(out.write(byte))
+    override def write(bytes: Array[Byte], offset: Int, length: Int): Unit = marked(out.write(bytes, offset, length))
+    override def flush(): Unit = marked(out.flush())
+
+    private def marked(write: => Unit): Unit =
+      try write
+      catch case ex: IOException => throw ClientWriteFailure(ex)
+
   /**
    * Premature EOF and invalid chunk framing require TruncatedResponse's abortive close.
    * Other I/O failures reach relayInspected, which handles them across all framings. UntilClose accepts EOF as

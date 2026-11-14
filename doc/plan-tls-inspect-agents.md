@@ -256,6 +256,21 @@ The agents are measured in the README's order.
     stay refused under that profile.
   - Still to measure: session sync, which waits for an account whose organization allows it, and
     the business and enterprise hosts, which wait for an account on those plans.
+- `opencode` 1.19.5, the image's on 2026-11-14. OpenCode has no provider file: a launch names the
+  providers that OpenCode connects, and those providers' lines carry its traffic.
+  - Documented: `HTTPS_PROXY`, `NO_PROXY`, and a custom CA through `NODE_EXTRA_CA_CERTS`, which
+    the launcher sets (https://opencode.ai/docs/network/).
+  - Measured on 2026-11-14 under a ChatGPT sign-in: `defaults/model-provider/openai` holds the
+    record beside Codex's. Every request went to a path that Codex's record lists, and OpenCode
+    tried no WebSocket.
+    - The headless sign-in, the TUI with a compaction, and a token refresh forced by an earlier
+      stored expiry passed. Under `deny-unless-model`, a TUI turn completed.
+  - GitHub Copilot: the device sign-in passed, but no turn ran. OpenCode lists only the models that
+    Copilot's `/models` marks for its model picker, and the account's answer marked none
+    (`defaults/model-provider/github`).
+  - Still to measure: a Copilot turn, which waits for an account whose answer marks a model, and
+    the Anthropic and Google API keys, which wait for keys. OpenCode's Google provider posts to
+    `generativelanguage.googleapis.com`, which the defaults refuse (README, `opencode`).
 
 The login and token hosts are inspected too, each in its agent's commit, once the measurement
 covers the agent's sign-in and a token refresh.
@@ -399,7 +414,8 @@ For a release:
 
    ```sh
    scala $KO_AGENT_SANDBOX_JAVA_OPTS run --workspace ~/.cache/measure-agents \
-       src/test/measurement/MeasureAgents.scala -- [claude] [codex] [agy] [kiro-cli] [copilot]
+       src/test/measurement/MeasureAgents.scala -- [claude] [codex] [agy] [kiro-cli] [copilot] \
+       [opencode]
    ```
 
    - Claude Code: `claude -p` with a Bash call and a subagent that makes its own Bash call.
@@ -411,8 +427,11 @@ For a release:
      own, and `--resume-id` with a shell call.
    - Copilot: `copilot -p` with a shell call and a subagent that makes its own, a resumed turn
      with a shell call, and a read through the built-in GitHub MCP server.
+   - OpenCode: `opencode run` on the ChatGPT sign-in with a shell call and a subagent that makes
+     its own, and `--session` with a shell call. The subagent's calls are read from its session,
+     which `opencode export` prints.
    - For each: a `curl` upload under a foreign key to the model host, whole, and chunked and cut
-     short.
+     short. OpenCode's goes to `chatgpt.com`, which Codex's upload to `api.openai.com` misses.
    - A mode completes only when each of its calls succeeded and `curl` held the cut upload open
      until the cut (`AgentEvents.scala`, held to recorded events by `AgentEventsTest`). After a
      failed mode, the driver keeps the turns' event files and prints their directory.
@@ -428,10 +447,14 @@ The reader (`MeasurementReport.scala`):
   and the recorded paths that the run did not call. A record with no `path` line is unmeasured.
 - It counts the requests to every other host by method, such as an unmeasured record's hosts.
 - A finding is a path on a recorded host that no record naming the host lists, or a `deny` or
-  `error` line that no record accepts. A host can belong to two records: agy reads a repository on
-  `github.com`, where the `github` record has Copilot's sign-in.
-- `curl`'s requests are probes. The report lists each probe with its framing, credential index and
-  body end, and never judges them.
+  `error` line that no record accepts.
+  - A record names the hosts of its `allow` and `path` lines. A host can belong to two records:
+    agy reads a repository on `github.com`, where the `github` record has Copilot's sign-in.
+  - A `refused` line accepts a refusal without naming its host. OpenCode is refused at
+    `registry.npmjs.org`, where the packages that a session installs stay unjudged.
+- `curl`'s requests and `ko-sandbox-egress-check`'s `HEAD` are probes. The report lists each probe
+  with its framing, credential index and body end, and never judges them. A refusal of the check's
+  `CONNECT` names no client, so it stays a finding.
 - The records hold the reader's lines among their comments: `path <host> </path>...`,
   `refused <host> <method> [</path>]` and `error <host> <reason prefix>`. A `<name>` stands for one
   segment, part of one, or one label of a host.
@@ -623,9 +646,9 @@ bother to, and prove nothing.
 - [x] The workspace override restores the tunnel, and the banner's counts say so.
 - [x] The measurement suite runs Claude Code's and Codex's parts that need no person, and its
   reader compares the log with each record.
-- [ ] Each other agent's model hosts are inspected, or stay tunnels with the failing rule recorded,
+- [x] Each other agent's model hosts are inspected, or stay tunnels with the failing rule recorded,
   in one commit per agent.
-- [ ] Each document above changes in the commit of the agent it names, and the others in the first
+- [x] Each document above changes in the commit of the agent it names, and the others in the first
   agent's commit.
 
 ## Deliberate exclusions

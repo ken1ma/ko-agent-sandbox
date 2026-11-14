@@ -98,3 +98,11 @@ class AgentMeasurementTest extends munit.FunSuite:
         execSh(session, "grep -v '^ *//' ~/.copilot/config.json | jq -e '(.loggedInUsers // []) | length > 0'").ok,
       "api.githubcopilot.com",
     )
+
+  test("OpenCode's unattended modes leave only lines that its record accepts"):
+    measured(
+      "opencode",
+      // The driver measures the ChatGPT sign-in alone.
+      session => execSh(session, "jq -e '.openai.type == \"oauth\"' ~/.local/share/opencode/auth.json").ok,
+      "chatgpt.com",
+    )

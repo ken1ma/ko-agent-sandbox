@@ -832,10 +832,13 @@ object AgentEgressProxy:
         val responseFraming = response.bodyFraming(head.method)
 
         headToClient(response.toClientBytes)
+        val bodyToClient = ClientOutput(toClient)
         try
-          forwardResponseBody(fromOrigin, toClient, responseFraming)
-          toClient.flush()
-        catch case ex: IOException => throw TruncatedResponse(ex.getMessage)
+          forwardResponseBody(fromOrigin, bodyToClient, responseFraming)
+          bodyToClient.flush()
+        catch
+          case ex: ClientWriteFailure => throw TruncatedResponse(s"client: ${ex.getMessage}")
+          case ex: IOException        => throw TruncatedResponse(ex.getMessage)
         // The client's input belongs to the upload until the upload ends. An upload still running means that the
         // client uploads past the final head or holds a body back after it, and that client gets the close as it is.
         if upload.forall(_.ended(DrainTimeoutMillis)) then drainClient(clientTls)

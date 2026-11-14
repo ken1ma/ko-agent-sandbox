@@ -19,7 +19,8 @@ and the next step. Clients discard the body of a failed CONNECT, which is why th
 - Any other answer that the proxy makes itself exits 2 too, such as a 400 for a CONNECT it cannot parse or a 503 at
   its connection limit. Only a 403 is the ruleset's refusal.
 
-Each run leaves in the audit log exactly the line the agent's own program would have left: one deny, or one allow.
+Each run leaves in the audit log the line the agent's own program would have left: one deny, or one allow. The HEAD
+names this script as its User-Agent, so that MeasurementReport tells the check from the agents' requests.
 The script is Python rather than openssl or curl: Python's ssl module wraps a socket that already holds the tunnel,
 which `openssl s_client` cannot do, and curl never shows the body of a failed CONNECT.
 """
@@ -125,7 +126,8 @@ def main():
             sys.exit(2)
         with tls:
             try:
-                tls.sendall(f"HEAD / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n".encode("ascii"))
+                head = f"HEAD / HTTP/1.1\r\nHost: {host}\r\nUser-Agent: {NAME}\r\nConnection: close\r\n\r\n"
+                tls.sendall(head.encode("ascii"))
                 origin_status, origin_headers = read_head(tls)
                 # An informational response (103 Early Hints) precedes the final one.
                 while origin_status.split(" ")[1:2] and origin_status.split(" ")[1].startswith("1"):

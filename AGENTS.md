@@ -23,13 +23,14 @@ For every reported or discovered problem:
 Preserve scope, ownership and how work is separated for review.
 
 - Before crossing or changing a boundary, such as a prompt file, a commit, the task's scope or
-  existing behavior that the request does not name, name it and its consequence, and ask a
-  question; act only on its answer.
+  existing behavior that the request does not name, settle what reading and running can settle,
+  then name it and its consequence, and ask a question; act only on its answer.
 - A question the user asks in reply to yours is not its answer.
 - When a boundary blocks the consistent option, say that you should cross it, name the cost, and
   ask for approval; never settle for an inconsistent placement or a stale reference.
-- Weigh options by everything they gain and cost, not only what the current task or plan needs, and
-  report an improvement found beyond it.
+- Weigh options by everything they gain and cost, not only what the current task or plan needs.
+- Investigate a problem or improvement found beyond the task as one inside it: a boundary limits
+  what you change, not what you read, run or report.
 
 Read the relevant official documentation, source, issues and workspace documents, including
 earlier decisions on the subject, before reasoning, designing, experimenting or editing. Reason and

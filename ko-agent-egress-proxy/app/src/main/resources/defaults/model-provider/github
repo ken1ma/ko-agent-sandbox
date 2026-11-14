@@ -73,3 +73,12 @@ allow https://api.github.com/copilot_internal/team_customizations read
 # - No mode or turn failed. /chat/completions was called once, in the TUI session with the compaction.
 # - Unmeasured: the business and enterprise hosts, and session sync, which the account's organization policy turns
 #   off.
+
+# Observed with opencode 1.19.5 on 2026-11-14, after its device-code sign-in to GitHub Copilot on the account above.
+# No OpenCode turn ran on Copilot: OpenCode lists only the models that /models marks for the model picker, and the
+# account's answer marked none.
+#   path api.githubcopilot.com /models
+#   refused api.githubcopilot.com CONNECT
+# - The sign-in sent the device code requests above. OpenCode stores the GitHub token itself, and sends it to the
+#   generic host's /models at each start.
+# - A launch that does not name github refuses that request, and OpenCode's turns on another provider complete.

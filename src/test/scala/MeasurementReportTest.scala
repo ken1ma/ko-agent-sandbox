@@ -39,15 +39,18 @@ class MeasurementReportTest extends munit.FunSuite:
     assert(record.recordsPath("api.example", "/api/orgs/91cc868a-9b43-4e4b-a135-cb862d6bb2fb/skills"))
     assert(!record.recordsPath("api.example", "/api/orgs/a/b/skills"))
     assert(!record.recordsPath("api.example", "/v1/messages/extra"))
-    assert(record.names("cdnwestus2.example") && !record.names("cdn.a.example"))
+    assertEquals(reportOf("deny cdnwestus2.example CONNECT host not allowed").findings, Vector.empty)
+    assertEquals(reportOf("deny cdn.a.example CONNECT host not allowed").findings.size, 1)
 
-  test("the shipped records parse, each with its paths, and every path names a host that its lines allow"):
+  test("the shipped records parse, each with its paths, and every path names a host that a default file allows"):
     val shipped = records()
     assertEquals(shipped.map(_.provider).toSet, RulesetHelperProviders)
-    Vector("anthropic", "openai").foreach: provider =>
-      val measured = shipped.find(_.provider == provider).get
-      assert(measured.paths.nonEmpty, provider)
-      measured.paths.foreach((host, path) => assert(measured.hosts(host), s"$provider: $host $path"))
+    // A record may name another file's host: Claude Code fetches its plugin marketplace from github.com.
+    val catalog = java.nio.file.Files.readString(RecordDirectory.resolveSibling("host"))
+    val allowed = shipped.flatMap(_.hosts).toSet ++ parseRecord("host", catalog).hosts
+    shipped.foreach: measured =>
+      assert(measured.paths.nonEmpty, measured.provider)
+      measured.paths.foreach((host, path) => assert(allowed(host), s"${measured.provider}: $host $path"))
 
   private val RulesetHelperProviders = agentsandbox.egress.RulesetHelper.ModelProviders.toSet
 
@@ -82,6 +85,12 @@ class MeasurementReportTest extends munit.FunSuite:
       ),
     )
 
+  test("a refused line accepts the refusal without naming the host, whose allowed requests are listed apart"):
+    assert(!record.names("telemetry.example"))
+    val allowed = reportOf("allow telemetry.example GET /v1/events id=1 -> 1.2.3.4")
+    assertEquals(allowed.findings, Vector.empty, allowed.text)
+    assert(allowed.text.contains("other: telemetry.example GET (1)"), allowed.text)
+
   test("a host that two records name takes a path that either records, and an unrecorded path is one finding"):
     val other = parseRecord(
       "forge",
@@ -115,6 +124,11 @@ class MeasurementReportTest extends munit.FunSuite:
         Probe("api.example", "POST", "/v1/files", "chunked", Some("2"), "send=500 incomplete"),
       ),
     )
+
+  test("ko-sandbox-egress-check's HEAD is a probe, never judged"):
+    val checked = reportOf("allow api.example HEAD / id=1 client=ko-sandbox-egress-check -> 1.2.3.4")
+    assertEquals(checked.findings, Vector.empty, checked.text)
+    assertEquals(checked.probes, Vector(Probe("api.example", "HEAD", "/", "", None, "")))
 
   test("hosts that no measured record names are listed apart by method; ruleset and startup lines are no events"):
     val unmeasured = parseRecord("forge", "allow https://forge.example/login/token method=POST\n")

@@ -236,10 +236,14 @@ credentials in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#
 
 1. Launch with `--model-provider=<names>` naming the providers you will connect.
 1. Run `/connect`, then `/models` to pick a model from the connected provider.
-    1. Anthropic and Google take an API key.
+    1. Anthropic takes an API key.
+    1. Google takes an API key, and needs the line
+       `allow https://generativelanguage.googleapis.com/ tunnel` in
+       `.ko-agent-sandbox/egress/rule`: the defaults have no line for the Gemini API.
     1. For a ChatGPT plan, choose the headless method, not the browser method.
     1. GitHub Copilot prints a device code, and the token it stores has the `read:user` scope,
-       not `repo`.
+       not `repo`. `/models` lists only the models that Copilot marks for its model picker, and
+       none when Copilot marks none.
 1. The default model, `opencode/big-pickle`, posts to `opencode.ai`, where the proxy allows only
    reads, so its requests are refused.
 

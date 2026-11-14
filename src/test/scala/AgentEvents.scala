@@ -213,3 +213,41 @@ object AgentEvents:
       .filter(_.is("mcpServerName", "github-mcp-server")).flatMap(_.text("toolCallId")).toSet
     run.filter(_.is("type", "tool.execution_complete")).flatMap(_.at("data"))
       .exists(data => data.at("success").contains(True) && data.text("toolCallId").exists(calls))
+
+  /** Whether `opencode run --format json` ended its turn: a step_finish whose reason is stop, and no error event. A
+    * provider's refusal arrives as an error event. */
+  def opencodeSucceeded(run: Vector[Json]): Boolean =
+    !run.exists(_.is("type", "error")) &&
+      run.exists(event => event.is("type", "step_finish") && event.text("part", "reason").contains("stop"))
+
+  def opencodeSession(run: Vector[Json]): Option[String] = run.flatMap(_.text("sessionID")).headOption
+
+  private def opencodeCompleted(parts: Vector[Json], tool: String): Vector[Json] =
+    parts.filter(part =>
+      part.is("type", "tool") && part.is("tool", tool) && part.text("state", "status").contains("completed"),
+    )
+
+  // A failed command completes too.
+  private def opencodePartsRanShell(parts: Vector[Json]): Boolean =
+    opencodeCompleted(parts, "bash").exists(_.at("state", "metadata", "exit").contains(Zero))
+
+  private def opencodeParts(run: Vector[Json]): Vector[Json] =
+    run.filter(_.is("type", "tool_use")).flatMap(_.at("part"))
+
+  def opencodeRanShell(run: Vector[Json]): Boolean = opencodePartsRanShell(opencodeParts(run))
+
+  /** The sessions of the run's completed subagents. The stream carries a subagent's task call alone; its own calls are
+    * in its session, which `opencode export <session>` prints. */
+  def opencodeSubagentSessions(run: Vector[Json]): Vector[String] =
+    opencodeCompleted(opencodeParts(run), "task").flatMap(_.text("state", "metadata", "sessionId"))
+
+  /** What the run lacks of a shell call, a subagent that completed, and that subagent's own shell call, read from the
+    * subagents' exported sessions. */
+  def opencodeLacks(run: Vector[Json], subagentExports: Vector[Json]): Vector[String] =
+    Vector(
+      Option.unless(opencodeRanShell(run))("a shell call"),
+      Option.when(opencodeSubagentSessions(run).isEmpty)("a subagent"),
+      Option.unless(subagentExports.exists(session =>
+        opencodePartsRanShell(session.items("messages").flatMap(_.items("parts"))),
+      ))("the subagent's shell call"),
+    ).flatten

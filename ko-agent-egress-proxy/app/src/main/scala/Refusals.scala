@@ -14,9 +14,10 @@ case class BadRequest(message: String) extends RuntimeException(message)
   * audit line grammar"). */
 case class ClosedWithoutRequest() extends RuntimeException("closed without sending a request")
 
-/** A response-body framing or I/O failure after the proxy forwarded the response head. Unlike an IOException, this
-  * failure requires an abortive close of the client: a 502 would land inside the response body, and a clean TLS
-  * shutdown would make a close-delimited body appear complete. */
+/** A response-body framing or I/O failure after the proxy forwarded the response head. A message that starts with
+  * `client: ` is a failed write to the client; any other is the origin's. Unlike an IOException, this failure
+  * requires an abortive close of the client: a 502 would land inside the response body, and a clean TLS shutdown
+  * would make a close-delimited body appear complete. */
 case class TruncatedResponse(message: String) extends RuntimeException(message)
 
 /** A read from or a write to the client of an inspected request that failed before the response body: the request

@@ -4,8 +4,8 @@ import java.nio.file.Files
 
 import AgentEvents.*
 
-// The events follow claude 2.1.323's, codex 0.169.0's, agy 1.5.8's, kiro-cli 3.3.0's and copilot 1.0.111's, with the
-// fields that the checks do not read left out.
+// The events follow claude 2.1.323's, codex 0.169.0's, agy 1.5.8's, kiro-cli 3.3.0's, copilot 1.0.111's and opencode
+// 1.19.5's, with the fields that the checks do not read left out.
 class AgentEventsTest extends munit.FunSuite:
 
   private def message(kind: String, parent: String, block: String) =
@@ -240,3 +240,46 @@ class AgentEventsTest extends munit.FunSuite:
     assert(copilotCalledGithubMcp(run("github-mcp-server", success = true)))
     assert(!copilotCalledGithubMcp(run("github-mcp-server", success = false)))
     assert(!copilotCalledGithubMcp(run("other", success = true)))
+
+  private def opencodeTool(tool: String, state: String) =
+    s"""{"type":"tool","tool":"$tool","callID":"call_1","state":$state}"""
+
+  private def opencodeBash(exit: Int, status: String = "completed") =
+    opencodeTool("bash", s"""{"status":"$status","input":{"command":"ls"},"metadata":{"exit":$exit}}""")
+
+  private def opencodeTask(status: String = "completed") =
+    opencodeTool("task", s"""{"status":"$status","metadata":{"sessionId":"ses_child","parentSessionId":"ses_1"}}""")
+
+  private def opencodeStep(reason: String) =
+    s"""{"type":"step_finish","sessionID":"ses_1","part":{"type":"step-finish","reason":"$reason"}}"""
+
+  private def opencodeRun(parts: Vector[String], end: String = opencodeStep("stop")) = parseLines(
+    (parts.map(part => s"""{"type":"tool_use","sessionID":"ses_1","part":$part}""") :+ end).mkString("\n"),
+  )
+
+  // `opencode export` prints one JSON document, over several lines.
+  private def opencodeExport(parts: String*) =
+    JsonText.parse(s"""{"info":{"id":"ses_child"},"messages":[{"parts":[${parts.mkString(",")}]}]}""").toOption.toVector
+
+  test("an opencode run whose shell call, subagent and the subagent's shell call succeeded lacks nothing"):
+    val run = opencodeRun(Vector(opencodeBash(0), opencodeTask()))
+    assert(opencodeSucceeded(run))
+    assertEquals(opencodeSession(run), Some("ses_1"))
+    assertEquals(opencodeSubagentSessions(run), Vector("ses_child"))
+    assertEquals(opencodeLacks(run, opencodeExport(opencodeBash(0))), Vector.empty)
+
+  test("an opencode command that exited non-zero counts as missing, and an error event fails the run"):
+    val run = opencodeRun(Vector(opencodeBash(0), opencodeTask()))
+    assertEquals(
+      opencodeLacks(opencodeRun(Vector(opencodeBash(1), opencodeTask())), opencodeExport(opencodeBash(0))),
+      Vector("a shell call"),
+    )
+    assertEquals(opencodeLacks(run, opencodeExport(opencodeBash(2))), Vector("the subagent's shell call"))
+    assertEquals(
+      opencodeLacks(opencodeRun(Vector(opencodeBash(0), opencodeTask("error"))), Vector.empty),
+      Vector("a subagent", "the subagent's shell call"),
+    )
+    assert(!opencodeSucceeded(opencodeRun(Vector(opencodeBash(0)), end = opencodeStep("tool-calls"))))
+    assert(!opencodeSucceeded(parseLines(
+      opencodeStep("stop") + "\n" + """{"type":"error","error":{"name":"APIError","data":{"statusCode":400}}}""",
+    )))

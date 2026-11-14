@@ -1471,13 +1471,40 @@ class AgentEgressProxyTest extends munit.FunSuite:
         catch case _: Exception => ()
       clientPeer.shutdownOutput()
       val head = HttpRequestHead.parse(ascii("GET /f HTTP/1.1\r\nHost: docs.python.org\r\n\r\n"))
-      intercept[TruncatedResponse]:
+      val failure = intercept[TruncatedResponse]:
         relayInspected(client, origin, origin, head)
+      assert(!failure.getMessage.startsWith("client: "), failure.getMessage)
       served.join()
       closeQuietly(client)
       closeQuietly(clientPeer)
     resetAfter("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nhalf")
     resetAfter("HTTP/1.1 200 OK\r\n\r\nhalf")
+
+  test("relayInspected names the client when a write of the response body to the client fails"):
+    val (client, clientPeer) = socketPair()
+    val (origin, originPeer) = socketPair()
+    val bodyBytes = 16 * 1024 * 1024
+    val served = Thread.startVirtualThread: () =>
+      try
+        readHttpHeader(originPeer.getInputStream, 64 * 1024)
+        originPeer.getOutputStream.write(ascii(s"HTTP/1.1 200 OK\r\nContent-Length: $bodyBytes\r\n\r\n"))
+        originPeer.getOutputStream.write(new Array[Byte](bodyBytes))
+      catch case _: Exception => ()
+    // The client resets once the response head reaches it, so that the body's writes fail.
+    val reader = Thread.startVirtualThread: () =>
+      try
+        readHttpHeader(clientPeer.getInputStream, 64 * 1024)
+        abortiveClose(clientPeer)
+      catch case _: Exception => ()
+    clientPeer.shutdownOutput()
+    val head = HttpRequestHead.parse(ascii("GET /f HTTP/1.1\r\nHost: docs.python.org\r\n\r\n"))
+    val failure = intercept[TruncatedResponse]:
+      relayInspected(client, origin, origin, head)
+    assert(failure.getMessage.startsWith("client: "), failure.getMessage)
+    reader.join()
+    closeQuietly(originPeer)
+    served.join()
+    closeQuietly(client)
 
   test("an abortive close makes a TLS client reject an incomplete close-delimited response"):
     val (inspection, clientContext) = testTls()
