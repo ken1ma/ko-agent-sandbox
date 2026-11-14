@@ -414,9 +414,9 @@ ENV PATH="/home/nonroot/.local/bin:$PATH"
 # fills. ko-sandbox-entrypoint starts the daemon (doc/mic.md, "The daemon"). Each client reaches the daemon
 # through its own packages:
 # - libsox-fmt-pulse serves Claude Code's `rec`.
-# - pulseaudio-utils serves agy's `parec`.
 # - libasound2-plugins and asound.conf serve Codex's voice helper, which opens ALSA's default PCM. That helper's
 #   call cannot leave the sandbox (doc/TODO.md).
+# - pulseaudio-utils serves agy's `parec`.
 # alsa-utils stays out: Claude Code tries `arecord` before SoX, and one path is enough.
 
 RUN set -euxo pipefail; \
@@ -485,7 +485,7 @@ RUN --mount=type=bind,from=rust,source=/opt/rust,target=/mnt/rust \
     for stage in vscode agy kiro copilot opencode lychee; do cp -a /mnt/$stage/* /usr/local/bin/; done; \
     # The smoke tests. uv's smoke test is `uv python install` above.
     # - cargo reads the image's rustup home, because the session's ~/.rustup is built below.
-    # - The agents get a throwaway HOME, because this RUN runs as root. agy, kiro-cli and codex write state on every
+    # - The agents get a throwaway HOME, because this RUN runs as root. codex, agy and kiro-cli write state on every
     #   invocation, copilot writes a package cache, and OpenCode creates its XDG directories.
     for program in /opt/node/bin/node /usr/local/bin/lychee /usr/local/bin/code /opt/rust/cargo/bin/cargo; do \
         RUSTUP_HOME=/opt/rust/rustup "$program" --version; \

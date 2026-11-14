@@ -61,7 +61,7 @@
 //    |
 //    +-- podman named volume -----------> ~/persistent-volume RW/persistent
 //    |                                       (~/.claude, ~/.codex, ~/.gemini, ~/.kiro,
-//    |                                        ~/.copilot, ~/.local/share/kiro-cli and
+//    |                                        ~/.local/share/kiro-cli, ~/.copilot and
 //    |                                        opencode's XDG directories are symlinks
 //    |                                        into it)
 //    |

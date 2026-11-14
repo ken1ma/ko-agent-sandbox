@@ -23,7 +23,7 @@ WSL gives it, `/mnt/<drive>/...`), so a path you print is a path the user and th
 It is the user's workspace, and the only place deliverables belong.
 `/tmp` and the rest of `/home/nonroot` are discarded when the session ends.
 `~/persistent-volume` survives and holds agent state, not workspace output. These paths point into
-it: `~/.claude`, `~/.codex`, `~/.gemini`, `~/.kiro`, `~/.copilot`, `~/.local/share/kiro-cli` and
+it: `~/.claude`, `~/.codex`, `~/.gemini`, `~/.kiro`, `~/.local/share/kiro-cli`, `~/.copilot` and
 opencode's `~/.config/opencode`, `~/.local/share/opencode`, `~/.local/state/opencode`.
 
 Permission prompts are off, but a removal may still prompt the user, who then reads the whole

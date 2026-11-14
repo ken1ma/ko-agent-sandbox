@@ -26,6 +26,12 @@ read-only .claude/commands
 read-only .mcp.json                     # Claude Code, Copilot CLI
 read-only .codex/config.toml            # Codex
 read-only .gemini/settings.json         # Gemini CLI
+read-only .agents/hooks.json            # Antigravity
+read-only .agents/mcp_config.json
+read-only .agents/plugins
+read-only .kiro/hooks                   # Kiro
+read-only .kiro/agents
+read-only .kiro/settings/mcp.json
 read-only .github/hooks                 # Copilot CLI
 read-only .github/copilot/settings.json
 read-only .github/copilot/settings.local.json
@@ -33,12 +39,6 @@ read-only .github/mcp.json
 read-only .github/lsp.json
 read-only .github/extensions
 read-only .github/agents
-read-only .agents/hooks.json            # Antigravity
-read-only .agents/mcp_config.json
-read-only .agents/plugins
-read-only .kiro/hooks                   # Kiro
-read-only .kiro/agents
-read-only .kiro/settings/mcp.json
 read-only .opencode                     # OpenCode: plugins, tools and commands it loads
 read-only opencode.json
 read-only opencode.jsonc

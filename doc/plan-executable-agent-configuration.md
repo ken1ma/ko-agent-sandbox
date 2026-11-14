@@ -34,6 +34,9 @@ Measured on 2026-09-22 with the installed agents.
 - `codex mcp list --json` names the servers without starting them.
 - `claude mcp list` health-checks every server it finds, and so executes each one. That command
   cannot serve as a check.
+- Antigravity's `config/mcp_config.json` names no server.
+- Kiro's `data/` holds its own `bun` and `tui.js`, which Kiro writes itself.
+- Copilot's `config.json` names no server.
 - OpenCode loads code and configuration from the volume:
   - OpenCode imports a JavaScript file under `~/.config/opencode/plugins/`, in the volume. The
     commands that load the configuration call the file's plugin functions (`opencode debug config`,
@@ -42,8 +45,6 @@ Measured on 2026-09-22 with the installed agents.
     of both files load, and the later file's `plugin` array replaces the earlier file's.
   - At every start, OpenCode installs `config/node_modules` (26 packages) from
     `config/package.json`, for local plugins.
-- Antigravity's `config/mcp_config.json` and Copilot's `config.json` name no server.
-- Kiro's `data/` holds its own `bun` and `tui.js`, which Kiro writes itself.
 
 ## Phase 1: reconciliation
 
@@ -111,13 +112,13 @@ launcher also mounts that file as the managed file.
 Phase 2 makes these directories unwritable:
 
 - `~/.claude/plugins/`;
-- OpenCode's `plugins/` and `node_modules` (https://opencode.ai/docs/plugins/, "How plugins are
-  installed");
 - Codex's `plugins/`;
-- Kiro's `data/`.
+- Kiro's `data/`;
+- OpenCode's `plugins/` and `node_modules` (https://opencode.ai/docs/plugins/, "How plugins are
+  installed").
 
-The form is decided after each agent is measured on a refused write, because OpenCode runs
-`bun install` into `config/node_modules` and Kiro writes `data/bun` itself. The candidates:
+The form is decided after each agent is measured on a refused write, because Kiro writes
+`data/bun` itself and OpenCode runs `bun install` into `config/node_modules`. The candidates:
 
 - a read-only mount, if the installed podman mounts a volume subpath;
 - otherwise, separate volumes for the writable paths;

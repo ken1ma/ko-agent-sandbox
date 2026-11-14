@@ -22,7 +22,7 @@ names when you check out, and uploads to that server when you push.
 
 - The names that the launcher's defaults list, at any depth.
   `src/main/resources/agentsandbox/file-rule-defaults` lists them with their programs. The defaults
-  cover Claude Code, Codex, Gemini CLI, Copilot CLI, Antigravity, Kiro and OpenCode; husky,
+  cover Claude Code, Codex, Gemini CLI, Antigravity, Kiro, Copilot CLI and OpenCode; husky,
   pre-commit and lefthook; VS Code, Visual Studio, IntelliJ IDEA, Cursor, Windsurf and Zed; Dev
   Containers; mise; and git-lfs.
 - Inside `node_modules`, nothing: npm installs packages that carry these names.
@@ -257,13 +257,6 @@ Agents:
     changed hooks.
   - `gemini mcp add` writes the project file by default.
   - A `.gemini/commands` `!{...}` command asks before it runs unless a policy allows it.
-- GitHub Copilot CLI (https://docs.github.com/en/copilot/reference/hooks-configuration,
-  https://docs.github.com/en/copilot/how-tos/copilot-cli):
-  - After folder trust, once: hooks in `.github/hooks/*.json`, `.github/copilot/settings.json`,
-    `.github/copilot/settings.local.json` and `.claude/settings.json`; MCP servers in `.mcp.json`
-    and `.github/mcp.json`; LSP servers in `.github/lsp.json`.
-  - `.github/extensions/<name>/extension.*` runs as a Node process under `--experimental`; an agent
-    under `.github/agents` or `.claude/agents` starts its `mcp-servers` when used.
 - Antigravity (https://antigravity.google/docs/hooks, https://antigravity.google/docs/mcp):
   `.agents/hooks.json`, `.agents/mcp_config.json` and plugins under `.agents/plugins`; whether
   folder trust gates them is not documented.
@@ -275,6 +268,13 @@ Agents:
   - Workspace agents under `.kiro/agents/` load only if the workspace is trusted; an agent file's
     `hooks` and `mcpServers` each name a `command`.
   - `.kiro/settings/mcp.json` is the workspace MCP file; agent and MCP configurations hot-reload.
+- GitHub Copilot CLI (https://docs.github.com/en/copilot/reference/hooks-configuration,
+  https://docs.github.com/en/copilot/how-tos/copilot-cli):
+  - After folder trust, once: hooks in `.github/hooks/*.json`, `.github/copilot/settings.json`,
+    `.github/copilot/settings.local.json` and `.claude/settings.json`; MCP servers in `.mcp.json`
+    and `.github/mcp.json`; LSP servers in `.github/lsp.json`.
+  - `.github/extensions/<name>/extension.*` runs as a Node process under `--experimental`; an agent
+    under `.github/agents` or `.claude/agents` starts its `mcp-servers` when used.
 - OpenCode (https://github.com/anomalyco/opencode, `packages/opencode/src/config/config.ts`,
   `packages/opencode/src/config/plugin.ts`, `packages/opencode/src/tool/registry.ts`,
   `packages/opencode/src/session/prompt.ts`):

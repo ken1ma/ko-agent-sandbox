@@ -73,8 +73,8 @@ What to read next, and what works:
 - **A PulseAudio daemon in the sandbox, not a recorder shim.**
   - Claude Code records through SoX's PulseAudio backend, the path that the CLI's own
     documentation prescribes for WSL.
-  - agy records through `parec`.
   - Codex's helper records through ALSA's PulseAudio plugin, the path the helper takes on WSLg.
+  - agy records through `parec`.
   - A stock daemon and a configuration file serve all three agents, where a shim would answer one
     agent's command lines.
   - The daemon's microphone is a FIFO that the relay writes, so the daemon needs no device.
@@ -210,7 +210,7 @@ Read from the image's binaries on 2026-10-09.
   - agy can instead read a microphone that `agy mic-serve` serves on another machine, at
     `127.0.0.1:4713`, through agy's own protocol over an SSH forward.
   - agy transcribes at `aicode.googleapis.com`, which `model-provider/google` tunnels.
-- Copilot 1.0.94, kiro-cli 2.28.0 and OpenCode 1.18.35 dictate nothing.
+- kiro-cli 2.28.0, Copilot 1.0.94 and OpenCode 1.18.35 dictate nothing.
 
 ## The launch
 
@@ -679,7 +679,7 @@ Measured on 2026-10-11 on an Apple silicon Mac (Homebrew's `arm64_tahoe` bottles
 - The image's `/usr/bin/claude` 2.1.295, and 2.1.296 for `rec`'s arguments: the recorder
   selection, the `arecord` and `rec` command lines, and the stream URL
 - The image's `/opt/codex/bin/codex` 0.162.0 and `codex-resources/voice/`, `/usr/local/bin/agy`,
-  `copilot`, `kiro-cli` and `opencode`: the other agents' voice paths
+  `kiro-cli`, `copilot` and `opencode`: the other agents' voice paths
 - https://github.com/openai/codex/issues/47370
 - https://github.com/pulseaudio/pulseaudio/blob/master/src/modules/module-pipe-source.c and
   https://github.com/PipeWire/pipewire/blob/master/src/modules/module-pipe-tunnel.c, both read at

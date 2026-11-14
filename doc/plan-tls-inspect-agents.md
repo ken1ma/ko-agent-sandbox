@@ -90,7 +90,7 @@ such as `OPENAI_API_KEY@api.openai.com`, is accepted from the commit that inspec
 
 ## The agents, in order
 
-The order follows the state of the evidence, best first.
+The agents are measured in the README's order.
 
 - Each agent's "Documented" pages were read on 2026-09-28. The issues under "Reported" were read
   again on 2026-11-11, and each state is that day's.
@@ -157,6 +157,41 @@ The order follows the state of the evidence, best first.
       "Deliberate exclusions" why the defaults set Codex no custom provider.
   - `/voice` is not served (`TODO.md`, "Codex's `/voice`"). That item reads the call's setup on
     `chatgpt.com`, which an inspected host logs by path.
+- `agy` 1.5.3, `cloudcode-pa.googleapis.com`, `daily-cloudcode-pa.googleapis.com`,
+  `generativelanguage.googleapis.com`, `businessaicode.googleapis.com` and the `aiplatform` hosts.
+  - `aicode.googleapis.com` stays a tunnel: `/voice` streams there over gRPC, which needs HTTP/2
+    (`model-provider/google`).
+  - Documented: nothing on a proxy or a CA in the 28 CLI pages under
+    https://antigravity.google/docs/cli.
+  - Reported:
+    - 1.0.2 on Windows sent `loadCodeAssist` past `HTTPS_PROXY`
+      (google-antigravity/antigravity-cli #181, closed as a duplicate).
+    - 1.1.21 on Windows sent `loadCodeAssist` through the proxy, and the model calls,
+      `streamGenerateContent`, directly (#875, open).
+  - Measure:
+    - whether the client trusts the launch CA at all;
+    - the HTTP version each host negotiates. The reports show HTTP paths, and the relay refuses
+      HTTP/2;
+    - where a `GEMINI_API_KEY` session sends the key. A key in the query, `?key=`, leaves
+      `generativelanguage.googleapis.com` a tunnel ("Guarantees", 3).
+- `kiro-cli` 3.1.0, `runtime.us-east-1.kiro.dev`, `q.us-east-1.amazonaws.com` and
+  `management.us-east-1.kiro.dev`, each also in `eu-central-1`.
+  - Documented: `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` from v1.8.0
+    (https://kiro.dev/docs/cli/quick-start, "Proxy configuration"). Neither that page nor the
+    firewall page has a CA setting.
+  - The firewall page names the `runtime` and `q` hosts "Kiro service", and the `management` hosts
+    "Configuration, access management". The page says that CLI application traffic, chat and
+    completions included, follows the proxy settings
+    (https://kiro.dev/docs/privacy-and-security/firewalls).
+  - Reported:
+    - 2.8.1 on Windows spawned the `acp` child of interactive `chat` without the parent's proxy and
+      certificate variables (kirodotdev/Kiro #9608, closed as completed).
+    - 2.10.0 under WSL failed behind a TLS-inspecting proxy in its v3 harness, while v2 worked
+      (#9860, closed as completed).
+  - Measure: interactive and headless mode each; whether the client trusts the launch CA; whether
+    each model host's lines have `cred=`. A host whose lines lack the field may receive
+    SigV4-signed requests, which the index does not count ("Audit line additions"). A completed
+    turn shows that such a request passes the relay unchanged.
 - `copilot` 1.0.111, `api.githubcopilot.com` and the three plan hosts.
   - Documented: `proxyUrl` in the CLI's configuration reference, overridden by `HTTP_PROXY` or
     `HTTPS_PROXY`
@@ -199,41 +234,6 @@ The order follows the state of the evidence, best first.
     stay refused under that profile.
   - Still to measure: session sync, which waits for an account whose organization allows it, and
     the business and enterprise hosts, which wait for an account on those plans.
-- `agy` 1.5.3, `cloudcode-pa.googleapis.com`, `daily-cloudcode-pa.googleapis.com`,
-  `generativelanguage.googleapis.com`, `businessaicode.googleapis.com` and the `aiplatform` hosts.
-  - `aicode.googleapis.com` stays a tunnel: `/voice` streams there over gRPC, which needs HTTP/2
-    (`model-provider/google`).
-  - Documented: nothing on a proxy or a CA in the 28 CLI pages under
-    https://antigravity.google/docs/cli.
-  - Reported:
-    - 1.0.2 on Windows sent `loadCodeAssist` past `HTTPS_PROXY`
-      (google-antigravity/antigravity-cli #181, closed as a duplicate).
-    - 1.1.21 on Windows sent `loadCodeAssist` through the proxy, and the model calls,
-      `streamGenerateContent`, directly (#875, open).
-  - Measure:
-    - whether the client trusts the launch CA at all;
-    - the HTTP version each host negotiates. The reports show HTTP paths, and the relay refuses
-      HTTP/2;
-    - where a `GEMINI_API_KEY` session sends the key. A key in the query, `?key=`, leaves
-      `generativelanguage.googleapis.com` a tunnel ("Guarantees", 3).
-- `kiro-cli` 3.1.0, `runtime.us-east-1.kiro.dev`, `q.us-east-1.amazonaws.com` and
-  `management.us-east-1.kiro.dev`, each also in `eu-central-1`.
-  - Documented: `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` from v1.8.0
-    (https://kiro.dev/docs/cli/quick-start, "Proxy configuration"). Neither that page nor the
-    firewall page has a CA setting.
-  - The firewall page names the `runtime` and `q` hosts "Kiro service", and the `management` hosts
-    "Configuration, access management". The page says that CLI application traffic, chat and
-    completions included, follows the proxy settings
-    (https://kiro.dev/docs/privacy-and-security/firewalls).
-  - Reported:
-    - 2.8.1 on Windows spawned the `acp` child of interactive `chat` without the parent's proxy and
-      certificate variables (kirodotdev/Kiro #9608, closed as completed).
-    - 2.10.0 under WSL failed behind a TLS-inspecting proxy in its v3 harness, while v2 worked
-      (#9860, closed as completed).
-  - Measure: interactive and headless mode each; whether the client trusts the launch CA; whether
-    each model host's lines have `cred=`. A host whose lines lack the field may receive
-    SigV4-signed requests, which the index does not count ("Audit line additions"). A completed
-    turn shows that such a request passes the relay unchanged.
 
 The login and token hosts are inspected too, each in its agent's commit, once the measurement
 covers the agent's sign-in and a token refresh.
@@ -351,7 +351,7 @@ The record holds paths, not log lines as printed: a printed line holds the whole
 included.
 
 A pass in one mode is no evidence for another mode where the client has a second transport or a
-child of its own (Kiro's `acp`, agy's model transport).
+child of its own (agy's model transport, Kiro's `acp`).
 
 A feature that opens a transport of its own is measured as a mode: the agent's `/voice` under
 `--audio=mic` (`mic.md`), and a remote-session feature.
@@ -544,7 +544,7 @@ bother to, and prove nothing.
     host is stated there;
   - "Exfiltration through allowed network traffic" and "The web reached through the model
     provider": what the proxy sees of a model host, per treatment;
-  - Copilot's and agy's items under "Not defended": the writes that become lines with a path;
+  - agy's and Copilot's items under "Not defended": the writes that become lines with a path;
   - "The audit line grammar" gains the fields, the `chunked-end` line, and the sentence that the
     fields are client-supplied;
   - "Who holds the CA key": the sentence that Codex meets no leaf of the launch CA;
@@ -636,11 +636,11 @@ bother to, and prove nothing.
   fallback and the `426` that starts it at once
 - openai/codex #46489, #19821 — the WebSocket rejecting the custom CA a release's HTTP accepted;
   the retries before the HTTP fallback
-- github/copilot-cli `changelog.md`; #454, #4408 — proxy, CA and mTLS entries by version; a
-  model path and the built-in MCP server's path on a plan host
 - google-antigravity/antigravity-cli #181, #875 — request paths that ignored `HTTPS_PROXY` in
   released versions
 - kirodotdev/Kiro #9608, #9860 — a child process without the proxy variables; a harness that
   failed behind a TLS-inspecting proxy
+- github/copilot-cli `changelog.md`; #454, #4408 — proxy, CA and mTLS entries by version; a
+  model path and the built-in MCP server's path on a plan host
 - https://embracethered.com/blog/posts/2025/claude-abusing-network-access-and-anthropic-api-for-data-exfiltration/
 - https://www.promptarmor.com/resources/claude-cowork-exfiltrates-files

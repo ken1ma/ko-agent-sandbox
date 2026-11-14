@@ -86,6 +86,20 @@ Codex 0.157.1 (`codex-rs/tui/src/clipboard_paste.rs`, `clipboard_copy.rs`):
 - `/copy` and Ctrl+O write text and HTML through arboard, and write OSC 52 only when arboard fails.
   In the sandbox arboard always fails, so every mode copies through OSC 52 alone.
 
+agy 1.2.12:
+
+- agy is a Go binary. agy's functions `readWayland`, `wlListTypes`, `wlReadType`, `readX11`,
+  `xclipListTypes` and `xclipReadType` read the clipboard, and its copy contains OSC 52 and
+  `wl-copy`. The exact arguments are not recoverable from the binary.
+
+kiro-cli 2.24.1:
+
+- `kiro-cli-chat` serves `/paste` (an image) and `/copy`. `kiro-cli-chat` links arboard 3.6.1
+  without the Wayland feature, and it runs no clipboard command and writes no OSC 52. So both
+  commands fail in every mode, before and after this plan.
+- `kiro-cli` links arboard with the Wayland feature and has a "Copy to clipboard" action. What that
+  action copies is under "Tests".
+
 Copilot 1.0.88 (`app.js` and `prebuilds/linux-arm64/cli-native.node` of its package):
 
 - Image paste goes only through Copilot's native module. The module uses clipboard-rs 0.3.5 over
@@ -115,20 +129,6 @@ OpenCode 1.18.32:
   `xclip -selection clipboard`, else `xsel --clipboard --input`.
   - Under `paste`: OSC 52, and `xclip`, which the relay drops.
   - Under `bidirectional`: OSC 52 and `wl-copy`, which reaches the host.
-
-agy 1.2.12:
-
-- agy is a Go binary. agy's functions `readWayland`, `wlListTypes`, `wlReadType`, `readX11`,
-  `xclipListTypes` and `xclipReadType` read the clipboard, and its copy contains OSC 52 and
-  `wl-copy`. The exact arguments are not recoverable from the binary.
-
-kiro-cli 2.24.1:
-
-- `kiro-cli-chat` serves `/paste` (an image) and `/copy`. `kiro-cli-chat` links arboard 3.6.1
-  without the Wayland feature, and it runs no clipboard command and writes no OSC 52. So both
-  commands fail in every mode, before and after this plan.
-- `kiro-cli` links arboard with the Wayland feature and has a "Copy to clipboard" action. What that
-  action copies is under "Tests".
 
 ### Terminals
 
@@ -213,8 +213,8 @@ On that reading:
 ### Shims
 
 - All four names stay, and they keep calling the relay directly.
-- The shim gains these forms: `wl-paste -t image/png` (OpenCode), Copilot's
-  `wl-copy --primary --type text/plain`, and agy's forms once they are measured.
+- The shim gains these forms: agy's forms once they are measured, Copilot's
+  `wl-copy --primary --type text/plain`, and `wl-paste -t image/png` (OpenCode).
 
 ### Copies to the primary selection
 
@@ -249,15 +249,15 @@ On that reading:
   - Reconsider `fullscreen_transcript = false` in the image's `codex/config.toml`. With the
     service, Codex's own copies reach the host under `bidirectional`, but under `paste` only the
     terminal's selection copies.
+- agy: the result depends on the measured invocations.
+- kiro-cli: `/paste` and `/copy` still fail. Serving those commands needs an X server, which this
+  plan excludes.
 - Copilot: image paste works under `paste` and `bidirectional`.
   - Under `bidirectional`, copy behaves as today, except that an HTML copy reaches the host twice:
     through `wl-copy` and through the native module.
   - Under `paste`, copy writes OSC 52 as today.
 - OpenCode: image paste succeeds at the first command. Under `paste`, copy runs `wl-copy` instead
   of `xclip`, and the relay drops both.
-- agy: the result depends on the measured invocations.
-- kiro-cli: `/paste` and `/copy` still fail. Serving those commands needs an X server, which this
-  plan excludes.
 
 ## Documentation
 
@@ -272,8 +272,8 @@ On that reading:
   - On macOS and Windows hosts, a selection copies nothing, since each selection would replace the
     clipboard. Use `/copy` instead.
 - README's Reference block, which `--help` prints: the `--clipboard=paste` text "lets the agent
-  read a copied image" names the agents the claim holds for. Those are Claude Code, Codex, Copilot
-  and OpenCode, and agy as measured, but not kiro-cli.
+  read a copied image" names the agents the claim holds for. Those are Claude Code, Codex, agy as
+  measured, Copilot and OpenCode, but not kiro-cli.
 - SECURITY.md, "Clipboard": the service's socket beside the FIFOs, and that `bidirectional` also
   sets the primary selection on Linux hosts.
 - The relay's code records that `primary` follows Copilot's own build for each host.
@@ -294,12 +294,12 @@ Specific checks:
 - On the four OSC 52 terminals, `c` sets the clipboard. Record which iTerm2 setting that needs, and
   what `p` and `p!` do on macOS.
 - Codex's and Copilot's image paste fails in every mode. Record what each agent shows the user.
-- Copilot's clipboard-rs stderr line appears on screen under `bidirectional`.
-- OpenCode's image paste works under `paste` through its `xclip` fallback.
 - agy: record its exact clipboard invocations with a logging shim, and whether agy chooses the
   Wayland or X11 commands by `WAYLAND_DISPLAY`.
 - kiro-cli: `/paste` and `/copy` fail in every mode. Record what `kiro-cli`'s "Copy to clipboard"
   is.
+- Copilot's clipboard-rs stderr line appears on screen under `bidirectional`.
+- OpenCode's image paste works under `paste` through its `xclip` fallback.
 
 ### The prototype, against a fake relay
 
@@ -360,6 +360,6 @@ Specific checks:
 - Crates from crates.io: arboard 3.6.1 (`src/platform/linux/`), wl-clipboard-rs 0.9.3
   (`src/paste.rs`, `src/copy.rs`, `src/common.rs`, `src/utils.rs`), clipboard-rs 0.3.5
   (`src/platform/`), wayland-client 0.31.12 (`src/conn.rs`)
-- The image's binaries: `/usr/bin/claude`, `/opt/codex/bin/codex`, Copilot's package under
-  `~/.cache/copilot/pkg/linux-arm64/1.0.88`, `/usr/local/bin/opencode`, `/usr/local/bin/agy`,
-  `/usr/local/bin/kiro-cli` and `kiro-cli-chat`
+- The image's binaries: `/usr/bin/claude`, `/opt/codex/bin/codex`, `/usr/local/bin/agy`,
+  `/usr/local/bin/kiro-cli` and `kiro-cli-chat`, Copilot's package under
+  `~/.cache/copilot/pkg/linux-arm64/1.0.88`, and `/usr/local/bin/opencode`

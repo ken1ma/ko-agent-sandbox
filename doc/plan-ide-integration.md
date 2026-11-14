@@ -105,12 +105,12 @@ ACP, for the deferred track:
     spawn. An `http` or `sse` entry names a URL and headers.
 - A `terminal` authentication method makes the client launch the configured agent command again in
   an interactive terminal, with the method's `args` appended and its `env` applied.
-- In the image, `opencode acp` (OpenCode 1.18.32) and `copilot --acp` (Copilot CLI 1.0.87) answer
+- In the image, `copilot --acp` (Copilot CLI 1.0.87) and `opencode acp` (OpenCode 1.18.32) answer
   an `initialize` on stdout, with nothing on stderr.
   - Both advertise `loadSession`, and the `http` and `sse` MCP transports.
   - Copilot's authentication method carries a `_meta.terminal-auth` entry that names
     `/usr/local/bin/copilot login`.
-  - `codex` 0.155.1 and `claude` 2.1.278 have no ACP mode of their own.
+  - `claude` 2.1.278 and `codex` 0.155.1 have no ACP mode of their own.
 - Zed runs a custom agent from `agent_servers.<name>` in its settings: `type: custom`, `command`,
   `args`, `env`.
   - Zed's documentation says that Zed-configured MCP servers may be forwarded to the agent over
@@ -676,7 +676,7 @@ Then test by hand, and record the results here:
 3. The relay's policy, the path translation and the fake-agent tests.
 4. Zed with `opencode acp`, then `copilot --acp`. Documentation as for AHP, in `doc/acp.md`.
 5. JetBrains.
-6. Further backends as they appear in the image. Codex and Claude reach ACP through separate
+6. Further backends as they appear in the image. Claude and Codex reach ACP through separate
    adapter programs (unverified).
 7. ACP v2, once Zed and one installed agent negotiate it: read its client surface, write the second
    policy, extend the fake agent to v2, and keep v1 for the clients still on it.

@@ -46,8 +46,8 @@ class FileRulesTest extends munit.FunSuite:
   test("the defaults parse, protect the agents' and editors' files, and end with the dependency directory"):
     val names = Defaults.map(_.name)
     Vector(
-      ".claude/settings.json", ".mcp.json", ".codex/config.toml", ".gemini/settings.json", ".github/hooks",
-      ".agents/hooks.json", ".kiro/hooks", ".opencode", ".husky", ".pre-commit-config.yaml", ".vscode",
+      ".claude/settings.json", ".mcp.json", ".codex/config.toml", ".gemini/settings.json", ".agents/hooks.json",
+      ".kiro/hooks", ".github/hooks", ".opencode", ".husky", ".pre-commit-config.yaml", ".vscode",
       ".idea", ".devcontainer", "mise.toml", ".tool-versions", ".miserc.toml", ".lfsconfig",
     ).foreach(name => assert(names.contains(name), name))
     assertEquals(Defaults.last, Line(Word.Writable, "node_modules"))

@@ -2074,8 +2074,8 @@ workspace's own `unshare -Ur` step fails with `Operation not permitted`.
   pid, mount, net and cgroup namespaces: the command's `/proc/self/ns/*` inodes equal the session
   shell's.
   - Measured on 2026-10-26 and 2026-10-27 in `--workspace=live,bpf,unix-socket` sessions on macOS,
-    with `claude -p` 2.1.310, `codex exec` 0.164.0, `agy -p` 1.4.7, `opencode run` 1.19.4,
-    `kiro-cli chat --no-interactive` 2.34.0 and `copilot -p` 1.0.103.
+    with `claude -p` 2.1.310, `codex exec` 0.164.0, `agy -p` 1.4.7,
+    `kiro-cli chat --no-interactive` 2.34.0, `copilot -p` 1.0.103 and `opencode run` 1.19.4.
 - `setfattr`, `setfacl` and `chattr` fail everywhere in the session, `~` included. `cp -a` and `tar`
   drop extended attributes and ACLs silently, as they do on a filesystem without them.
 

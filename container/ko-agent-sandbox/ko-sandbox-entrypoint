@@ -173,13 +173,13 @@ if [ -d "$volume" ] && [ "$workspace" != / ]; then
                 ((. // {}) + {hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true}))
              | (if has("lspRecommendationDisabled") then . else . + {lspRecommendationDisabled: true} end)' \
             claude
+        record_codex
         merge_json "$volume/antigravity/antigravity-cli/settings.json" \
             '.trustedWorkspaces |= ((. // []) | if index($workspace) then . else . + [$workspace] end)' \
             agy
         merge_json "$volume/copilot/config.json" \
             '.trustedFolders |= ((. // []) | if index($workspace) then . else . + [$workspace] end)' \
             copilot
-        record_codex
         exec 9<&-
     else
         echo "warning: could not lock $volume to record $workspace as trusted; the agents may ask" >&2
