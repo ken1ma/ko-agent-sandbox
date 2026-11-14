@@ -863,6 +863,7 @@ What the supervisor supplies:
 | `COURSIER_CACHE` | `<run-on-host cache>/coursier/v1` |
 | `GRADLE_USER_HOME` | `<run-on-host cache>/gradle-user-home` |
 | `USER`, `LOGNAME` | the account's name, the JVM's `user.name` |
+| `KO_AGENT_SANDBOX_RUN_ON_HOST_COMMAND` | `1`, for builds (`run-on-host.md`, "Telling a host command apart in a build") |
 | `HTTPS_PROXY`, `HTTP_PROXY` and their lowercase | `http://127.0.0.1:<port>`, the command's proxy |
 | `NO_PROXY` and its lowercase | `localhost,127.0.0.1` |
 | `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `GIT_SSL_CAINFO` | the proxy's CA certificate, PEM (below) |

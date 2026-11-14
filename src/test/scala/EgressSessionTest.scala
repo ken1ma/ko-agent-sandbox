@@ -287,8 +287,8 @@ class EgressSessionTest extends munit.FunSuite:
     requireTestWithPodman()
 
     withSession(Some("deny defaults\nallow model-provider anthropic\n")): session =>
-      // Any status means that the provider answered, which is what "still signs in" means. The token host is a
-      // tunnel, so the proxy granted its CONNECT; the model host is inspected, so curl trusted its leaf.
+      // Any status means that the provider answered, which is what "still signs in" means. Both hosts are inspected,
+      // so curl trusted the leaf of each.
       Vector("https://platform.claude.com/", "https://api.anthropic.com/").foreach: url =>
         assert(curl(session, "-o", "/dev/null", url).ok, s"$url is unreachable under the lockdown")
       // The catalog's hosts are gone.
@@ -323,10 +323,10 @@ class EgressSessionTest extends munit.FunSuite:
 
     // The leaf names the host through the launcher's reading of the ruleset (EgressRules.inspectedHostsOf).
     launched(None): session =>
-      Vector("api.anthropic.com", "chatgpt.com", "api.openai.com").foreach: host =>
-        assertEquals(reachedIssuer(session, host), caSubject(session), s"$host is not inspected")
-      // claude.ai and platform.claude.com.
-      assert(Files.readString(session.log).contains(", 2 tunnel"), Files.readString(session.log))
+      Vector("api.anthropic.com", "platform.claude.com", "chatgpt.com", "api.openai.com", "auth.openai.com")
+        .foreach: host =>
+          assertEquals(reachedIssuer(session, host), caSubject(session), s"$host is not inspected")
+      assert(Files.readString(session.log).contains(", 0 tunnel"), Files.readString(session.log))
 
     // The way back to the tunnel: deny defaults, then the whole ruleset (egress-proxy.md, "The rule file").
     launched(
@@ -338,7 +338,8 @@ class EgressSessionTest extends munit.FunSuite:
       assertNotEquals(
         reachedIssuer(session, "api.anthropic.com"), caSubject(session), "api.anthropic.com is still inspected",
       )
-      assert(Files.readString(session.log).contains("0 inspected, 3 tunnel"), Files.readString(session.log))
+      // platform.claude.com stays inspected.
+      assert(Files.readString(session.log).contains("1 inspected, 1 tunnel"), Files.readString(session.log))
 
   test("--model-provider selects the providers a session reaches, over the catalog"):
     requireTestWithPodman()

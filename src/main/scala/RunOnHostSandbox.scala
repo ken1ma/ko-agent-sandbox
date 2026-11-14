@@ -1273,6 +1273,10 @@ object RunOnHostSandbox:
 
   val PassedThrough = Vector("HOME", "LANG", "LC_ALL")
 
+  /** Set to `1` in every host command's environment, so that a build tells a host command from a terminal's
+    * (run-on-host.md, "Telling a host command apart in a build"). */
+  val HostCommandVariable = "KO_AGENT_SANDBOX_RUN_ON_HOST_COMMAND"
+
   /** Variables whose forwarded value the command never gets.
     *
     *   - The version overrides: the supervisor resolved the version from the build directory alone and granted that
@@ -1374,6 +1378,7 @@ object RunOnHostSandbox:
       "GRADLE_USER_HOME" -> gradleUserHome.toString,
       "USER" -> userName,
       "LOGNAME" -> userName,
+      HostCommandVariable -> "1",
     ) ++
       // Set for every program, not mill alone: the other programs ignore it, and one unconditional setting is
       // simpler than a conditional one. Mill's bootstrap otherwise derives the folder from HOME and XDG_CACHE_HOME.

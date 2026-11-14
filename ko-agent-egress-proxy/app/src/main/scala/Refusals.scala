@@ -19,6 +19,12 @@ case class ClosedWithoutRequest() extends RuntimeException("closed without sendi
   * shutdown would make a close-delimited body appear complete. */
 case class TruncatedResponse(message: String) extends RuntimeException(message)
 
+/** A read from or a write to the client of an inspected request that failed before the response body: the request
+  * body ended early, broke or stalled, or the client reset before a response head reached it. The JDK names a reset
+  * alike on either leg (`Connection reset`, `Connection reset by peer`), so only this type tells the log which peer
+  * failed. */
+case class ClientFailure(message: String) extends RuntimeException(message)
+
 /** A refusal that the ruleset made. The refused party receives the refusal as a 403 body of two lines
   * (Refusals.refusalBody).
   *

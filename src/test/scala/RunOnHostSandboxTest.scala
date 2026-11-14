@@ -50,7 +50,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       Vector(
         "TOKEN" -> "t0ken", "HTTPS_PROXY" -> "http://elsewhere.example:1", "MILL_VERSION" -> "1.0.0",
         "MILL_OUTPUT_DIR" -> "elsewhere", "_JAVA_OPTIONS" -> "-javaagent:/tmp/agent.jar",
-        "JAVA_TOOL_OPTIONS" -> "-Duser.option=value",
+        "JAVA_TOOL_OPTIONS" -> "-Duser.option=value", HostCommandVariable -> "0",
       ),
       Assembled(
         prereqs, None, sbtGlobal = Path.of("/cache/sbt"), ivyHome = Path.of("/cache/ivy"),
@@ -73,6 +73,8 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(environment("SBT_GLOBAL_SERVER_DIR"), "/private/tmp/ko-agent-501/b/tmp")
     assertEquals(environment("USER"), "u")
     assertEquals(environment("LOGNAME"), "u")
+    // A build reads the marker to tell a host command from a terminal's, so no forwarded value replaces it.
+    assertEquals(environment(HostCommandVariable), "1")
     assertEquals(environment("MILL_FINAL_DOWNLOAD_FOLDER"), "/Users/u/.cache/mill/download")
     // MILL_VERSION is the supervisor's launcher version, never the forwarded one.
     assertEquals(environment("MILL_VERSION"), "1.1.9-jvm")
@@ -106,7 +108,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       Set(
         "HOME", "LANG", "TOKEN", "PATH", "JAVA_HOME", "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "TMPDIR", "XDG_RUNTIME_DIR",
         "SBT_GLOBAL_SERVER_DIR", "COURSIER_CACHE", "GRADLE_USER_HOME", "USER", "LOGNAME", "MILL_FINAL_DOWNLOAD_FOLDER",
-        "MILL_VERSION",
+        "MILL_VERSION", HostCommandVariable,
       ) ++ commandProxyVariables(4711).keySet ++ AgentSandboxLauncher.CaBundleVariables,
     )
     // Without a derivable download folder, the variable is absent. The launcher version is absent too for a program
@@ -1921,6 +1923,8 @@ class RunOnHostSandboxTest extends munit.FunSuite:
         |2026-08-31T01:08:29Z deny repo1.maven.org - - malformed request line
         |2026-08-31T01:08:30Z deny repo1.maven.org GET /maven2/b.pom request body framing header
         |2026-08-31T01:08:31Z deny r.example GET https://r.example/x only origin-form request targets are allowed
+        |2026-08-31T01:08:32Z deny repo1.maven.org POST /up id=3 invalid chunk size
+        |2026-08-31T01:08:33Z deny repo1.maven.org POST /up id=4 invalid chunk size
         |""".stripMargin,
       UTF_8,
     )
@@ -1928,8 +1932,9 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val framed = RefusedRequest("GET", "repo1.maven.org", "/maven2/b.pom", "request body framing header")
     val absolute =
       RefusedRequest("GET", "r.example", "https://r.example/x", "only origin-form request targets are allowed")
+    val chunking = RefusedRequest("POST", "repo1.maven.org", "/up", "invalid chunk size")
     // A refused CONNECT has no target, and the first word of its reason is not a target.
-    assertEquals(refusedRequests(log), Vector(put, framed, absolute))
+    assertEquals(refusedRequests(log), Vector(put, framed, absolute, chunking))
     assertEquals(put.spelled, "PUT https://repo1.maven.org/maven2/a.pom")
     assertEquals(absolute.spelled, "GET https://r.example/x (r.example)")
     assertEquals(deniedHosts(log), Vector("example.com"))

@@ -220,12 +220,33 @@ provisioned on the host instead.
 The launcher derives Coursier's paths from Coursier's conventions and the environment. The launcher
 offers no overrides (`cache-root`, `jvm-root`, `install-root`) until a user needs one.
 
+## Telling a host command apart in a build
+
+Every host command's environment sets `KO_AGENT_SANDBOX_RUN_ON_HOST_COMMAND=1`. A build can read it
+to refuse a task in a host command, with a message that says what to run instead. Two kinds of task
+need the refusal: one that the confinement refuses, such as launching containers, and one whose
+result you run outside the sandbox.
+
+- Under sbt, the build runs in the server, so the variable marks the launch's server. Your
+  terminal's `sbt` that attaches to that server sees the variable too ("Under sbt").
+- The JVMs and processes that the build forks inherit the variable.
+- A value forwarded with `--env` never replaces it.
+- `project/KoAgentSandboxHelper.scala` wraps a task or a command in that refusal. Copy the file
+  into your build's `project/` directory, and wrap each task in `build.sbt` as the file's header
+  shows. The refusal names `sbt shutdown` as the next step.
+- A task whose result you run outside the sandbox, such as a launcher jar, needs the refusal
+  because the launch's server builds from the run-on-host caches, which the agent's commands write
+  (`SECURITY.md`, "Cache poisoning stops at the workspace").
+- This repository's `build.sbt` wraps `dist`, the jar you run, and `testWithPodman`, which starts
+  containers.
+
 ## The run-on-host cache
 
 Host commands get their own cache root, per workspace:
 `${XDG_CACHE_HOME:-$HOME/.cache}/ko-agent-sandbox/run-on-host/<workspaceId>/`. A poisoned artifact
-there reaches only later host commands of the same workspace, never your own builds or another
-workspace (`SECURITY.md`, "Cache poisoning stops at the workspace").
+there reaches later host commands of the same workspace, and never another workspace. It reaches
+your own build only when your terminal's `sbt` runs in the launch's server: run `sbt shutdown`
+first (`SECURITY.md`, "Cache poisoning stops at the workspace").
 
 - The root holds Coursier's `v1`, sbt's global base and Ivy home, Gradle's user home and Maven's
   local repository under one directory.
@@ -304,6 +325,8 @@ operability, since the caller is not interactive. A quoted section name in this 
   supervisor sets, not the launching shell's ("The command's lifetime and environment"):
   - `HOME` is passed, and nothing under it is granted;
   - `preferIPv4Stack` is set for the loopback rule ("Network");
+  - `KO_AGENT_SANDBOX_RUN_ON_HOST_COMMAND=1` marks the command for a build ("Telling a host command
+    apart in a build");
   - the proxy is the command's only route off this host;
   - the workspace is writable even under `--workspace=read-only` (`SECURITY.md`, "Run on host").
 - **Publishing to a repository is refused — confinement.** Stock sbt, Mill, Gradle and Maven
@@ -359,7 +382,8 @@ operability, since the caller is not interactive. A quoted section name in this 
   `sbt shutdownall` does not end it — ownership.** Run `sbt shutdown` there first to end the
   server.
   - Stock sbt attaches to whatever server holds the portfile, so your command runs under the
-    profile and the launch's environment. A test that runs podman fails there.
+    profile and the launch's environment. A test that runs podman fails there, unless the build
+    refuses it first ("Telling a host command apart in a build").
   - `sbt shutdownall` kills what `jps -v` lists as `sbt-launch`, which does not include a launch's
     server (sbt 2.0.9, macOS 26.4.1, 2026-09-28). The server ends with the launch anyway.
 

@@ -774,8 +774,8 @@ lifecycle, benchmark and launcher suites binds its figures to the digest of its 
   defaults, grants every method at its root.
   The proxy holds each request's conversation and provider token in memory, in plaintext, whether
   or not the launch selects a credential.
-- An inspected login host, such as `auth.openai.com`, puts the sign-in's codes and tokens in the
-  proxy's memory in plaintext, refresh tokens included.
+- An inspected login host, such as `auth.openai.com` and `platform.claude.com`, puts the sign-in's
+  codes and tokens in the proxy's memory in plaintext, refresh tokens included.
 - Inspection lets the retained log record each request's method and target. An opaque tunnel logs
   the `CONNECT` alone.
 - Every other defaults host is inspected, including the bulk package registries, at a known
@@ -975,8 +975,8 @@ the explanation that ends a `deny` or `error` line, which is meant for people an
     <instant> allow         <host> <method> [<target>] [inject=<names>] [<fields>] -> <ip>
     <instant> chunked-end   <host> <method> <target> id=<n> send=<bytes> [incomplete]
     <instant> websocket-end <host> GET <target> id=<n> send=<bytes> recv=<bytes>
-    <instant> deny          <host> <method> [<target>] <why>
-    <instant> error         <host> <method> [<target>] <why>
+    <instant> deny          <host> <method> [<target>] [id=<n>] <why>
+    <instant> error         <host> <method> [<target>] [id=<n>] <why>
 
 Timestamps use UTC with second precision, for example `2026-08-26T11:59:38Z`. Every line carries a
 timestamp, including startup lines; the examples below omit it.
@@ -1000,13 +1000,14 @@ timestamp, including startup lines; the examples below omit it.
     prints as the binding's name. So does a bound parameter's value: `?sig=AZURE_SAS_SIG`. A
     percent-escaped spelling of a placeholder prints as sent.
   - A request denied after the substitution sent no credential, and its line has no `inject`.
-- **`<fields>`** follow on an inspected `allow` line, in this order, each only when the request
-  supplies it (`RequestAudit` in the proxy):
+- **`<fields>`** follow on an inspected `allow` line, in this order, each except `id=` only when
+  the request supplies it (`RequestAudit` in the proxy):
   - `content-length=<bytes>` from a declared `Content-Length`, or `chunked`. The relay forwards
     no more body than the declared length, so `<bytes>` bounds what the origin received.
   - `upgrade=websocket` on a WebSocket handshake that a line granted.
-  - `id=<n>` on a chunked request's line and a handshake's, which the request's `chunked-end` or
-    `websocket-end` line repeats. `<n>` counts those requests from 1 in one proxy's log.
+  - `id=<n>`, which the request's later lines repeat: its `chunked-end` or `websocket-end` line,
+    and a `deny` or `error` line after the `allow` line. `<n>` counts inspected requests from 1 in
+    one proxy's log, so a failure names its request among concurrent ones to the same target.
   - `client=<token>`: the start of the `User-Agent`, as far as its characters are in
     `[A-Za-z0-9._:/-]`, and at most 128 of them. The line logs nothing after the token.
   - `cred=<n>`: the index of the request's credential among the distinct credentials the
@@ -1025,7 +1026,7 @@ timestamp, including startup lines; the examples below omit it.
   - `incomplete` marks a body that did not reach the origin whole: the client closed, the chunking
     was malformed, or the origin answered or closed first. The origin may keep what it received.
   - Before the origin answers, a client's close also prints an `error` line, and malformed chunking
-    a `deny` line. Either comes before or after the `chunked-end` line, and carries no `id=`.
+    a `deny` line. Either comes after the `chunked-end` line, with the same `id=`.
   - The log records no response status, so `incomplete` is the one sign of an origin that refused
     mid-upload.
 - **`websocket-end`** ends a granted WebSocket's stream after its handshake's `allow` line.
@@ -1058,14 +1059,15 @@ The stages emit the following kinds of events:
     deny github.com CONNECT encrypted ClientHello
 
     # inspected requests — step 11 onward
-    allow github.com GET /owner/repo?tab=readme -> 140.82.112.3
-    allow api.github.com GET /user inject=GH_TOKEN client=curl/8.5.0 cred=1 -> 140.82.112.5
-    allow api.github.com POST /gists content-length=1532 client=curl/8.5.0 cred=1 -> 140.82.112.5
-    allow api.github.com POST /gists chunked id=1 client=curl/8.5.0 -> 140.82.112.5
-    chunked-end api.github.com POST /gists id=1 send=52428800
-    chunked-end api.github.com POST /gists id=2 send=65536 incomplete
-    allow ws.example GET /stream upgrade=websocket id=3 client=claude-cli/2.1.319 -> 203.0.113.9
-    websocket-end ws.example GET /stream id=3 send=48213 recv=1032
+    allow github.com GET /owner/repo?tab=readme id=1 -> 140.82.112.3
+    allow api.github.com GET /user inject=GH_TOKEN id=2 client=curl/8.5.0 cred=1 -> 140.82.112.5
+    allow api.github.com POST /gists content-length=95 id=3 client=curl/8.5.0 cred=1 -> 140.82.112.5
+    allow api.github.com POST /gists chunked id=4 client=curl/8.5.0 -> 140.82.112.5
+    chunked-end api.github.com POST /gists id=4 send=52428800
+    chunked-end api.github.com POST /gists id=5 send=65536 incomplete
+    deny api.github.com POST /gists id=5 invalid chunk size
+    allow ws.example GET /stream upgrade=websocket id=6 client=claude-cli/2.1.319 -> 203.0.113.9
+    websocket-end ws.example GET /stream id=6 send=48213 recv=1032
     deny github.com POST /owner/repo.git/git-receive-pack POST not granted
     deny github.com GET /r.git/info/refs?service=git-receive-pack git push ref discovery
     deny github.com GET /r.git/info/refs?service=git-upload-pack git fetch ref discovery
@@ -1085,13 +1087,17 @@ The stages emit the following kinds of events:
     error github.com CONNECT tried 140.82.112.3: upstream proxy returned 403
     error github.com CONNECT tried 140.82.112.3: upstream proxy http://proxy.example:3128: refused
     error github.com GET /owner/repo origin: certificate expired
-    error github.com GET /owner/repo relay: connection reset
-    error github.com GET /big.tar relay: 8192-byte response truncated: body ended 100 bytes early
+    error github.com GET /owner/repo id=7 relay: connection reset
+    error api.anthropic.com POST /v1/messages id=8 client: Connection reset by peer
+    error github.com GET /a.tar id=9 relay: 8192-byte response truncated: body ended 100 bytes early
     error github.com - client closed before sending a request
 
 - The `relay:` error records response-body framing and I/O failures after the proxy forwarded the
   response head, including timeouts and resets in close-delimited bodies. The proxy aborts the
   client connection without a clean TLS shutdown, so the client can detect the incomplete download.
+- The `client:` error records the client's failure before the response body: its request body
+  ended early, broke or stalled, or the client reset before a response head reached it. `origin:`
+  records only the origin leg's failures.
 - A client closing without sending a request is not a refusal, since pooled clients routinely
   discard unused connections. The proxy logs such a close as `error`. A partial request header
   instead counts as malformed input, and the proxy logs it as `deny`.
@@ -1791,7 +1797,8 @@ commands execute outside the container, so the profile provides their confinemen
 - **One sbt server, and one mill daemon, per build directory, owned by the launch's runner.** A
   thin sbt client attaches to whatever server the build directory's portfile names. Mill's launcher
   attaches to whatever daemon holds `out/mill-daemon`. Either client then runs with *that
-  process's* environment: its cache, and its confinement or lack of it. So the runner starts the
+  process's* environment: its cache, and its confinement or lack of it. That holds for your
+  terminal's `sbt` too ("Cache poisoning stops at the workspace", below). So the runner starts the
   server or daemon itself, inside its own profile, before the first sbt or `mill` command of a build
   directory. Every command from that directory attaches to that server or daemon:
   - the sbt client through the sockets under the runner's own directory;
@@ -1904,7 +1911,14 @@ commands execute outside the container, so the profile provides their confinemen
   What that separation gives, and how it is kept:
   - A poisoned artifact in any of these caches reaches later agent commands of the same workspace,
     which are themselves sandboxed. The artifact reaches no other workspace and no unsandboxed
-    command.
+    command, with one exception.
+  - The exception: while a launch's sbt server holds a build directory's portfile, your terminal's
+    `sbt` there attaches to that server and builds from these caches. What it builds carries a
+    poisoned artifact to wherever you run the result.
+    - Run `sbt shutdown` first before building anything you run outside the sandbox.
+    - A build can refuse such a task in that server (`doc/run-on-host.md`, "Telling a host command
+      apart in a build"). This repository's `dist` refuses there.
+    - `doc/TODO.md`, "A terminal's sbt in a launch's server", tracks a fix in the launcher.
   - `--reset` discards all of these caches with the workspace's other state. `--reset-run-on-host`
     discards those caches alone.
   - The separation is by root, because Seatbelt has no mount namespace to overlay with. One

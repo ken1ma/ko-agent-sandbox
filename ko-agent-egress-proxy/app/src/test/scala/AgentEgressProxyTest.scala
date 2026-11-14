@@ -146,6 +146,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
     def opt(value: String) = Option(value).filter(_.nonEmpty)
     resolveRuleset(Some(profile), opt(provider), opt(rule))
 
+  /** The scopes of a model or login host whose every path takes reads and writes. */
+  private val ReadWriteScopes = Map("/" -> Set("read", "POST", "PUT", "PATCH", "DELETE"))
+
   /** The scopes that defaults/model-provider/anthropic gives api.anthropic.com. */
   private val AnthropicScopes = Map(
     "/" -> Set("read", "POST", "PUT", "PATCH", "DELETE"),
@@ -223,7 +226,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       "deny https://*/" -> "invalid hostname",
       "allow https://x.example/ tunnel\nallow https://x.example/api/ read" -> "inspects x.example while it is a tunnel",
       "allow https://x.example/api/ read\nallow https://x.example/ tunnel" -> "makes x.example a tunnel while it holds",
-      "allow https://claude.ai/safe/ read" -> "inspects claude.ai while it is a tunnel",
+      "allow https://accounts.google.com/safe/ read" -> "inspects accounts.google.com while it is a tunnel",
       "allow https://github.com/ tunnel" -> "makes github.com an opaque tunnel, which the defaults inspect",
       "deny https://github.com/\nallow https://github.com/ tunnel" -> "makes github.com an opaque tunnel",
     ).foreach: (rule, problem) =>
@@ -264,7 +267,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // A grant no line gave, a subtree over nothing, a provider after `deny defaults`, and `tunnel`
     // on an inspected host: each names its line.
     Vector(
-      "deny https://claude.ai/ read" -> "matches nothing",
+      "deny https://accounts.google.com/ read" -> "matches nothing",
       "deny https://**.example.com/" -> "matches nothing",
       "deny https://github.com/ tunnel" -> "matches nothing",
       "deny defaults\ndeny model-provider google" -> "matches nothing",
@@ -294,7 +297,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
       "allow https://github.com/ read git-fetch",
       "allow https://github.com/login/device/code method=POST",
       "allow https://api.github.com/copilot_internal/v2/token read",
-      "allow https://platform.claude.com/ tunnel",
+      "allow https://accounts.google.com/ tunnel",
+      "allow https://platform.claude.com/ read method=POST,PUT,PATCH,DELETE",
       "allow https://auth.openai.com/ read method=POST,PUT,PATCH,DELETE",
       "allow https://api.anthropic.com/ read method=POST,PUT,PATCH,DELETE",
       "allow https://chatgpt.com/ read method=POST,PUT,PATCH,DELETE",
@@ -355,7 +359,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       Vector("rule: allow model-provider anthropic grants nothing: every grant it names is taken back by a later line"),
     )
     val hostByHost = "deny defaults\nallow model-provider anthropic\ndeny https://api.anthropic.com/\n" +
-      "deny https://claude.ai/\ndeny https://platform.claude.com/"
+      "deny https://platform.claude.com/"
     assertEquals(rulesetOf(rule = hostByHost).warnings.count(_.contains("taken back")), 1)
     assertEquals(
       rulesetOf(rule = "deny defaults\nallow model-provider anthropic\ndeny https://api.anthropic.com/").warnings,
@@ -454,8 +458,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       resolved.hosts,
       Map(
         "api.anthropic.com" -> Treatment.Inspected(AnthropicScopes),
-        "claude.ai" -> Treatment.Tunnel,
-        "platform.claude.com" -> Treatment.Tunnel,
+        "platform.claude.com" -> Treatment.Inspected(ReadWriteScopes),
       ),
     )
     assertEquals(authorize("api.anthropic.com", 443, resolved), "api.anthropic.com")
@@ -612,7 +615,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       Set("read", "git-fetch"),
     )
     // The tunnel word takes the treatment.
-    assert(!every("deny https://claude.ai/ tunnel").hosts.contains("claude.ai"))
+    assert(!every("deny https://accounts.google.com/ tunnel").hosts.contains("accounts.google.com"))
     // Provider denials also remove catalog grants on the same hosts.
     val noGithub = every("deny model-provider github")
     Vector("github.com", "api.github.com", "api.githubcopilot.com").foreach: host =>
@@ -647,14 +650,17 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // After deny defaults the provider is the whole ruleset: the lockdown.
     val lockdown = rulesetOf(rule = "deny defaults\nallow model-provider anthropic")
     assertEquals(lockdown.hosts, rulesetOf(profile = "deny-unless-model", provider = "anthropic").hosts)
-    assertEquals(lockdown.inspectedScopes, Map("api.anthropic.com" -> AnthropicScopes))
+    assertEquals(
+      lockdown.inspectedScopes,
+      Map("api.anthropic.com" -> AnthropicScopes, "platform.claude.com" -> ReadWriteScopes),
+    )
     assertEquals(lockdown.warnings, Vector.empty)
     intercept[Refusal](authorize("github.com", 443, lockdown))
     // Under every profile a provider's lines meet the one-treatment check like any line.
     val ex = intercept[IllegalArgumentException](
-      rulesetOf(rule = "deny defaults\nallow model-provider anthropic\nallow https://claude.ai/ read"),
+      rulesetOf(rule = "deny defaults\nallow model-provider google\nallow https://accounts.google.com/ read"),
     )
-    assert(ex.getMessage.contains("inspects claude.ai while it is a tunnel"), ex.getMessage)
+    assert(ex.getMessage.contains("inspects accounts.google.com while it is a tunnel"), ex.getMessage)
 
   test("every provider deny overrides earlier grants on its hosts and permits later exceptions"):
     ModelProviders.foreach: provider =>
@@ -698,13 +704,13 @@ class AgentEgressProxyTest extends munit.FunSuite:
           assert(!deniedAgain.allows(host), s"repeated $deny after $allow")
 
   test("a host has one treatment: narrowing a tunnel to inspected is local, widening needs deny defaults"):
-    val narrowed = rulesetOf(rule = "deny https://claude.ai/ tunnel\nallow https://claude.ai/ read")
-    assertEquals(narrowed.inspectedScopes("claude.ai"), Map("/" -> Set("read")))
+    val narrowed = rulesetOf(rule = "deny https://accounts.google.com/ tunnel\nallow https://accounts.google.com/ read")
+    assertEquals(narrowed.inspectedScopes("accounts.google.com"), Map("/" -> Set("read")))
     assertEquals(narrowed.warnings, Vector.empty)
     val beneath = rulesetOf(
-      rule = "deny https://claude.ai/ tunnel\nallow https://claude.ai/api/ read",
+      rule = "deny https://accounts.google.com/ tunnel\nallow https://accounts.google.com/api/ read",
     )
-    assertEquals(beneath.inspectedScopes("claude.ai"), Map("/api/" -> Set("read")))
+    assertEquals(beneath.inspectedScopes("accounts.google.com"), Map("/api/" -> Set("read")))
     // Widened, with the whole ruleset stated after deny defaults; and a new host as a tunnel.
     assertEquals(
       rulesetOf(rule = "deny defaults\nallow https://github.com/ tunnel").hosts,
@@ -712,13 +718,13 @@ class AgentEgressProxyTest extends munit.FunSuite:
     )
     assertEquals(rulesetOf(rule = "allow https://api.example/ tunnel").hosts("api.example"), Treatment.Tunnel)
     // The tunnel taken alone denies the host.
-    val taken = rulesetOf(rule = "deny https://claude.ai/ tunnel")
-    assert(!taken.hosts.contains("claude.ai"))
-    intercept[Refusal](authorize("claude.ai", 443, taken))
+    val taken = rulesetOf(rule = "deny https://accounts.google.com/ tunnel")
+    assert(!taken.hosts.contains("accounts.google.com"))
+    intercept[Refusal](authorize("accounts.google.com", 443, taken))
     // deny defaults with an inspected line on a defaults tunnel is valid: the defaults are cleared
     // before the line meets them.
-    val cleared = rulesetOf(rule = "deny defaults\nallow https://claude.ai/ read")
-    assertEquals(cleared.inspectedScopes("claude.ai"), Map("/" -> Set("read")))
+    val cleared = rulesetOf(rule = "deny defaults\nallow https://accounts.google.com/ read")
+    assertEquals(cleared.inspectedScopes("accounts.google.com"), Map("/" -> Set("read")))
     assertEquals(cleared.warnings, Vector.empty)
     // A host the defaults inspect returns to a tunnel only under deny defaults (egress-proxy.md, "The rule file").
     assert(
@@ -730,7 +736,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
         "allow https://api.anthropic.com/ tunnel",
     )
     assertEquals(tunnelBack.hosts("api.anthropic.com"), Treatment.Tunnel)
-    assertEquals(tunnelBack.inspectedScopes, Map.empty)
+    assertEquals(tunnelBack.inspectedScopes, Map("platform.claude.com" -> ReadWriteScopes))
 
   test("a host left with no grant is denied whole: off the map, off the leaf, named by its line"):
     val emptied = rulesetOf(rule = "deny https://docs.python.org/ read")
@@ -843,9 +849,10 @@ class AgentEgressProxyTest extends munit.FunSuite:
           "allow https://github.com/login/ method=POST    # the defaults grant it on two paths below\n" +
           "allow https://www.googleapis.com/oauth2/v2/userinfo read  # the defaults' own line, restated\n" +
           "allow https://www.googleapis.com/oauth2/ read  # the defaults grant it on one path below\n" +
-          "allow https://platform.claude.com/ tunnel      # the defaults' own tunnel, restated\n" +
+          "allow https://api.githubcopilot.com/ tunnel    # the defaults' own tunnel, restated\n" +
           "deny https://gitlab.com/\ndeny model-provider google\nallow model-provider anthropic\n" +
-          "deny https://claude.ai/ tunnel\nallow https://claude.ai/ read  # a tunnel narrowed to inspected reads\n" +
+          "deny https://api.individual.githubcopilot.com/ tunnel\n" +
+          "allow https://api.individual.githubcopilot.com/ read  # a tunnel narrowed to inspected reads\n" +
           "deny https://github.com/ git-fetch\nallow https://github.com/my-org/ git-fetch\n",
     )
     val widening = Vector(
@@ -950,7 +957,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assert(lines.contains("allow https://github.com/ read git-fetch"), lines.toString)
     assert(lines.contains("allow https://github.com/login/device/code read git-fetch method=POST"), lines.toString)
     assert(lines.contains("allow https://api.github.com/copilot_internal/v2/token read"), lines.toString)
-    assert(lines.contains("allow https://platform.claude.com/ tunnel"), lines.toString)
+    assert(lines.contains("allow https://accounts.google.com/ tunnel"), lines.toString)
+    assert(lines.contains("allow https://platform.claude.com/ read method=POST,PUT,PATCH,DELETE"), lines.toString)
     assert(lines.contains("allow https://auth.openai.com/ read method=POST,PUT,PATCH,DELETE"), lines.toString)
     assert(lines.contains("allow https://chatgpt.com/ read method=POST,PUT,PATCH,DELETE"), lines.toString)
     assert(lines.contains("allow https://api.anthropic.com/ read method=POST,PUT,PATCH,DELETE"), lines.toString)
@@ -1014,16 +1022,16 @@ class AgentEgressProxyTest extends munit.FunSuite:
         "defaults/model-provider/github: allow https://api.github.com/copilot_internal/v2/token read",
     )
     assert(
-      lines.contains("  tunnel: defaults/model-provider/anthropic: allow https://platform.claude.com/ tunnel"),
+      lines.contains("  tunnel: defaults/model-provider/google: allow https://accounts.google.com/ tunnel"),
       lines.toString,
     )
     assert(lines.contains("denied hosts:"), lines.toString)
     assert(lines.contains("  gitlab.com: denied by rule: deny https://gitlab.com/"), lines.toString)
     // A provider the file expanded names both lines.
     assert(
-      provenanceLines(rulesetOf(rule = "deny defaults\nallow model-provider anthropic")).contains(
-        "  tunnel: rule: allow model-provider anthropic " +
-          "(defaults/model-provider/anthropic: allow https://claude.ai/ tunnel)",
+      provenanceLines(rulesetOf(rule = "deny defaults\nallow model-provider google")).contains(
+        "  tunnel: rule: allow model-provider google " +
+          "(defaults/model-provider/google: allow https://accounts.google.com/ tunnel)",
       ),
     )
     // A refusal names every line that matched the host: the provider behind an expanded pattern,
@@ -1655,7 +1663,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     )
     val relayed = java.util.concurrent.LinkedBlockingQueue[BodyRelayed]()
     try relayInspected(client, origin, origin, ChunkedPost, relayed.put)
-    catch case _: (IOException | BadRequest) => ()
+    catch case _: (IOException | BadRequest | ClientFailure) => ()
     client.close()
     origin.close()
     served.join()
@@ -2310,12 +2318,12 @@ class AgentEgressProxyTest extends munit.FunSuite:
       Vector(docsToken))
     assert(atBound.contains(s"\r\nAuthorization: Bearer ${docsToken.value}\r\n"), atBound)
     // The index counts the placeholder as sent, so the proxy digests no brokered value.
-    assertEquals(boundLog, Vector("allow docs.example GET /user inject=DOCS_TOKEN cred=1 -> 127.0.0.1"))
+    assertEquals(boundLog, Vector("allow docs.example GET /user inject=DOCS_TOKEN id=1 cred=1 -> 127.0.0.1"))
     val (elsewhere, elsewhereLog) = brokeredExchange(
       "proxy.corp.example", get("proxy.corp.example", s"Bearer ${docsToken.placeholder}"), Vector(docsToken),
     )
     assert(elsewhere.contains(s"\r\nAuthorization: Bearer ${docsToken.placeholder}\r\n"), elsewhere)
-    assertEquals(elsewhereLog, Vector("allow proxy.corp.example GET /user cred=1 -> 127.0.0.1"))
+    assertEquals(elsewhereLog, Vector("allow proxy.corp.example GET /user id=1 cred=1 -> 127.0.0.1"))
     for line <- boundLog ++ elsewhereLog do
       assert(!line.contains(docsToken.value) && !line.contains(docsToken.placeholder), line)
 
@@ -2329,7 +2337,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
         Vector(docsToken),
       )
       assert(received.contains(s"\r\nAuthorization: $authorization\r\n"), received)
-      assertEquals(log, Vector("allow docs.example GET /user cred=1 -> 127.0.0.1"))
+      assertEquals(log, Vector("allow docs.example GET /user id=1 cred=1 -> 127.0.0.1"))
 
   test("a bound parameter arrives percent-encoded and decodes to the value; the log names the binding"):
     val sas = BrokeredCredential(
@@ -2344,7 +2352,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val sig = sent.dropWhile(_ != '?').drop(1).split("&").collectFirst { case s"sig=$value" => value }
     assertEquals(sig.map(java.net.URLDecoder.decode(_, StandardCharsets.UTF_8)), Some("a&b=c%d+e"))
     assertEquals(sent.dropWhile(_ != '?').drop(1).split("&").length, 2)
-    assertEquals(log, Vector("allow docs.example GET /c/b?sv=1&sig=SAS_SIG inject=SAS_SIG -> 127.0.0.1"))
+    assertEquals(log, Vector("allow docs.example GET /c/b?sv=1&sig=SAS_SIG inject=SAS_SIG id=1 -> 127.0.0.1"))
 
   test("a bound service parameter is decided as what it becomes: push discovery refused, fetch discovery allowed"):
     def service(value: String) = BrokeredCredential(
@@ -2361,7 +2369,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assert(fetched.startsWith("GET /o/r.git/info/refs?service=git-upload-pack HTTP/1.1\r\n"), fetched)
     assertEquals(
       fetchLog,
-      Vector("allow docs.example GET /o/r.git/info/refs?service=SERVICE inject=SERVICE -> 127.0.0.1"),
+      Vector("allow docs.example GET /o/r.git/info/refs?service=SERVICE inject=SERVICE id=1 -> 127.0.0.1"),
     )
 
   test("the allow line carries the request's fields after inject=, and a deny line carries none"):
@@ -2374,8 +2382,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(
       allowed,
       Vector(
-        "allow docs.example POST /v1/messages inject=DOCS_TOKEN content-length=2 client=claude-cli/2.1.319 cred=1 " +
-          "-> 127.0.0.1",
+        "allow docs.example POST /v1/messages inject=DOCS_TOKEN content-length=2 id=1 client=claude-cli/2.1.319 " +
+          "cred=1 -> 127.0.0.1",
       ),
     )
     val (_, denied) = brokeredExchange("docs.example", request, Vector(docsToken))
@@ -2391,11 +2399,11 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
   test("an incomplete chunked body's line comes with a deny or error line when the client's body failed"):
     val head = "POST /upload HTTP/1.1\r\nHost: docs.example\r\nTransfer-Encoding: chunked\r\n\r\n"
-    def upload(send: java.net.Socket => Unit, serve: java.net.Socket => Unit): Set[String] =
+    def upload(send: java.net.Socket => Unit, serve: java.net.Socket => Unit): Vector[String] =
       val log = inspectedExchange("docs.example", Vector.empty, Map("/" -> Set("read", "POST")), send, serve)
       assertEquals(log.headOption, Some("allow docs.example POST /upload chunked id=1 -> 127.0.0.1"))
-      // The upload's thread prints the chunked-end line, and the relay's thread the failure, in either order.
-      log.tail.toSet
+      // The upload's thread prints the chunked-end line before the relay's thread learns of the failure.
+      log.tail
     def write(tls: java.net.Socket, bytes: String): Unit =
       tls.getOutputStream.write(ascii(bytes))
       tls.getOutputStream.flush()
@@ -2405,9 +2413,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val closedMidBody = upload(send = write(_, head + "3\r\none\r\n5\r\nab"), serve = readAll)
     assertEquals(
       closedMidBody,
-      Set(
+      Vector(
         "chunked-end docs.example POST /upload id=1 send=5 incomplete",
-        "error docs.example POST /upload origin: request body: body ended 3 bytes early",
+        "error docs.example POST /upload id=1 client: request body: body ended 3 bytes early",
       ),
     )
     val malformed = upload(
@@ -2418,9 +2426,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
     )
     assertEquals(
       malformed,
-      Set(
+      Vector(
         "chunked-end docs.example POST /upload id=1 send=3 incomplete",
-        "deny docs.example POST /upload invalid chunk size",
+        "deny docs.example POST /upload id=1 invalid chunk size",
       ),
     )
     val firstChunk = "3\r\none\r\n"
@@ -2434,7 +2442,32 @@ class AgentEgressProxyTest extends munit.FunSuite:
         tls.getInputStream.readNBytes(firstChunk.length)
         tls.getOutputStream.write(ascii("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")),
     )
-    assertEquals(answeredFirst, Set("chunked-end docs.example POST /upload id=1 send=3 incomplete"))
+    assertEquals(answeredFirst, Vector("chunked-end docs.example POST /upload id=1 send=3 incomplete"))
+
+  test("a client that resets before a response head reaches it gets a client error line"):
+    // The JDK names this write's failure as it names an origin's reset, so only the label tells the peers apart.
+    // Interim and final heads reach the client the same way (headToClient).
+    for answer <- Vector("HTTP/1.1 100 Continue\r\n\r\n", "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n") do
+      val (relayed, reset) = (java.util.concurrent.CountDownLatch(1), java.util.concurrent.CountDownLatch(1))
+      val log = inspectedExchange(
+        "docs.example", Vector.empty, Map("/" -> Set("read")),
+        send = tls =>
+          tls.getOutputStream.write(ascii("GET /x HTTP/1.1\r\nHost: docs.example\r\n\r\n"))
+          tls.getOutputStream.flush()
+          // After the proxy relayed the head, so the reset meets no TLS handshake still under way.
+          relayed.await()
+          tls.setSoLinger(true, 0)
+          tls.close()
+          reset.countDown(),
+        serve = tls =>
+          readHttpHeader(tls.getInputStream, 64 * 1024)
+          relayed.countDown()
+          reset.await()
+          tls.getOutputStream.write(ascii(answer))
+          tls.getOutputStream.flush(),
+      )
+      assertEquals(log.headOption, Some("allow docs.example GET /x id=1 -> 127.0.0.1"))
+      assert(log.length == 2 && log(1).startsWith("error docs.example GET /x id=1 client: "), log.toString)
 
   test("a granted WebSocket's stream is relayed both ways, and ends with one websocket-end line when a side closes"):
     val granted = Map("/raw" -> Set("upgrade=websocket"))

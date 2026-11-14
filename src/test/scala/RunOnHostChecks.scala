@@ -499,6 +499,9 @@ object RunOnHostChecks:
         "MILL_FINAL_DOWNLOAD_FOLDER" -> host.millDownloads.toString,
         "GRADLE_USER_HOME" -> emitted.gradleUserHome.toString,
         "_JAVA_OPTIONS" -> javaOptions,
+        // RunOnHostSandbox.HostCommandVariable, spelled out: the Scala CLI drivers that pull this file in compile
+        // without RunOnHostSandbox.
+        "KO_AGENT_SANDBOX_RUN_ON_HOST_COMMAND" -> "1",
       ) ++ Seq("LANG", "LC_ALL").flatMap(name => sys.env.get(name).map(name -> _))
 
     /** The command under the profile, in the command's environment. A hang is a FAIL, not a stalled run: a client

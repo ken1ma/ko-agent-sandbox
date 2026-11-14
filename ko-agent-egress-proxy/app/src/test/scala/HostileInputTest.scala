@@ -301,7 +301,7 @@ class HostileInputTest extends munit.FunSuite:
       val line = LogHelper.auditLine("allow", "github.com", "GET", "/a", s"${fields.text}-> 127.0.0.1")
       val expectedClient = if suffix.head == 'a' then ("curl/8.5.0" + suffix).take(RequestAudit.MaxClientChars)
         else "curl/8.5.0"
-      assertEquals(line, s"allow github.com GET /a client=$expectedClient cred=1 -> 127.0.0.1", suffix)
+      assertEquals(line, s"allow github.com GET /a id=1 client=$expectedClient cred=1 -> 127.0.0.1", suffix)
 
   test("no rule file, however malformed, allows a host or a grant nobody named"):
     // The fail-open direction for rule parsing. A file that resolves at all must resolve to the defaults hosts plus

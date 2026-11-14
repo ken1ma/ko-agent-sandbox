@@ -265,14 +265,17 @@ object RunOnHostProxy:
       if target.startsWith("/") then s"$method https://$host$target" else s"$method $target ($host)"
 
   /** The requests the proxy refused inside a tunnel, once each (SECURITY.md, "The audit line grammar"). Such a line
-    * has a method and a target, where a refused CONNECT has an empty target. */
+    * has a method and a target, where a refused CONNECT has an empty target. A refusal after the request's `allow`
+    * line names the request's `id=` before the reason, and the reason is read without it, so that RefusalAdvice
+    * recognizes the reason and a repeated refusal prints once. */
   def refusedRequests(proxyLog: Path, from: Long = 0): Vector[RefusedRequest] =
     proxyLogLines(proxyLog, from).flatMap(LogHelper.auditFields)
       .collect:
         case LogHelper.AuditFields("deny", host, method, rest)
             if method != "CONNECT" && method.nonEmpty && method.forall(ch => ch >= 'A' && ch <= 'Z') =>
           rest.split(" ", 2) match
-            case Array(target, reason) => Some(RefusedRequest(method, host, target, reason.trim))
+            case Array(target, reason) =>
+              Some(RefusedRequest(method, host, target, reason.trim.replaceFirst("^id=[0-9]+ ", "")))
             case _                     => None
       .flatten.distinct
 

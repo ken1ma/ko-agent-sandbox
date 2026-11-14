@@ -1,32 +1,45 @@
 # Claude Code. api.anthropic.com serves model traffic, the WebFetch domain check and feature flags.
 allow https://api.anthropic.com/   read method=POST,PUT,PATCH,DELETE
 allow https://api.anthropic.com/api/ws/speech_to_text/voice_stream upgrade=websocket  # /voice under --audio=mic
-allow https://claude.ai/           tunnel  # interactive login
-allow https://platform.claude.com/ tunnel  # OAuth token exchange and refresh, every session
+allow https://platform.claude.com/ read method=POST,PUT,PATCH,DELETE  # OAuth token exchange, refresh and revocation
 
-# Measured with claude 2.1.319 on 2026-11-13 (doc/plan-tls-inspect-agents.md, "Measurement"):
-# - Modes: an interactive session with tool calls, a subagent, a compaction, WebFetch, /voice under --audio=mic and a
-#   sign-in; claude -p, as ko-review runs it.
-# - api.anthropic.com paths, <org> standing for the organization's UUID:
-#   - /v1/messages, /v1/messages/count_tokens, /v1/mcp_servers, /v1/ultrareview/quota
-#   - /api/oauth/profile, /api/oauth/claude_cli/roles, /api/oauth/account/settings
-#   - /api/oauth/organizations/<org>/: skills/list-skills, skills/<name>/download, plugins/list-plugins, marketplaces
-#   - /api/organizations/<org>/model_selector/cc
-#   - /api/claude_cli/bootstrap, /api/claude_code_grove, /api/claude_code_penguin_mode, /api/eval/sdk-<key>,
-#     /api/event_logging/v2/batch, /api/artifacts/mcp
-#   - without a credential: /api/hello, /api/web/domain_info, /api/directory/plugins, /mcp-registry/v0/servers
-#   - the WebSocket at /api/ws/speech_to_text/voice_stream, one per recording
+# Measured with claude 2.1.319 and 2.1.323 on 2026-11-13 (doc/plan-tls-inspect-agents.md, "Measurement"):
+# - Modes: an interactive session with tool calls, a subagent, a compaction, WebFetch and /voice under --audio=mic;
+#   claude -p, as ko-review runs it. 2.1.323 repeated all but the subagent and WebFetch, and added /logout, a sign-in,
+#   and a token refresh forced by moving the token's expiry into the past.
+# - The path, refused and error lines are what MeasurementReport accepts (doc/plan-tls-inspect-agents.md, "The
+#   measurement suite"). Each <...> stands for one segment or part of one; <org> is the organization's UUID.
+#   path api.anthropic.com /v1/messages /v1/messages/count_tokens /v1/mcp_servers /v1/ultrareview/quota
+#   path api.anthropic.com /api/oauth/profile /api/oauth/claude_cli/roles /api/oauth/account/settings
+#   path api.anthropic.com /api/oauth/organizations/<org>/skills/list-skills
+#   path api.anthropic.com /api/oauth/organizations/<org>/skills/<name>/download
+#   path api.anthropic.com /api/oauth/organizations/<org>/plugins/list-plugins
+#   path api.anthropic.com /api/oauth/organizations/<org>/marketplaces /api/organizations/<org>/model_selector/cc
+#   path api.anthropic.com /api/claude_cli/bootstrap /api/claude_code_grove /api/claude_code_penguin_mode
+#   path api.anthropic.com /api/eval/sdk-<key> /api/event_logging/v2/batch /api/artifacts/mcp
+#   path api.anthropic.com /api/hello /api/web/domain_info /api/directory/plugins /api/directory/server-urls
+#   path api.anthropic.com /mcp-registry/v0/servers /api/ws/speech_to_text/voice_stream
+#   path platform.claude.com /v1/oauth/hello /v1/oauth/token /v1/oauth/token/revoke
+#   refused mcp-proxy.anthropic.com CONNECT
+#   refused downloads.claude.ai CONNECT
+#   refused http-intake.logs.us5.datadoghq.com CONNECT
+#   error api.anthropic.com client:
+#   error api.anthropic.com relay: Broken pipe
+# - The refusals are of hosts absent below. The errors: Claude Code reset three connections, two before the response
+#   head reached it and one mid-upload; `relay: Broken pipe` as a client exited.
+# - Requests without a credential: /api/hello, /api/web/domain_info, /api/directory/plugins,
+#   /api/directory/server-urls and /mcp-registry/v0/servers; one /api/event_logging/v2/batch after /logout; every
+#   request to platform.claude.com, whose codes and tokens travel in bodies.
+# - The WebSocket at /api/ws/speech_to_text/voice_stream opens once per recording.
 # - Every request body declared a Content-Length. Within each launch, every request that carried a credential showed
-#   one index, the sign-in's included.
+#   one index per token: the sign-in's and the refreshed token each as a new index.
 # - A /v1/messages body names the previous response that it continues, and holds only the messages after it. The
 #   client sends the whole transcript when the server's thread is gone or idle, so a request's size is not the
 #   conversation's.
-# - Other hosts: platform.claude.com through its tunnel; github.com, where the interactive mode's git child clones the
-#   plugin marketplace.
-# - Refusals accepted: mcp-proxy.anthropic.com, downloads.claude.ai and http-intake.logs.us5.datadoghq.com, all absent
-#   below.
+# - Other hosts: github.com, where the interactive mode's git child clones the plugin marketplace.
 
 # These hosts of Claude Code's own list are absent (code.claude.com/docs/en/network-config):
+# - claude.ai serves the sign-in pages, which open in the host's browser. No measured mode sent a request there.
 # - mcp-proxy.anthropic.com serves the claude.ai connectors, which a claude.ai sign-in turns on by default.
 #   - The host would open a write path to third-party services through an opaque tunnel. SECURITY.md prices the
 #     same trade for Copilot's MCP.
@@ -34,4 +47,6 @@ allow https://platform.claude.com/ tunnel  # OAuth token exchange and refresh, e
 # - The two Datadog intake hosts receive telemetry and error reports. Each attempt leaves a refusal in the log, or
 #   none with CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC set.
 # - downloads.claude.ai serves the auto-updater, its version checks and plugin executables.
-# - claude.com and *.claudeusercontent.com serve the sign-in redirect page and artifact content.
+# - claude.com serves the sign-in redirect page and pre-approved WebFetch documentation lookups.
+# - *.claudeusercontent.com serves the Chrome extension's bridge, and artifact content, which the CLI reads when the
+#   Artifact tool is available.

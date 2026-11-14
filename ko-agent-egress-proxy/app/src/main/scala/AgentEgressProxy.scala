@@ -641,6 +641,9 @@ object AgentEgressProxy:
     // they would never be recorded.
     var method = "-"
     var target = ""
+    // The allow line's id, which every later line of the request repeats, so that a failure names its request.
+    var allowId: Option[Long] = None
+    def why(text: String): String = allowId.fold(text)(id => s"id=$id $text")
 
     try
       try
@@ -666,6 +669,7 @@ object AgentEgressProxy:
           val injected = Option.when(substituted.injected.nonEmpty)(s"inject=${substituted.injected.mkString(",")} ")
           // After the origin leg connects, so a request that never reaches the origin takes no id.
           val fields = audit.allowFields(asSent, head.bodyFraming)
+          allowId = Some(fields.id)
           System.err.println(
             auditLine(
               "allow", host, method, target,
@@ -679,15 +683,12 @@ object AgentEgressProxy:
           val switched = relayInspected(
             clientTls, originTls, origin.transport, head,
             relayed =>
-              fields.id.foreach(id =>
-                System.err.println(RequestAudit.chunkedEndLine(host, printedMethod, printedTarget, id, relayed)),
-              ),
+              if head.bodyFraming == BodyFraming.Chunked then
+                System.err.println(RequestAudit.chunkedEndLine(host, printedMethod, printedTarget, fields.id, relayed)),
           )
           if switched then
             val streamed = relayStream(clientTls, client, originTls, origin.transport)
-            fields.id.foreach(id =>
-              System.err.println(RequestAudit.webSocketEndLine(host, printedMethod, printedTarget, id, streamed)),
-            )
+            System.err.println(RequestAudit.webSocketEndLine(host, printedMethod, printedTarget, fields.id, streamed))
         finally closeTlsOutput(originTls, origin.transport)
 
       catch
@@ -699,20 +700,25 @@ object AgentEgressProxy:
           )
 
         case ex: TruncatedResponse =>
-          System.err.println(auditLine("error", host, method, target, s"relay: ${ex.getMessage}"))
+          System.err.println(auditLine("error", host, method, target, why(s"relay: ${ex.getMessage}")))
           abortiveClose(client)
 
+        // A client that half-closed after a short body still reads this 502. A client that reset receives nothing.
+        case ex: ClientFailure =>
+          System.err.println(auditLine("error", host, method, target, why(s"client: ${ex.getMessage}")))
+          respondInsideTls(clientTls, method, 502, "Bad Gateway", "http_protocol_error", ex.getMessage)
+
         case ex: BadRequest =>
-          System.err.println(auditLine("deny", host, method, target, ex.getMessage))
+          System.err.println(auditLine("deny", host, method, target, why(ex.getMessage)))
           respondInsideTls(clientTls, method, 400, "Bad Request", "http_request_error", ex.getMessage)
 
         case ex: Refusal =>
-          System.err.println(auditLine("deny", host, method, target, ex.getMessage))
+          System.err.println(auditLine("deny", host, method, target, why(ex.getMessage)))
           val (status, reason) = if ex.upgradeRequired then (426, "Upgrade Required") else (403, "Forbidden")
           respondInsideTls(clientTls, method, status, reason, ex.proxyError, ex.getMessage, Some(ex.advice))
 
         case ex: IOException =>
-          System.err.println(auditLine("error", host, method, target, s"origin: ${ex.getMessage}"))
+          System.err.println(auditLine("error", host, method, target, why(s"origin: ${ex.getMessage}")))
           respondInsideTls(clientTls, method, 502, "Bad Gateway", originProxyError(ex), ex.getMessage)
 
     finally closeTlsOutput(clientTls, client)
@@ -760,12 +766,19 @@ object AgentEgressProxy:
       Option.when(framing != BodyFraming.Empty):
         Upload(clientTls.getInputStream, toOrigin, originTransport, framing, bodyRelayed)
 
+    /** A response head to the client, before any of the response body. */
+    def headToClient(bytes: Array[Byte]): Unit =
+      try
+        toClient.write(bytes)
+        toClient.flush()
+      catch case ex: IOException => throw ClientFailure(ex.getMessage)
+
     /** The upload's failure, in the origin's place, when the upload failed first. The client's malformed chunking
-      * is the client's 400, not the origin's 502, and the client's broken connection is named. */
+      * is the client's 400, not the origin's 502, and the client's broken connection is the client's error line. */
     def failed(ex: IOException): Exception =
       upload.flatMap(_.failureBeforeAnswer) match
         case Some(bad: BadRequest) => bad
-        case Some(broken)          => IOException(s"request body: ${broken.getMessage}")
+        case Some(broken)          => ClientFailure(s"request body: ${broken.getMessage}")
         case None                  => ex
 
     def responseHead(): HttpResponseHead =
@@ -807,20 +820,18 @@ object AgentEgressProxy:
       else if interimRead == MaxInterimResponses then
         throw IOException(s"origin sent more than $MaxInterimResponses interim responses")
       else
-        toClient.write(response.toClientBytes)
-        toClient.flush()
+        headToClient(response.toClientBytes)
         finalResponseHead(interimRead + 1)
 
     try
       val response = finalResponseHead()
       if response.status == 101 then
-        toClient.write(response.toClientUpgradeBytes(upgrade.get))
-        toClient.flush()
+        headToClient(response.toClientUpgradeBytes(upgrade.get))
         true
       else
         val responseFraming = response.bodyFraming(head.method)
 
-        toClient.write(response.toClientBytes)
+        headToClient(response.toClientBytes)
         try
           forwardResponseBody(fromOrigin, toClient, responseFraming)
           toClient.flush()
@@ -846,8 +857,9 @@ object AgentEgressProxy:
    * - A write that the origin refuses is left for the origin's answer, or its absence, to report.
    * - A failure before the answer closes the origin's transport. So the head read reports the failure
    *   (failureBeforeAnswer) instead of waiting out the origin's own timeout for a body that stopped coming.
-   * - The thread's last act reports the payload bytes that reached the origin's TLS layer, and whether every byte
-   *   of the body did (`bodyRelayed`).
+   * - The thread reports the payload bytes that reached the origin's TLS layer, and whether every byte of the body
+   *   did (`bodyRelayed`). The report precedes the failure's publication, so a body's end line precedes the error
+   *   line that the failure causes.
    */
   private final class Upload(
     fromClient: InputStream,
@@ -897,16 +909,17 @@ object AgentEgressProxy:
 
     private val thread = Thread.startVirtualThread: () =>
       var bodyEnded = false
+      var failed: Option[Exception] = None
       try
         forwardRequestBody(fromClient, toOriginUntilAnswered, framing, payloadUntilAnswered)
         toOriginUntilAnswered.flush()
         bodyEnded = true
-      catch
-        case ex: (IOException | BadRequest) =>
-          synchronized:
-            failure = Some(ex)
-            if !answered then closeQuietly(originTransport)
+      catch case ex: (IOException | BadRequest) => failed = Some(ex)
       finally bodyRelayed(BodyRelayed(payloadBytes, complete = bodyEnded && !withheld))
+      failed.foreach: ex =>
+        synchronized:
+          failure = Some(ex)
+          if !answered then closeQuietly(originTransport)
 
     def originAnswered(): Unit = synchronized { answered = true }
 

@@ -22,9 +22,9 @@ import scala.collection.mutable
 import HTTPHelper.{BodyFraming, HttpRequestHead}
 import LogHelper.auditLine
 
-/** What one request's `allow` line adds after `inject=`, each field followed by a space, and the `id=` that its
-  * `chunked-end` or `websocket-end` line repeats. */
-final case class AllowFields(text: String, id: Option[Long])
+/** What one request's `allow` line adds after `inject=`, each field followed by a space, and the `id=` that the
+  * request's later lines repeat. */
+final case class AllowFields(text: String, id: Long)
 
 /** A request body's end: the payload bytes written to the origin, and whether the whole body reached the origin. */
 final case class BodyRelayed(payloadBytes: Long, complete: Boolean)
@@ -43,8 +43,7 @@ final class RequestAudit:
     * authorizeInspectedRequest granted. */
   def allowFields(asSent: HttpRequestHead, framing: BodyFraming): AllowFields =
     val webSocket = Option.when(asSent.values("Upgrade").nonEmpty)(RulesetHelper.Grant.WebSocket)
-    // The requests that an end line follows.
-    val id = Option.when(framing == BodyFraming.Chunked || webSocket.nonEmpty)(lastId.incrementAndGet())
+    val id = lastId.incrementAndGet()
     val framingField = framing match
       case BodyFraming.Length(count) => Some(s"content-length=$count")
       case BodyFraming.Chunked       => Some("chunked")
@@ -52,7 +51,7 @@ final class RequestAudit:
     val credential = RequestAudit.staticCredential(asSent).map: value =>
       s"cred=${credentialIndex(value).fold("?")(_.toString)}"
     val fields =
-      Vector(framingField, webSocket, id.map(number => s"id=$number"),
+      Vector(framingField, webSocket, Some(s"id=$id"),
         RequestAudit.client(asSent).map(token => s"client=$token"), credential).flatten
     AllowFields(fields.map(field => s"$field ").mkString, id)
 

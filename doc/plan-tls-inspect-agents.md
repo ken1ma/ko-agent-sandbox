@@ -110,9 +110,10 @@ The order follows the state of the evidence, best first.
     (`AgentSandboxLauncher.scala`); `CLAUDE_CODE_CERT_STORE`, which selects the bundled Mozilla set,
     the OS store or both (https://code.claude.com/docs/en/network-config). A streamed response is
     `text/event-stream` (the gateway protocol page, "Response headers").
-  - Measured on 2026-11-13, and inspected by default: `defaults/model-provider/anthropic` holds
-    the record. The session had tool calls, a subagent, a compaction, WebFetch, `/voice` under
-    `--audio=mic` and a sign-in, and `claude -p` ran as `ko-review` runs the reviewer.
+  - Measured on 2026-11-13 with 2.1.319 and 2.1.323, and inspected by default with
+    `platform.claude.com`: `defaults/model-provider/anthropic` holds the record. The sessions had
+    tool calls, a subagent, a compaction, WebFetch, `/voice` under `--audio=mic`, `/logout`, a
+    sign-in and a token refresh, and `claude -p` ran as `ko-review` runs the reviewer.
 - `codex` 0.169.0, `api.openai.com` and `chatgpt.com`.
   - The defaults give these hosts no `upgrade=websocket` line while the HTTP fallback below
     works: with the line, Codex's model traffic would move into the WebSocket, and the log would
@@ -223,8 +224,9 @@ covers the agent's sign-in and a token refresh.
 - The log then shows every request to them by path, so a request that no sign-in makes stands out.
 - The proxy then holds the sign-in's codes and tokens in plaintext, refresh tokens included, which
   outlive the access tokens it sees on the model hosts.
-- `auth.openai.com` is inspected. `claude.ai` and `platform.claude.com` wait for Claude Code's next
-  measurement, and the Google and AWS sign-in hosts for their agents'.
+- `auth.openai.com` and `platform.claude.com` are inspected. `claude.ai` is absent, since Claude
+  Code sends it no request (`defaults/model-provider/anthropic`). The Google and AWS sign-in hosts
+  wait for their agents' measurements.
 
 ## The `upgrade=websocket` grant
 
@@ -344,26 +346,54 @@ failing rule. "Deliberate exclusions" explains why the relay does not change.
 ## The measurement suite
 
 Each new client release needs the measurement again (Guarantees, 1), several times before CI repeats
-it (`TODO.md`, "Before the first release — continuous integration"). So a suite runs the parts that
-need no person, and a log reader compares the run with the record. Both come after Codex's commit,
-and assume that the agents are signed in in the volume the suite names. CI later adds the sign-in.
+it (`TODO.md`, "Before the first release — continuous integration"). So a driver runs the parts
+that need no person, and a reader compares a run's log with the records. Both assume that the
+agents are signed in in the session's persistent volume. CI later adds the sign-in.
 
-- The suite runs on the host under `testWithPodman`, since the proxy log is out of a session's
-  reach. A test per agent launches a session with the agent's measurement lines, then runs:
-  - Claude Code: `claude -p` with a tool call and a subagent;
-  - Codex: `codex exec`, `codex exec resume` and a turn that spawns a subagent;
-  - for each: a `curl` upload under a foreign key to the model host, whole, and chunked and cut
-    short.
-- Each test fails when a turn does not complete, or when the reader finds a line that the record
-  does not accept. A clean log alone does not show that a turn completed.
-- The reader parses one run's proxy log into each host's methods and paths, with identifiers,
-  tokens and query values normalized; every `deny` and `error` line, refused upgrades counted;
-  the framing; the `cred=` indexes; and the `websocket-end` totals. It reports the paths and
-  refusals that the record lacks, and the recorded paths that the run did not call.
-- The record becomes a form the reader parses: a fixed list of paths and accepted refusals in each
-  `defaults/model-provider/<name>`, beside the lines.
-- Interactive turns, a compaction, `/voice` and a sign-in stay manual. The record names each manual
-  item with the version it was measured at.
+For a release:
+
+1. In a session, from the repository root, run the driver. Each mode prints its UTC start and end,
+   and the driver exits 1 when a mode does not complete.
+
+   ```sh
+   scala $KO_AGENT_SANDBOX_JAVA_OPTS run --workspace ~/.cache/measure-agents \
+       src/test/measurement/MeasureAgents.scala -- [claude] [codex]
+   ```
+
+   - Claude Code: `claude -p` with a Bash call and a subagent that makes its own Bash call.
+   - Codex: `codex exec` and `codex exec resume`, each with a shell command, and a turn whose
+     subagent answers.
+   - For each: a `curl` upload under a foreign key to the model host, whole, and chunked and cut
+     short.
+   - A mode completes only when each of its calls succeeded and `curl` held the cut upload open
+     until the cut (`AgentEvents.scala`, held to recorded events by `AgentEventsTest`).
+1. Do the manual items that the driver lists: interactive turns, a compaction, `/voice`, a
+   sign-out and sign-in, and a token refresh.
+1. On the host, run `sbt "Test/runMain agentsandbox.launcher.MeasurementReport"`. It reads the
+   workspace's latest run, or the `proxy.log` it is given, and exits 1 when a line matches no
+   record. It writes the report to `log/measurement-report.log`, where the session's agent reads it.
+
+The reader (`MeasurementReport.scala`):
+
+- It lists each recorded host's methods and paths with their counts, `cred=` indexes and framing,
+  and the recorded paths that the run did not call. A record with no `path` line is unmeasured.
+- It counts the requests to every other host by method, such as an unmeasured record's hosts.
+- A finding is a path on a recorded host that the record does not name, or a `deny` or `error`
+  line that no record accepts.
+- `curl`'s requests are probes. The report lists each probe with its framing, credential index and
+  body end, and never judges them.
+- The records hold the reader's lines among their comments: `path <host> </path>...`,
+  `refused <host> <method> [</path>]` and `error <host> <reason prefix>`. A `<name>` stands for one
+  segment, part of one, or one label of a host.
+
+`sbt "testWithPodman *AgentMeasurementTest"` runs the driver and the reader per agent:
+
+- It launches this workspace, not a scratch one, so the session has the workspace's volume and the
+  sign-ins there. `--persistent-volume` refuses the generated volume names.
+- A test skips when its agent is not signed in in that volume. It fails on a turn that did not
+  complete, on a finding, or when a probe's whole or cut upload is missing from the log.
+- The turns run on the signed-in accounts.
+- Each test writes the driver's output and the report to `log/measurement-report-<agent>.log`.
 
 ## Audit line additions
 
@@ -389,12 +419,11 @@ The fields come in this order, and each field is present only when the request s
 - `upgrade=websocket` on a handshake that an `upgrade=websocket` line allowed.
   - The stream's end prints `websocket-end <host> GET <target> id=<n> send=<bytes> recv=<bytes>`,
     with the bytes the relay wrote to the origin and to the client after the `101`.
-- `id=<n>` on an `allow` line that a `chunked-end` or `websocket-end` line follows: a chunked
-  body's, and a granted handshake's. The line that follows holds the same number.
-  - `<n>` counts those requests from 1 in one proxy's log. Two requests to one host, method and
-    target can end in either order, and the number says which of those lines belongs to which client
-    and credential.
-  - An `allow` line that neither line follows has no `id=`.
+- `id=<n>` on every inspected `allow` line. The request's `chunked-end` or `websocket-end` line,
+  and a `deny` or `error` line after the `allow` line, hold the same number.
+  - `<n>` counts inspected requests from 1 in one proxy's log. Two requests to one host, method and
+    target can end or fail in either order, and the number says which of those lines belongs to
+    which client and credential.
 - `client=<token>`: the start of the `User-Agent` header, as far as its characters are in
   `[A-Za-z0-9._:/-]`, and at most 128 of them. So a `curl` or a `python-requests` on a model host
   reads as such, beside the agent's own token.
@@ -460,7 +489,7 @@ bother to, and prove nothing.
     without a credential, and the credential after the 1024th;
   - the `chunked-end` line for a chunked body, and none for a `Content-Length` body;
   - one `id=` on a chunked request's `allow` line and its `chunked-end` line, different ids for two
-    concurrent requests to one target, and no `id=` on a `Content-Length` request;
+    concurrent requests to one target, and an `id=` on every request;
   - the `incomplete` line, with the payload bytes written to the origin, for a client that closes
     mid-body, for malformed chunking, and for an origin that answers before the body ends.
 - `HostileInputTest`: a `User-Agent` that holds a control character, U+202E, a no-break space, `=`
@@ -542,7 +571,7 @@ bother to, and prove nothing.
   `client=curl`, its size, and a second credential index. The same upload, chunked and cut short,
   shows as an `incomplete` line with its size.
 - [x] The workspace override restores the tunnel, and the banner's counts say so.
-- [ ] The measurement suite runs Claude Code's and Codex's parts that need no person, and its
+- [x] The measurement suite runs Claude Code's and Codex's parts that need no person, and its
   reader compares the log with each record.
 - [ ] Each other agent's model hosts are inspected, or stay tunnels with the failing rule recorded,
   in one commit per agent.

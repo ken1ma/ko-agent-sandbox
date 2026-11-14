@@ -330,10 +330,15 @@ class SessionBoundaryTest extends munit.FunSuite:
             line.substring(line.indexOf("issuer:") + "issuer:".length).trim
         .getOrElse("(no issuer line)")
 
-    Vector("pypi.org", "github.com", "api.anthropic.com", "chatgpt.com").foreach: host =>
+    Vector("pypi.org", "github.com", "api.anthropic.com", "platform.claude.com", "chatgpt.com").foreach: host =>
       assertEquals(issuer(host), ca, s"$host is not inspected")
-    Vector("claude.ai").foreach: host =>
-      assertNotEquals(issuer(host), ca, s"$host was inspected; a tunnel host must stay opaque")
+    // The session's providers decide its tunnel hosts, and one of them stands for the rest.
+    raw"allow https://([^/\s]+)/ tunnel".r
+      .findAllMatchIn(env("KO_AGENT_SANDBOX_EGRESS_RULESET").getOrElse(""))
+      .map(_.group(1))
+      .take(1)
+      .foreach: host =>
+        assertNotEquals(issuer(host), ca, s"$host was inspected; a tunnel host must stay opaque")
 
   test("an inspected tunnel permits reading and refuses writing"):
     inSession()

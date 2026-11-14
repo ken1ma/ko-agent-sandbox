@@ -130,6 +130,21 @@ measurement.
     "failed to connect to server" (2026-10-03).
   - `narrow` runs the same function in this checkout; `mach` runs it in its fixture.
 
+## A terminal's sbt in a launch's server
+
+`SECURITY.md`, "Cache poisoning stops at the workspace", names the exception: while a launch's sbt
+server holds a build directory's portfile, your terminal's `sbt` there attaches to that server and
+builds from the run-on-host caches. On 2026-11-14 a terminal's `sbt testWithPodman` reached such a
+server and was refused there (`project/KoAgentSandboxHelper.scala`). A build's own refusal covers
+only the tasks that the build wraps.
+
+- [ ] Keep a terminal's client off the launch's server, or have the launcher refuse or warn before
+  that client's command runs. First read what sbt 2's server and thin client offer for choosing or
+  authenticating a client, and how the runner's own clients find the server.
+- [ ] Measure whether a terminal's `./mill` attaches to the launch's daemon the same way under Mill
+  1.1 and earlier, and whether a terminal's `gradle` stays off the launch's daemon, whose registry
+  is under the runner's `tmp/`.
+
 ## IDE integration through VS Code's Agent Host
 
 - [ ] Carry out `plan-ide-integration.md` from its phase 1, in this order:

@@ -197,16 +197,25 @@ lazy val root = project.in(file(".")).dependsOn(egressProxy).settings(
   assembly / assemblyOutputPath :=
     baseDirectory.value / "target" / "dist" / "ko-agent-sandbox.jar",
 
+  // assembly writes the jar that dist names, so it refuses in a run-on-host server as dist does (below).
+  assembly := KoAgentSandboxHelper.outsideHostCommand("assembly", KoAgentSandboxHelper.BuildsWhatYouRun)(assembly)
+    .value,
+
   assembly / packageOptions += Package.ManifestAttributes(
     "Enable-Native-Access" -> "ALL-UNNAMED",
     "Add-Exports" -> "java.base/sun.security.x509 java.base/sun.security.util",
   ),
 
-  // assembly is transient; caching this wrapper would exclude its only dependency from the cache key.
-  dist := Def.uncached {
-    val jar = assembly.value
-    streams.value.log.info(s"dist: ${fileConverter.value.toPath(jar)}")  // expand `${BASE}` (virtual id)
-  }
+  // - assembly is transient; caching this wrapper would exclude its only dependency from the cache key.
+  // - dist refuses in a run-on-host server, before assembly runs, so that the refusal names the task that was run: you
+  //   run the jar outside the sandbox, and that server builds from the caches that the agent's commands write
+  //   (SECURITY.md, "Cache poisoning stops at the workspace").
+  dist := KoAgentSandboxHelper.outsideHostCommand("dist", KoAgentSandboxHelper.BuildsWhatYouRun)(Def.task {
+    Def.uncached {
+      val jar = assembly.value
+      streams.value.log.info(s"dist: ${fileConverter.value.toPath(jar)}")  // expand `${BASE}` (virtual id)
+    }
+  }).value
 )
 
 // The container-launching suites run only under this command. `test` and `testFull` alone skip them, so no ordinary
@@ -219,14 +228,19 @@ lazy val root = project.in(file(".")).dependsOn(egressProxy).settings(
 // - The command runs the task itself rather than pushing the task as a command. The task's failure is then the
 //   command's failure, and the property is cleared even after an interrupted run, which a test cleanup hook would not
 //   survive.
+// - The command refuses in a run-on-host server, whose confinement starts no container. A terminal's thin client
+//   attaches to that server while a launch's server holds the portfile, and the suites would otherwise fail at their
+//   first podman call, naming podman's absence.
 val TestWithPodmanProperty = "ko-agent-sandbox.testWithPodman"
 commands += Command.args("testWithPodman", "<testOnly patterns>") { (state, patterns) =>
-  val extracted = Project.extract(state)
-  System.setProperty(TestWithPodmanProperty, "1")
-  try
-    if (patterns.isEmpty) extracted.runTask(Test / testFull, state)._1
-    else extracted.runInputTask(Test / testOnly, patterns.mkString(" ", " ", ""), state)._1
-  finally System.clearProperty(TestWithPodmanProperty)
+  KoAgentSandboxHelper.outsideHostCommand(state, "testWithPodman", "whose confinement starts no container") {
+    val extracted = Project.extract(state)
+    System.setProperty(TestWithPodmanProperty, "1")
+    try
+      if (patterns.isEmpty) extracted.runTask(Test / testFull, state)._1
+      else extracted.runInputTask(Test / testOnly, patterns.mkString(" ", " ", ""), state)._1
+    finally System.clearProperty(TestWithPodmanProperty)
+  }
 }
 
 // munit prints `==> s <test> skipped` without the clue that its `assume` gave (doc/upstream-issues.md,

@@ -34,9 +34,9 @@ The proxy's default rules are listed in the proxy image's `defaults/host` and
 
 - for every supported model provider (`anthropic`, `openai`, `google`, `aws` and `github`), the
   model, authentication and control-plane endpoints:
-  - `api.anthropic.com`, `chatgpt.com`, `api.openai.com` and `auth.openai.com` inspected, with
-    every method, and a WebSocket at Claude Code's `/voice` path. Each file records, beside the
-    lines, the measurement that cleared its hosts;
+  - `api.anthropic.com`, `platform.claude.com`, `chatgpt.com`, `api.openai.com` and
+    `auth.openai.com` inspected, with every method, and a WebSocket at Claude Code's `/voice` path.
+    Each file records, beside the lines, the measurement that cleared its hosts;
   - tunnels to the other model and login hosts;
   - GitHub's two inspected login `POST`s and one token read, and Google's two inspected reads of
     the signed-in account;
@@ -289,7 +289,6 @@ Both use the rule grammar, with hosts and paths sorted:
 egress profile: deny-unless-allowed; model provider: anthropic
 allow https://api.anthropic.com/ read method=POST,PUT,PATCH,DELETE
 ...
-allow https://claude.ai/ tunnel
 allow https://github.com/ read git-fetch
 allow https://github.com/login/device/code read git-fetch method=POST
 ...

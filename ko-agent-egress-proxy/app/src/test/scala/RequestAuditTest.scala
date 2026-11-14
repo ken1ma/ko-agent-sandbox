@@ -13,20 +13,24 @@ class RequestAuditTest extends munit.FunSuite:
         .getBytes(StandardCharsets.ISO_8859_1),
     )
 
-  private def fields(audit: RequestAudit, headers: String*): String =
+  private def allowText(audit: RequestAudit, headers: String*): String =
     val parsed = head(headers*)
     audit.allowFields(parsed, parsed.bodyFraming).text
 
+  /** The fields without the `id=` that every request takes. */
+  private def fields(audit: RequestAudit, headers: String*): String =
+    allowText(audit, headers*).replaceFirst("id=[0-9]+ ", "")
+
   test("each field is present only when the request supplies it, in the grammar's order"):
     val audit = RequestAudit()
-    assertEquals(fields(audit), "")
-    assertEquals(fields(audit, "Content-Length: 0"), "content-length=0 ")
-    assertEquals(fields(audit, "Content-Length: 512"), "content-length=512 ")
-    assertEquals(fields(audit, "User-Agent: curl/8.5.0"), "client=curl/8.5.0 ")
-    assertEquals(fields(audit, "x-api-key: sk-one"), "cred=1 ")
+    assertEquals(allowText(audit), "id=1 ")
+    assertEquals(allowText(audit, "Content-Length: 0"), "content-length=0 id=2 ")
+    assertEquals(allowText(audit, "Content-Length: 512"), "content-length=512 id=3 ")
+    assertEquals(allowText(audit, "User-Agent: curl/8.5.0"), "id=4 client=curl/8.5.0 ")
+    assertEquals(allowText(audit, "x-api-key: sk-one"), "id=5 cred=1 ")
     assertEquals(
-      fields(audit, "x-api-key: sk-one", "Transfer-Encoding: chunked", "User-Agent: python-requests/2.32.3"),
-      "chunked id=1 client=python-requests/2.32.3 cred=1 ",
+      allowText(audit, "x-api-key: sk-one", "Transfer-Encoding: chunked", "User-Agent: python-requests/2.32.3"),
+      "chunked id=6 client=python-requests/2.32.3 cred=1 ",
     )
 
   test("client= keeps the User-Agent's start up to the first character outside its set, at most 128 of them"):
@@ -38,15 +42,15 @@ class RequestAuditTest extends munit.FunSuite:
     assertEquals(client("x" * 200), Some("x" * 128))
     assertEquals(RequestAudit.client(head()), None)
 
-  test("only the chunked requests take an id, numbered from 1, distinct under concurrency"):
+  test("every request takes an id, numbered from 1, distinct under concurrency"):
     val audit = RequestAudit()
     def id(headers: String*) =
       val parsed = head(headers*)
       audit.allowFields(parsed, parsed.bodyFraming).id
-    assertEquals(id("Content-Length: 4"), None)
-    assertEquals(id(), None)
+    assertEquals(id("Content-Length: 4"), 1L)
+    assertEquals(id(), 2L)
     val ids = Vector.fill(16)(CompletableFuture.supplyAsync(() => id("Transfer-Encoding: chunked")))
-    assertEquals(ids.flatMap(_.join()).sorted, (1L to 16L).toVector)
+    assertEquals(ids.map(_.join()).sorted, (3L to 18L).toVector)
 
   test("the index counts static credentials in order of first sight, whatever header carries them"):
     val audit = RequestAudit()
@@ -95,7 +99,7 @@ class RequestAuditTest extends munit.FunSuite:
   test("a granted WebSocket handshake takes upgrade=websocket and an id, and its end line counts both directions"):
     val audit = RequestAudit()
     assertEquals(
-      fields(audit, "Upgrade: websocket", "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==", "User-Agent: claude-cli/2.1"),
+      allowText(audit, "Upgrade: websocket", "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==", "User-Agent: claude-cli/2.1"),
       "upgrade=websocket id=1 client=claude-cli/2.1 ",
     )
     assertEquals(

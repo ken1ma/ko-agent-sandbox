@@ -107,8 +107,9 @@ Each item gives a pi provider id and its hosts, from `packages/ai/src/providers/
 `packages/ai/src/auth/oauth/*.ts`. Each item then says whether the proxy's
 `defaults/model-provider/` file of the same selection allows those hosts.
 
-- `anthropic`: `api.anthropic.com`, with OAuth at `claude.ai/oauth/authorize` and
-  `platform.claude.com/v1/oauth/token`. The `anthropic` selection allows all three.
+- `anthropic`: `api.anthropic.com`, with OAuth at `claude.ai/oauth/authorize`, which the browser
+  opens, and `platform.claude.com/v1/oauth/token`. The `anthropic` selection allows
+  `api.anthropic.com` and `platform.claude.com`; `claude.ai` is absent from it.
 - `openai`: `api.openai.com` with an API key. `openai-codex`: `chatgpt.com/backend-api`, with
   OAuth at `auth.openai.com`. The `openai` selection allows all three.
 - `google`: `generativelanguage.googleapis.com` with an API key, and pi has no Google OAuth. The
@@ -248,7 +249,8 @@ device codes. README's "Sign-in" section describes the paste-back path.
 - Under `--model-provider=anthropic`:
   - `pi` starts;
   - the model catalog refresh succeeds through the proxy, with no TLS error in the log;
-  - `/login anthropic` with a pasted code reaches `claude.ai` and `platform.claude.com`;
+  - `/login anthropic` with a pasted code reaches `platform.claude.com`, and no request goes to
+    `claude.ai`;
   - a prompt reaches `api.anthropic.com`;
   - `/share` is refused;
   - a second launch with `pi --continue` finds the session.
