@@ -4,7 +4,8 @@ import java.nio.file.Files
 
 import AgentEvents.*
 
-// The events follow claude 2.1.323's and codex 0.169.0's, with the fields that the checks do not read left out.
+// The events follow claude 2.1.323's, codex 0.169.0's and copilot 1.0.111's, with the fields that the checks do not
+// read left out.
 class AgentEventsTest extends munit.FunSuite:
 
   private def message(kind: String, parent: String, block: String) =
@@ -79,3 +80,65 @@ class AgentEventsTest extends munit.FunSuite:
       Files.writeString(day.resolve("rollout-2026-11-14T08-47-18-child.jsonl"), rollout("th-1", Some("a.txt, b.txt")))
       assert(codexChildAnswered(sessions, "th-1", words))
     finally FileHelper.deleteRecursively(sessions)
+
+  private def copilotEvent(kind: String, data: String) = s"""{"type":"$kind","data":{$data}}"""
+
+  private def shellDone(id: String, success: Boolean = true, exitCode: Int = 0, parent: Option[String] = None) =
+    copilotEvent(
+      "tool.execution_complete",
+      s""""toolCallId":"$id","success":$success,"shellExecution":{"exitCode":$exitCode}""" +
+        parent.fold("")(id => s""","parentToolCallId":"$id""""),
+    )
+
+  private def copilotResult(exitCode: Int = 0) =
+    s"""{"type":"result","sessionId":"s-1","exitCode":$exitCode}"""
+
+  /** A run whose first subagent fails on its model call, as 1.0.111's task agent did, and whose second completes. */
+  private def copilotRun(shell: String = shellDone("c1"), childShell: String = shellDone("c4", parent = Some("c3")),
+      second: String = "subagent.completed", end: String = copilotResult()) =
+    parseLines(
+      Vector(
+        shell,
+        copilotEvent("subagent.failed", """"toolCallId":"c2","error":"400 The requested model is not supported.""""),
+        copilotEvent("session.error", """"errorCode":"model_not_supported""""),
+        childShell,
+        copilotEvent(second, """"toolCallId":"c3""""),
+        end,
+      ).mkString("\n"),
+    )
+
+  test("a copilot run whose shell call, subagent and the subagent's shell call succeeded lacks nothing"):
+    assert(copilotSucceeded(copilotRun()))
+    assertEquals(copilotLacks(copilotRun()), Vector.empty)
+    assertEquals(copilotSession(copilotRun()), Some("s-1"))
+    assert(copilotRanShell(copilotRun()))
+
+  test("a copilot call that failed counts as missing, and the result's exit code decides the run"):
+    assertEquals(copilotLacks(copilotRun(shell = shellDone("c1", exitCode = 1))), Vector("a shell call"))
+    assertEquals(copilotLacks(copilotRun(shell = shellDone("c1", success = false))), Vector("a shell call"))
+    assertEquals(
+      copilotLacks(copilotRun(childShell = shellDone("c4", exitCode = 2, parent = Some("c3")))),
+      Vector("the subagent's shell call"),
+    )
+    // A shell call of the failed subagent stands for none.
+    assertEquals(
+      copilotLacks(copilotRun(childShell = shellDone("c4", parent = Some("c2")))),
+      Vector("the subagent's shell call"),
+    )
+    assertEquals(
+      copilotLacks(copilotRun(second = "subagent.failed")),
+      Vector("a subagent", "the subagent's shell call"),
+    )
+    assert(!copilotSucceeded(copilotRun(end = copilotResult(exitCode = 1))))
+    assert(!copilotRanShell(parseLines(shellDone("c1", exitCode = 1))))
+
+  test("a copilot GitHub MCP call counts only when a call that started on github-mcp-server succeeded"):
+    def run(server: String, success: Boolean) = parseLines(
+      Vector(
+        copilotEvent("tool.execution_start", s""""toolCallId":"m1","toolName":"x","mcpServerName":"$server""""),
+        copilotEvent("tool.execution_complete", s""""toolCallId":"m1","success":$success"""),
+      ).mkString("\n"),
+    )
+    assert(copilotCalledGithubMcp(run("github-mcp-server", success = true)))
+    assert(!copilotCalledGithubMcp(run("github-mcp-server", success = false)))
+    assert(!copilotCalledGithubMcp(run("other", success = true)))

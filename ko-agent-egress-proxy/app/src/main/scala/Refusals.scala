@@ -56,21 +56,33 @@ case class Refusal(
 object RefusalAdvice:
   /** The step depends on why the host is refused.
     *
+    * - A host that only unselected providers' rules name needs one of those providers, under either profile that
+    *   admits providers. The rule file's `allow model-provider` line counts under deny-unless-allowed alone.
     * - The rule file's allow lines count under deny-unless-allowed alone (resolveRuleset). So under deny-all or
     *   deny-unless-model, the step is a relaunch, named as necessary and never as sufficient. This session's
     *   resolution says nothing about what that profile would apply from the workspace's file, a denial of this
     *   very host included.
-    * - Under the default profile, a defaults host reaches this refusal only through `deny defaults`, so the step
-    *   names `deny defaults`. A host that a deny line emptied is refused as denied instead, and that refusal names
-    *   the line. */
-  def hostNotAllowed(host: String, profile: String): String =
+    * - Under the default profile, a defaults host that a selected provider or the catalog names reaches this refusal
+    *   only through `deny defaults`, so the step names `deny defaults`. A host that a deny line emptied is refused as
+    *   denied instead, and that refusal names the line. */
+  def hostNotAllowed(host: String, profile: String, selected: Seq[String]): String =
     val default = RulesetHelper.DefaultProfile
     val defaults = RulesetHelper.DefaultHosts.contains(host)
     val addition = s"'${RulesetHelper.hostReadLine(host)}' in ${RulesetHelper.WorkspaceRuleFile}"
-    if profile == default then
+    val providers = RulesetHelper.providersAlone(host)
+    val unselected = providers.nonEmpty && !providers.exists(selected.contains)
+    if unselected && profile != RulesetHelper.DenyAll then
+      val names = providers.mkString(" or ")
+      val options = providers.map(name => s"--model-provider=$name").mkString(" or ")
+      val lines = providers.map(name => s"'allow model-provider $name'").mkString(" or ")
+      val ruleFile = RulesetHelper.WorkspaceRuleFile
+      s"Only the $names model provider's rules allow it, and this launch does not select it. Ask the user to " +
+        (if profile == default then s"relaunch with $options, or to add $lines to $ruleFile on the host."
+         else s"relaunch with $options.")
+    else if profile == default then
       if defaults then
-        "This workspace's rule file starts from deny defaults and does not allow it. Ask the user; do not look " +
-          "for another route."
+        "This workspace's rule file starts with a `deny defaults` line, and no later line allows it. Ask the user; " +
+          "do not look for another route."
       else s"Not in this session's egress rules. Ask the user to add $addition on the host."
     else
       s"This session's egress profile, $profile, allows no workspace hosts. Ask the user; a relaunch under " +

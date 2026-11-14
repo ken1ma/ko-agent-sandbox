@@ -51,9 +51,9 @@ such as `OPENAI_API_KEY@api.openai.com`, is accepted from the commit that inspec
 - Inspection cannot read the conversation for intent (`design.md`, "No DLP/entropy/LLM firewall").
 - Inspection cannot refuse the foreign key either. Refusing that key needs the session's own key,
   and so the brokered overlay (`TODO.md`, "Credential brokering", the `require-placeholder` item).
-- Copilot's and agy's control-plane writes travel through the same tunnels as their model traffic,
-  and are indistinguishable there (SECURITY.md, "Not defended"). Under inspection, each write is a
-  line with its path.
+- agy's control-plane writes travel through the same tunnels as its model traffic, and are
+  indistinguishable there (SECURITY.md, "Not defended"). Under inspection, each write is a line
+  with its path, as Copilot's GitHub MCP calls are on Copilot's inspected hosts.
 
 ## Guarantees
 
@@ -157,7 +157,7 @@ The order follows the state of the evidence, best first.
       "Deliberate exclusions" why the defaults set Codex no custom provider.
   - `/voice` is not served (`TODO.md`, "Codex's `/voice`"). That item reads the call's setup on
     `chatgpt.com`, which an inspected host logs by path.
-- `copilot` 1.0.107, `api.githubcopilot.com` and the three plan hosts.
+- `copilot` 1.0.111, `api.githubcopilot.com` and the three plan hosts.
   - Documented: `proxyUrl` in the CLI's configuration reference, overridden by `HTTP_PROXY` or
     `HTTPS_PROXY`
     (https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference).
@@ -181,8 +181,24 @@ The order follows the state of the evidence, best first.
     - The built-in GitHub MCP server is `/mcp/readonly` on the same plan host (github/copilot-cli
       #4408).
     - Under inspection, the two are distinct lines.
-  - Measure: CA trust in this build; the plan host selected; the MCP server's paths; the session
-    sync's host and paths; with `COPILOT_ENABLE_HTTP2` unset, that the model path stays HTTP/1.1.
+  - Measured on 2026-11-14 with 1.0.111 on an individual plan, and inspected by default:
+    `defaults/model-provider/github` holds the record. The client trusted the launch CA, and every
+    request went over HTTP/1.1 with `COPILOT_ENABLE_HTTP2` unset.
+    - The model path is `POST /responses` on `api.individual.githubcopilot.com`, and the GitHub MCP
+      server is `POST /mcp/readonly` there.
+    - Copilot tries a WebSocket at `/responses` once per turn, and sends the turn over HTTP after
+      the `403`. The defaults give it no `upgrade=websocket` line, for Codex's reason above.
+    - Every request carried the same credential index on the plan host and on `api.github.com`. No
+      mode called `/copilot_internal/v2/token`.
+  - The interactive TUI, with a compaction and `/login`, passed. `/logout` fails in the sandbox
+    before any request: the client deletes the token through the Secret Service, which the
+    container lacks.
+  - Under `deny-unless-model`, every message failed when the provider file granted only the
+    token exchange on `api.github.com`. So the file grants the three `/copilot_internal/` reads
+    that the client makes at every start, and a turn then completed. The TUI's repository reads
+    stay refused under that profile.
+  - Still to measure: session sync, which waits for an account whose organization allows it, and
+    the business and enterprise hosts, which wait for an account on those plans.
 - `agy` 1.5.3, `cloudcode-pa.googleapis.com`, `daily-cloudcode-pa.googleapis.com`,
   `generativelanguage.googleapis.com`, `businessaicode.googleapis.com` and the `aiplatform` hosts.
   - `aicode.googleapis.com` stays a tunnel: `/voice` streams there over gRPC, which needs HTTP/2
@@ -357,16 +373,19 @@ For a release:
 
    ```sh
    scala $KO_AGENT_SANDBOX_JAVA_OPTS run --workspace ~/.cache/measure-agents \
-       src/test/measurement/MeasureAgents.scala -- [claude] [codex]
+       src/test/measurement/MeasureAgents.scala -- [claude] [codex] [copilot]
    ```
 
    - Claude Code: `claude -p` with a Bash call and a subagent that makes its own Bash call.
    - Codex: `codex exec` and `codex exec resume`, each with a shell command, and a turn whose
      subagent answers.
+   - Copilot: `copilot -p` with a shell call and a subagent that makes its own, a resumed turn
+     with a shell call, and a read through the built-in GitHub MCP server.
    - For each: a `curl` upload under a foreign key to the model host, whole, and chunked and cut
      short.
    - A mode completes only when each of its calls succeeded and `curl` held the cut upload open
-     until the cut (`AgentEvents.scala`, held to recorded events by `AgentEventsTest`).
+     until the cut (`AgentEvents.scala`, held to recorded events by `AgentEventsTest`). After a
+     failed mode, the driver keeps the turns' event files and prints their directory.
 1. Do the manual items that the driver lists: interactive turns, a compaction, `/voice`, a
    sign-out and sign-in, and a token refresh.
 1. On the host, run `sbt "Test/runMain agentsandbox.launcher.MeasurementReport"`. It reads the

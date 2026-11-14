@@ -331,6 +331,16 @@ object RulesetHelper:
   val ModelProviderLines: Map[String, Vector[Line]] =
     ModelProviders.map(name => name -> readDefault(s"model-provider/$name")).toMap
 
+  /** Each provider's hosts, in the order its file names them. */
+  val ProviderHosts: Map[String, Vector[String]] =
+    ModelProviderLines.view.mapValues(_.collect { case Line(_, _, Rule.Allow(host, _, _)) => host }.distinct).toMap
+
+  private val CatalogHosts: Set[String] = CatalogLines.collect { case Line(_, _, Rule.Allow(host, _, _)) => host }.toSet
+
+  /** The providers whose rules name the host, for a host that the catalog does not name. */
+  def providersAlone(host: String): Vector[String] =
+    if CatalogHosts.contains(host) then Vector.empty else ModelProviders.filter(ProviderHosts(_).contains(host))
+
   private def contributionOf(line: Line, source: Source): Contribution =
     line.rule match
       case Rule.Allow(host, path, grants) => Contribution(host, path, grants, source)
@@ -452,7 +462,7 @@ object RulesetHelper:
   /** A provider denial removes earlier grants on its hosts regardless of which line supplied them. The expanded
     * denials and any no-op warning are attributed to the single provider line. */
   private def takeProvider(state: State, name: String, line: Line): State =
-    val hosts = ModelProviderLines(name).collect { case Line(_, _, Rule.Allow(host, _, _)) => host }.distinct
+    val hosts = ProviderHosts(name)
     val denied = hosts.foldLeft(state): (current, host) =>
       take(current, HostPattern.Exact(host), Set.empty, line)
     val warning = Option.when(!state.active.exists(contribution => hosts.contains(contribution.host)))(
@@ -698,10 +708,7 @@ object RulesetHelper:
 
     val reachability =
       selected.flatMap: name =>
-        val unreachable = ModelProviderLines(name).map(_.rule)
-          .collect { case Rule.Allow(host, _, _) => host }
-          .distinct.sorted
-          .filterNot(hosts.contains)
+        val unreachable = ProviderHosts(name).sorted.filterNot(hosts.contains)
         Option.when(unreachable.nonEmpty)(
           s"the selected model provider '$name' is not fully reachable under $profile: " +
             unreachable.mkString(" "),
@@ -934,6 +941,8 @@ object RulesetHelper:
         case Some(sources) =>
           throw Refusal(s"host denied (${sources.mkString("; ")})", RefusalAdvice.hostDenied)
         case None =>
-          throw Refusal("host not allowed", RefusalAdvice.hostNotAllowed(host, resolved.profile))
+          throw Refusal("host not allowed", RefusalAdvice.hostNotAllowed(
+            host, resolved.profile, selectedProviders(resolved.provider),
+          ))
 
     host

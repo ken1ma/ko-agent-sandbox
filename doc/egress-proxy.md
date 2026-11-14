@@ -34,12 +34,13 @@ The proxy's default rules are listed in the proxy image's `defaults/host` and
 
 - for every supported model provider (`anthropic`, `openai`, `google`, `aws` and `github`), the
   model, authentication and control-plane endpoints:
-  - `api.anthropic.com`, `platform.claude.com`, `chatgpt.com`, `api.openai.com` and
-    `auth.openai.com` inspected, with every method, and a WebSocket at Claude Code's `/voice` path.
+  - `api.anthropic.com`, `platform.claude.com`, `chatgpt.com`, `api.openai.com`,
+    `auth.openai.com` and Copilot's four `githubcopilot.com` hosts inspected, with every method, and
+    a WebSocket at Claude Code's `/voice` path.
     Each file records, beside the lines, the measurement that cleared its hosts;
   - tunnels to the other model and login hosts;
-  - GitHub's two inspected login `POST`s and one token read, and Google's two inspected reads of
-    the signed-in account;
+  - GitHub's two inspected login `POST`s, its token read and three account reads, and Google's two
+    inspected reads of the signed-in account;
 - inspected documentation, package-registry and forge hosts, with `read` on every line and
   `git-fetch` on the three forges.
 

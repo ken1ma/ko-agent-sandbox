@@ -161,7 +161,7 @@ class EgressCredentialsTest extends munit.FunSuite:
 
   test("a binding must reach a proxy that inspects its host: the session's, or a selected program's"):
     val sessionInspected = Set("api.github.com", "api.anthropic.com", "api.openai.com")
-    val tunnels = Set("api.githubcopilot.com")
+    val tunnels = Set("q.us-east-1.amazonaws.com")
     val programs = Map("sbt" -> Set("repo1.maven.org", "maven.pkg.github.com"))
     def checked(spelled: String) =
       EgressCredentials.checkHosts(Vector(binding(spelled)), sessionInspected, tunnels, programs)
@@ -170,11 +170,11 @@ class EgressCredentialsTest extends munit.FunSuite:
     assertEquals(checked("ANTHROPIC_API_KEY@api.anthropic.com:x-api-key"), Right(()))
     assertEquals(checked("OPENAI_API_KEY@api.openai.com"), Right(()))
     assertEquals(
-      checked("COPILOT_TOKEN@api.githubcopilot.com"),
+      checked("Q_TOKEN@q.us-east-1.amazonaws.com"),
       Left(
-        "error: --egress-cred=COPILOT_TOKEN@api.githubcopilot.com:Authorization; api.githubcopilot.com is an opaque " +
-          "tunnel, where nothing can be substituted; bind to an inspected host or forward the value itself with " +
-          "--env=COPILOT_TOKEN",
+        "error: --egress-cred=Q_TOKEN@q.us-east-1.amazonaws.com:Authorization; q.us-east-1.amazonaws.com is an " +
+          "opaque tunnel, where nothing can be substituted; bind to an inspected host or forward the value itself " +
+          "with --env=Q_TOKEN",
       ),
     )
     assertEquals(

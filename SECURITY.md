@@ -477,15 +477,16 @@ Copilot CLI's sign-in stores a forge credential, not merely a model-provider cre
 - Inside the sandbox, that token:
   - can authenticate private clones from `github.com` and `GET`s on `api.github.com`;
   - cannot, under the default rules, push or modify repositories through inspected hosts;
-  - can write through Copilot's model endpoint, `api.githubcopilot.com`. The proxy cannot
-    distinguish those writes from model traffic.
-- The same endpoint also serves two features that write. Copilot provides `--disable-builtin-mcps`
-  and `--no-remote-export` to disable them:
+  - can write through Copilot's four model hosts, `api.githubcopilot.com` and its plan hosts. Each
+    is inspected and grants every method at its root, so the log shows each write by its path, and
+    the proxy refuses none.
+- Copilot's model hosts also serve two features that write. Copilot provides
+  `--disable-builtin-mcps` and `--no-remote-export` to disable them:
   - the built-in GitHub MCP server, which writes files, branches, issues and pull requests with the
     signed-in account;
   - Copilot's session export to GitHub's web UI.
 - The proxy rule `deny model-provider github` denies every host in GitHub's model-provider rules,
-  including `github.com`, `api.github.com` and the model tunnels, unless a later rule grants access
+  including `github.com`, `api.github.com` and the model hosts, unless a later rule grants access
   again.
 - Resetting the workspace's agent-state volume discards the stored token ("What the persistent
   volume holds", below).
@@ -770,8 +771,8 @@ lifecycle, benchmark and launcher suites binds its figures to the digest of its 
 - In the defaults, the `tunnel` hosts are the model and login hosts that no measurement of their
   agent's client has cleared. Inspection fails some requests that a tunnel carries
   (`doc/plan-tls-inspect-agents.md`, "Measurement").
-- An inspected model host, such as `api.anthropic.com`, `chatgpt.com` and `api.openai.com` in the
-  defaults, grants every method at its root.
+- An inspected model host, such as `api.anthropic.com`, `chatgpt.com`, `api.openai.com` and
+  Copilot's four hosts in the defaults, grants every method at its root.
   The proxy holds each request's conversation and provider token in memory, in plaintext, whether
   or not the launch selects a credential.
 - An inspected login host, such as `auth.openai.com` and `platform.claude.com`, puts the sign-in's
@@ -1480,7 +1481,8 @@ Copilot's `repo`-scope token grant ("The web reached through the model provider"
 
 - Under the default inspected rules, the token's excess repository authority allows reads, and
   writes are refused.
-- That limit does not cover explicit method grants or Copilot's opaque model endpoint.
+- That limit does not cover explicit method grants or Copilot's model hosts, which grant every
+  method at their root.
 - Restricting those reads to one repository would reduce exposure. But an allowed read could still
   exfiltrate workspace data in its URL ("Exfiltration through allowed network traffic", above).
 

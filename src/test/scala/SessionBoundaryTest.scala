@@ -395,7 +395,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     assert(refused.text.contains("Proxy-Status: ko-agent-egress-proxy; error=http_request_denied"), refused.text)
     assert(
       refused.text.contains(
-        RefusalAdvice.hostNotAllowed("unlisted.invalid", agentsandbox.egress.RulesetHelper.DefaultProfile),
+        RefusalAdvice.hostNotAllowed("unlisted.invalid", agentsandbox.egress.RulesetHelper.DefaultProfile, Nil),
       ),
       refused.text,
     )

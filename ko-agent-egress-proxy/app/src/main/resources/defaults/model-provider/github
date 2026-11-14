@@ -1,12 +1,10 @@
-# Copilot CLI. Copilot CLI's model endpoint doubles as its GitHub MCP server (/mcp on the same host). The MCP server is
-# a write path to the forge, and an opaque tunnel cannot separate that path from model traffic. SECURITY.md prices this
-# trade under "The web reached through the model provider".
-# Model traffic goes to whichever of the four hosts the token exchange below names for the account's plan. The first
-# host is the generic host, and it also serves the MCP server.
-allow https://api.githubcopilot.com/            tunnel
-allow https://api.individual.githubcopilot.com/ tunnel  # individual plan
-allow https://api.business.githubcopilot.com/   tunnel  # business plan
-allow https://api.enterprise.githubcopilot.com/ tunnel  # enterprise plan
+# Copilot CLI. Model traffic goes to whichever of the four hosts serves the account's plan; the first is the generic
+# host. The plan's host also serves the built-in GitHub MCP server, a write path to the forge that the root's POST
+# grant allows. Each MCP call shows as a line of its own (SECURITY.md, "The web reached through the model provider").
+allow https://api.githubcopilot.com/            read method=POST,PUT,PATCH,DELETE
+allow https://api.individual.githubcopilot.com/ read method=POST,PUT,PATCH,DELETE  # individual plan
+allow https://api.business.githubcopilot.com/   read method=POST,PUT,PATCH,DELETE  # business plan
+allow https://api.enterprise.githubcopilot.com/ read method=POST,PUT,PATCH,DELETE  # enterprise plan
 
 # The forge stays TLS-inspected here as in the catalog, and these rules grant no read of the forge. This file is what
 # deny-unless-model allows for copilot, and it must not allow git push or browsing the forge.
@@ -15,3 +13,63 @@ allow https://api.enterprise.githubcopilot.com/ tunnel  # enterprise plan
 allow https://github.com/login/device/code             method=POST
 allow https://github.com/login/oauth/access_token      method=POST
 allow https://api.github.com/copilot_internal/v2/token read         # the Copilot token exchange
+# Copilot CLI reads the signed-in account and its organization's Copilot settings at every start, and refuses every
+# message when the first read fails. These name no repository.
+allow https://api.github.com/copilot_internal/user                read
+allow https://api.github.com/copilot_internal/managed_settings    read
+allow https://api.github.com/copilot_internal/team_customizations read
+
+# Measured with copilot 1.0.111 on 2026-11-14, signed in on an individual plan, under deny-unless-allowed
+# (doc/plan-tls-inspect-agents.md, "Measurement"):
+# - Modes: copilot -p with a shell call and a subagent that makes its own shell call; copilot --resume -p with a shell
+#   call; copilot -p with a read through the built-in GitHub MCP server; the interactive TUI in this repository, with
+#   three turns and a compaction, then /login and a message; the TUI with a turn under deny-unless-model.
+# - The path, refused and error lines are what MeasurementReport accepts (doc/plan-tls-inspect-agents.md, "The
+#   measurement suite"). Each <...> stands for one segment.
+#   path api.individual.githubcopilot.com /responses /chat/completions /auto /models /meta /mcp/readonly
+#   path api.individual.githubcopilot.com /agents/swe/internal/memory/v0/enabled
+#   path api.individual.githubcopilot.com /agents/swe/custom-agents/<owner>/<repo>
+#   path api.github.com /copilot_internal/user /copilot_internal/managed_settings
+#   path api.github.com /copilot_internal/team_customizations /repos/github/copilot-cli/releases
+#   path api.github.com /repos/<owner>/<repo>/issues /repos/<owner>/<repo>/pulls
+#   path api.github.com /repos/<owner>/<repo>/copilot_internal/embeddings_index
+#   path github.com /login/device/code /login/oauth/access_token
+#   refused api.individual.githubcopilot.com GET /responses
+#   refused api.github.com POST /graphql
+#   refused api.github.com POST /repos/<owner>/<repo>/copilot_internal/embeddings_index
+#   refused api.github.com GET /repos/<owner>/<repo>/issues
+#   refused api.github.com GET /repos/<owner>/<repo>/pulls
+#   refused api.github.com GET /repos/<owner>/<repo>/copilot_internal/embeddings_index
+#   refused api.github.com GET /repos/github/copilot-cli/releases
+#   refused telemetry.individual.githubcopilot.com CONNECT
+#   refused exp.individual.githubcopilot.com CONNECT
+#   refused cafe.github.com CONNECT
+#   error api.individual.githubcopilot.com tunnel: expected 5 bytes, got 0
+#   error api.github.com tunnel: expected 5 bytes, got 0
+#   error github.com tunnel: expected 5 bytes, got 0
+# - Within each sign-in, every request to the plan host and api.github.com carried the same credential index: the
+#   token that api.github.com accepts also reaches the model host. /login's token shows as a new index. No mode called
+#   the token exchange above.
+# - The TUI reads the repository's issues and pull requests, and its embeddings index, from api.github.com.
+# - The device code login polls /login/oauth/access_token until the user approves. Its codes and tokens travel in
+#   bodies, so its lines carry no cred=.
+# - /logout fails in the sandbox before any request: the client deletes the token through the Secret Service, and the
+#   container has no D-Bus session ("Failed to connect to address `unix:path=/run/user/<uid>/bus`").
+# - Under deny-unless-model with only the token exchange granted on api.github.com, the refused
+#   /copilot_internal/user left every message refused: "Authentication token found but could not be validated". With
+#   the three reads above, the turn completed, and api.github.com refused the TUI's repository reads, its release
+#   check and /graphql.
+# - Every request body declared a Content-Length.
+# - A task subagent asked for a model of its own, which the origin answered with 400 model_not_supported for this
+#   plan. A general-purpose subagent, which takes the session's model, completed.
+# - The refusals:
+#   - the WebSocket upgrade at /responses, answered 403: the client tries once per turn, a subagent's included, and
+#     sends the turn's POST /responses at once;
+#   - the catalog's read-only api.github.com refuses POST /graphql, and the POST that indexes the repository. The TUI
+#     continues after both;
+#   - telemetry.individual.githubcopilot.com (telemetry), exp.individual.githubcopilot.com (experiments) and
+#     cafe.github.com (metrics), once or twice at each process start. Copilot works without them, and they are absent.
+# - The errors: at each process start, one CONNECT to each host that sent no byte before closing.
+# - No mode or turn failed. /chat/completions was called once, in the TUI session with the compaction.
+# - Unmeasured: the business and enterprise hosts, and session sync, which the account's organization policy turns
+#   off.

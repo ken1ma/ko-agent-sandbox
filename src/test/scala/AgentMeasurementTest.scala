@@ -27,7 +27,7 @@ class AgentMeasurementTest extends munit.FunSuite:
     val logs = Files.createTempDirectory("agent-measurement")
     val session = launchWith(
       workspace, logs.resolve("session.log"),
-      Vector("--egress=deny-unless-allowed", "--model-provider=anthropic,openai"),
+      Vector("--egress=deny-unless-allowed", "--model-provider=anthropic,openai,github"),
     )
     try
       assume(signedIn(session), s"$agent is not signed in in this workspace's volume; sign in in a session first")
@@ -73,4 +73,13 @@ class AgentMeasurementTest extends munit.FunSuite:
       "codex",
       session => exec(session, "codex", "login", "status").ok,
       "api.openai.com",
+    )
+
+  test("Copilot's unattended modes leave only lines that its record accepts"):
+    measured(
+      "copilot",
+      // copilot has no status command. Its config.json starts with // comments, which jq does not read.
+      session =>
+        execSh(session, "grep -v '^ *//' ~/.copilot/config.json | jq -e '(.loggedInUsers // []) | length > 0'").ok,
+      "api.githubcopilot.com",
     )

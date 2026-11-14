@@ -356,19 +356,14 @@ response-body interceptor that imitates the CLI's token cache. If a provider can
 intercepted OAuth responses, specify it as a provider adapter with a separate security review: its
 endpoint, bounded JSON fields, rotation and write mount.
 
-Before building the Copilot adapter, measure which token reaches `api.githubcopilot.com`, from a
-`--egress-log` of a `copilot` session on the installed CLI.
+Copilot 1.0.111 sends one credential to its plan host and to `api.github.com` alike, and calls no
+token exchange: every request to both hosts carried the same credential index
+(`defaults/model-provider/github` has the measurement).
 
-- Copilot clients generally exchange the GitHub OAuth token at
-  `api.github.com/copilot_internal/v2/token` for a short-lived session token, and present only the
-  session token to the model endpoint.
-  - The exchange is on the inspected path, so the proxy substitutes the placeholder there, and
-    `api.githubcopilot.com` stays an opaque tunnel.
-  - If the built-in GitHub MCP server sends the OAuth token itself, brokering breaks that server
-    alone. `--disable-builtin-mcps` is the documented switch.
-- If the CLI sends the OAuth token straight to `api.githubcopilot.com`, an opaque tunnel cannot
-  substitute it. That host is then brokered under "Brokered provider traffic", or Copilot stays
-  unbrokered.
+- Both hosts are inspected, so the adapter's placeholder is substituted on each host, the built-in
+  GitHub MCP server's requests on the plan host included.
+- Measure again before building the adapter: the credential's kind is not in the log, and a later
+  client can return to the exchange at `api.github.com/copilot_internal/v2/token`.
 
 ## Brokered provider traffic
 

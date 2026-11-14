@@ -383,9 +383,12 @@ class AgentEgressProxyTest extends munit.FunSuite:
     )
     assertEquals(
       resolved.inspectedScopes("api.github.com"),
-      Map("/" -> Set("read"), "/copilot_internal/v2/token" -> Set("read")),
+      Map("/" -> Set("read")) ++ CopilotInternalReads.map(_ -> Set("read")),
     )
-    assertEquals(resolved.hosts("api.githubcopilot.com"), Treatment.Tunnel)
+    assertEquals(
+      resolved.hosts("api.githubcopilot.com"),
+      Treatment.Inspected(Map("/" -> Set("read", "POST", "PUT", "PATCH", "DELETE"))),
+    )
     assertEquals(resolved.warnings, Vector.empty)
 
   test("deny-unless-allowed starts from the catalog and the selected providers alone"):
@@ -431,7 +434,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // SECURITY.md, "Reading without being able to write": a method or a git-fetch that the list there does not name
     // would let a default session send what that section says it cannot send. The proxy refuses a catalog tunnel at
     // its start (CatalogLines). The github provider's narrow grants have their own test ("deny-unless-model for
-    // copilot allows two login POSTs, one token read and four tunnels").
+    // copilot allows two login POSTs, four api.github.com reads and the model hosts").
     val gitHosts = Set("github.com", "codeberg.org", "gitlab.com")
     CatalogLines.foreach: line =>
       line.rule match
@@ -504,22 +507,23 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(rulesetOf("deny-all", Every).ruleset, rulesetOf("deny-all").ruleset)
     assertEquals(rulesetOf("deny-unless-allowed", Every).hosts, DefaultHosts)
 
-  test("deny-unless-model for copilot allows two login POSTs, one token read and four tunnels"):
+  private val CopilotInternalReads = Vector(
+    "/copilot_internal/v2/token", "/copilot_internal/user", "/copilot_internal/managed_settings",
+    "/copilot_internal/team_customizations",
+  )
+
+  test("deny-unless-model for copilot allows two login POSTs, four api.github.com reads and the model hosts"):
     val resolved = rulesetOf(profile = "deny-unless-model", provider = "github")
+    val model = Map("/" -> Set("read", "POST", "PUT", "PATCH", "DELETE"))
     assertEquals(
       resolved.inspectedScopes,
       Map(
         "github.com" -> Map("/login/device/code" -> Set("POST"), "/login/oauth/access_token" -> Set("POST")),
-        "api.github.com" -> Map("/copilot_internal/v2/token" -> Set("read")),
-      ),
+        "api.github.com" -> CopilotInternalReads.map(_ -> Set("read")).toMap,
+      ) ++ Vector("api", "api.individual", "api.business", "api.enterprise")
+        .map(name => s"$name.githubcopilot.com" -> model),
     )
-    assertEquals(
-      resolved.tunnelHosts,
-      Set(
-        "api.githubcopilot.com", "api.individual.githubcopilot.com",
-        "api.business.githubcopilot.com", "api.enterprise.githubcopilot.com",
-      ),
-    )
+    assertEquals(resolved.tunnelHosts, Set.empty)
     // The forge is readable nowhere and clonable nowhere: the provider grants no read of it.
     val scopes = resolved.inspectedScopes("github.com")
     def request(request: String): Unit = authorizeInspectedRequest("github.com", head(request), scopes)
@@ -538,18 +542,14 @@ class AgentEgressProxyTest extends munit.FunSuite:
         "POST /octocat/Hello-World.git/git-upload-pack HTTP/1.1\r\nHost: github.com\r\nContent-Length: 0\r\n\r\n",
       ),
     )
-    authorizeInspectedRequest(
-      "api.github.com",
-      head("GET /copilot_internal/v2/token HTTP/1.1\r\nHost: api.github.com\r\n\r\n"),
+    def api(path: String): Unit = authorizeInspectedRequest(
+      "api.github.com", head(s"GET $path HTTP/1.1\r\nHost: api.github.com\r\n\r\n"),
       resolved.inspectedScopes("api.github.com"),
     )
-    intercept[Refusal](
-      authorizeInspectedRequest(
-        "api.github.com", head(
-          "GET /user HTTP/1.1\r\nHost: api.github.com\r\n\r\n",
-        ), resolved.inspectedScopes("api.github.com"),
-      ),
-    )
+    CopilotInternalReads.foreach(api)
+    // Neither the account's other data nor a repository: the TUI's repository reads stay refused.
+    Vector("/user", "/copilot_internal/", "/repos/o/r/pulls").foreach: path =>
+      assertEquals(intercept[Refusal](api(path)).getMessage, "path under no line", path)
 
   test("the lines apply in the order written: for each grant the last applicable line decides"):
     val narrowed =
@@ -849,10 +849,10 @@ class AgentEgressProxyTest extends munit.FunSuite:
           "allow https://github.com/login/ method=POST    # the defaults grant it on two paths below\n" +
           "allow https://www.googleapis.com/oauth2/v2/userinfo read  # the defaults' own line, restated\n" +
           "allow https://www.googleapis.com/oauth2/ read  # the defaults grant it on one path below\n" +
-          "allow https://api.githubcopilot.com/ tunnel    # the defaults' own tunnel, restated\n" +
+          "allow https://runtime.us-east-1.kiro.dev/ tunnel  # the defaults' own tunnel, restated\n" +
           "deny https://gitlab.com/\ndeny model-provider google\nallow model-provider anthropic\n" +
-          "deny https://api.individual.githubcopilot.com/ tunnel\n" +
-          "allow https://api.individual.githubcopilot.com/ read  # a tunnel narrowed to inspected reads\n" +
+          "deny https://management.us-east-1.kiro.dev/ tunnel\n" +
+          "allow https://management.us-east-1.kiro.dev/ read  # a tunnel narrowed to inspected reads\n" +
           "deny https://github.com/ git-fetch\nallow https://github.com/my-org/ git-fetch\n",
     )
     val widening = Vector(
@@ -3443,6 +3443,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
   private lazy val refusalRows: Vector[RefusalRow] =
     import RefusalAdvice.*
     val github = "github.com"
+    val copilot = "api.githubcopilot.com"
     val gitlab = "gitlab.com"
     val fetch = whole("read", "git-fetch")
     def hello(sni: Option[String], ech: Boolean = false): TlsClientHello =
@@ -3464,27 +3465,39 @@ class AgentEgressProxyTest extends munit.FunSuite:
         () => authorize("api.github.com", 443, rulesetOf(rule = "deny https://**.github.com/")),
       ),
       RefusalRow(
-        "authorizeRequest not allowed", "tracker.example", hostNotAllowed("tracker.example", DefaultProfile),
+        "authorizeRequest not allowed", "tracker.example",
+        hostNotAllowed("tracker.example", DefaultProfile, Vector.empty),
         () => authorize("tracker.example", 443),
       ),
       // A defaults host under the default profile reaches this refusal through `deny defaults` alone.
       RefusalRow(
-        "authorizeRequest not allowed", github, hostNotAllowed(github, DefaultProfile),
+        "authorizeRequest not allowed", github, hostNotAllowed(github, DefaultProfile, Vector.empty),
         () => authorize(github, 443, rulesetOf(rule = "deny defaults\nallow https://pypi.org/ read")),
+      ),
+      // A host that only an unselected provider's rules name needs that provider, under either profile that admits
+      // providers.
+      RefusalRow(
+        "authorizeRequest not allowed", copilot, hostNotAllowed(copilot, DefaultProfile, Vector("anthropic")),
+        () => authorize(copilot, 443, rulesetOf(provider = "anthropic")),
+      ),
+      RefusalRow(
+        "authorizeRequest not allowed", copilot, hostNotAllowed(copilot, "deny-unless-model", Vector("anthropic")),
+        () => authorize(copilot, 443, rulesetOf(profile = "deny-unless-model", provider = "anthropic")),
       ),
       // Under a profile the rule file cannot widen, the step is the relaunch.
       RefusalRow(
-        "authorizeRequest not allowed", github, hostNotAllowed(github, "deny-all"),
+        "authorizeRequest not allowed", github, hostNotAllowed(github, "deny-all", Vector.empty),
         () => authorize(github, 443, rulesetOf(profile = "deny-all")),
       ),
       // The same step with the workspace's file denying the host: the relaunch is named as
       // necessary, and the denial the default profile would apply is the user's to see.
       RefusalRow(
-        "authorizeRequest not allowed", github, hostNotAllowed(github, "deny-all"),
+        "authorizeRequest not allowed", github, hostNotAllowed(github, "deny-all", Vector.empty),
         () => authorize(github, 443, rulesetOf(profile = "deny-all", rule = "deny https://github.com/")),
       ),
       RefusalRow(
-        "authorizeRequest not allowed", "tracker.example", hostNotAllowed("tracker.example", "deny-unless-model"),
+        "authorizeRequest not allowed", "tracker.example",
+        hostNotAllowed("tracker.example", "deny-unless-model", Vector("anthropic")),
         () =>
           authorize("tracker.example", 443, rulesetOf(profile = "deny-unless-model", provider = "anthropic")),
       ),
@@ -3652,15 +3665,16 @@ class AgentEgressProxyTest extends munit.FunSuite:
         assertEquals(grantRefused(refusal.getMessage), !requestSteps(advice), s"${row.site}: ${refusal.getMessage}")
 
   test("the host-not-allowed step names a configuration that can allow the host, or none"):
-    // The named line, in a clean workspace rule file, allows the host. A defaults host is refused under the default
-    // profile only through `deny defaults`, and the step says so rather than naming a line that the defaults already
-    // have. The step names the relaunch as possible only ("can allow"), since the workspace's file may deny the host
-    // under the default profile (the deny-all row above).
+    // The named line or option, in a clean workspace rule file, allows the host. A defaults host is refused under the
+    // default profile only through `deny defaults` or an unselected provider, and the step names which rather than a
+    // line that the defaults already have. The step names the relaunch to another profile as possible only ("can
+    // allow"), since the workspace's file may deny the host under the default profile (the deny-all row above).
     import RefusalAdvice.hostNotAllowed
     val addition = "'allow https://tracker.example/ read' in .ko-agent-sandbox/egress/rule"
     Vector(DefaultProfile, "deny-all", "deny-unless-model").foreach: profile =>
-      assert(hostNotAllowed("tracker.example", profile).contains(addition), profile)
-      assert(!hostNotAllowed("github.com", profile).contains("allow https://"), profile)
+      assert(hostNotAllowed("tracker.example", profile, Vector.empty).contains(addition), profile)
+      Vector("github.com", "api.githubcopilot.com").foreach: host =>
+        assert(!hostNotAllowed(host, profile, Vector.empty).contains("allow https://"), s"$profile $host")
     assertEquals(
       authorize("tracker.example", 443, rulesetOf(rule = "allow https://tracker.example/ read")),
       "tracker.example",
@@ -3668,10 +3682,31 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(authorize("github.com", 443, rulesetOf()), "github.com")
     Vector("deny-all", "deny-unless-model").foreach: profile =>
       Vector("github.com", "tracker.example").foreach: host =>
-        val advice = hostNotAllowed(host, profile)
+        val advice = hostNotAllowed(host, profile, Vector.empty)
         assert(advice.contains(s"a relaunch under $DefaultProfile"), advice)
         assert(advice.endsWith("can allow it."), advice)
-    assert(hostNotAllowed("github.com", DefaultProfile).contains("deny defaults"))
+    assert(hostNotAllowed("github.com", DefaultProfile, Vector("github")).contains("`deny defaults`"))
+
+    // A host that only an unselected provider names: the option under both profiles that admit providers, and the
+    // rule file's line where that file's allow lines count.
+    val copilot = "api.githubcopilot.com"
+    val byDefault = hostNotAllowed(copilot, DefaultProfile, Vector("anthropic"))
+    assert(byDefault.contains("relaunch with --model-provider=github"), byDefault)
+    val line = "add 'allow model-provider github' to .ko-agent-sandbox/egress/rule on the host"
+    assert(byDefault.contains(line), byDefault)
+    assert(!byDefault.contains("deny defaults"), byDefault)
+    val byModel = hostNotAllowed(copilot, "deny-unless-model", Vector("anthropic"))
+    assert(byModel.contains("relaunch with --model-provider=github."), byModel)
+    assert(!byModel.contains("allow model-provider"), byModel)
+    assertEquals(authorize(copilot, 443, rulesetOf(provider = "anthropic,github")), copilot)
+    assertEquals(
+      authorize(copilot, 443, rulesetOf(provider = "anthropic", rule = "allow model-provider github")),
+      copilot,
+    )
+    assertEquals(authorize(copilot, 443, rulesetOf(profile = "deny-unless-model", provider = "github")), copilot)
+    assert(hostNotAllowed(copilot, "deny-all", Vector.empty).contains(s"a relaunch under $DefaultProfile"))
+    // With the provider selected, the host is refused under the default profile only through `deny defaults`.
+    assert(hostNotAllowed(copilot, DefaultProfile, Vector("github")).contains("`deny defaults`"))
 
   test("a refusal inside the tunnel is the reason and the step, framed as text/plain, without it for a HEAD"):
     val (client, server) = socketPair()
@@ -3730,8 +3765,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
         System.setErr(saved)
         client.close()
 
-    val body =
-      s"ko-agent-egress-proxy: host not allowed\n${RefusalAdvice.hostNotAllowed("tracker.example", DefaultProfile)}\n"
+    val advice = RefusalAdvice.hostNotAllowed("tracker.example", DefaultProfile, Vector.empty)
+    val body = s"ko-agent-egress-proxy: host not allowed\n$advice\n"
     assertEquals(
       exchange("CONNECT tracker.example:443 HTTP/1.1\r\nHost: tracker.example:443\r\n\r\n"),
       (

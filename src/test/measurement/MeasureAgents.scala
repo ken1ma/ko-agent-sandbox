@@ -10,7 +10,7 @@
   Run it in the session, from the repository root. Both agents run when none is named:
 
       scala $KO_AGENT_SANDBOX_JAVA_OPTS run --workspace ~/.cache/measure-agents \
-          src/test/measurement/MeasureAgents.scala -- [claude] [codex]
+          src/test/measurement/MeasureAgents.scala -- [claude] [codex] [copilot]
 
   - The image's native scala launcher reads no proxy settings, so the options go on its command line.
   - --workspace keeps Scala CLI's build state out of the workspace, where a host's run of another script would trip
@@ -34,7 +34,7 @@ import scala.util.Using
 
 object MeasureAgents:
 
-  val Agents = Vector("claude", "codex")
+  val Agents = Vector("claude", "codex", "copilot")
   val TurnTimeoutSeconds = 900L
   // The turns read these files, so that their tool calls have something to find.
   val NoteNames = Vector("a.txt", "b.txt")
@@ -92,7 +92,8 @@ object MeasureAgents:
     // One file per upload, so that no earlier upload's trace answers for this one.
     val trace = work.resolve(s"$host.trace")
     Files.deleteIfExists(trace)
-    val sender = ProcessBuilder((curl ++ Vector("-T", "-", "--trace-ascii", trace.toString))*)
+    // Without `Expect: 100-continue`, which GitHub answers with its 401 at once, so that curl sends no body.
+    val sender = ProcessBuilder((curl ++ Vector("-H", "Expect:", "-T", "-", "--trace-ascii", trace.toString))*)
       .redirectOutput(Redirect.DISCARD).redirectError(Redirect.DISCARD).start()
     sender.getOutputStream.write(body.take(500).getBytes(UTF_8))
     sender.getOutputStream.flush()
@@ -141,12 +142,12 @@ object MeasureAgents:
     start("codex exec resume")
     // resume takes the same options after its own name.
     val resumed = thread.toVector.flatMap(id =>
-      turn(work, "resume", (exec.take(2) ++ Vector("resume") ++ exec.drop(2) ++ Vector(id,
+      turn(work, "codex-resume", (exec.take(2) ++ Vector("resume") ++ exec.drop(2) ++ Vector(id,
         "Now run 'cat words.txt' in the shell and answer with its last line. Do not modify anything."))*),
     )
     finish(Option.unless(codexCompleted(resumed) && codexRanCommand(resumed))(
       s"no completed resumed turn with a command${thread.fold("")(id => s" of thread $id")}; see " +
-        tail(work.resolve("resume.err")),
+        tail(work.resolve("codex-resume.err")),
     ))
     start("codex exec with a subagent")
     val spawned = turn(work, "spawn", (exec :+
@@ -160,6 +161,42 @@ object MeasureAgents:
     upload(work, "api.openai.com", "https://api.openai.com/v1/files",
       "-H", "Authorization: Bearer sk-measurement-not-a-key")
 
+  private def measureCopilot(work: Path): Unit =
+    val prompt = Vector("copilot", "--allow-all-tools", "--output-format", "json", "-p")
+    start("copilot -p with a shell call and a subagent")
+    // 1.0.111's task agent asks for a model of its own, which the origin refused for an individual plan
+    // (model_not_supported); a general-purpose agent takes the session's.
+    val first = turn(work, "copilot", (prompt :+
+      "Use the shell to run 'wc -l words.txt'. Then start one general-purpose subagent with your task tool, and " +
+        "have it list the notes directory with its own shell tool. Answer in one line with the line count and the " +
+        "file names. Do not modify anything.")*)
+    if !copilotSucceeded(first) then
+      val seen = s"${tail(work.resolve("copilot.err"))} ${tail(work.resolve("copilot.jsonl"))}"
+      finish(Some(s"no successful result; see $seen"))
+    else
+      val lacks = copilotLacks(first)
+      finish(Option.when(lacks.nonEmpty)(s"the run lacked ${lacks.mkString(", ")}"))
+    val session = copilotSession(first)
+    start("copilot --resume -p")
+    val resumed = session.toVector.flatMap(id =>
+      turn(work, "copilot-resume", (Vector("copilot", s"--resume=$id") ++ prompt.drop(1) :+
+        "Now run 'cat words.txt' in the shell and answer with its last line. Do not modify anything.")*),
+    )
+    finish(Option.unless(copilotSucceeded(resumed) && copilotRanShell(resumed))(
+      s"no successful resumed turn with a shell call${session.fold("")(id => s" of session $id")}; see " +
+        tail(work.resolve("copilot-resume.err")),
+    ))
+    start("copilot -p with the GitHub MCP server")
+    val mcp = turn(work, "mcp", (prompt :+
+      "Use your GitHub MCP tools, not the shell, to read the title of issue 1 in the repository github/copilot-cli. " +
+        "Answer with the title only. Do not modify anything.")*)
+    finish(Option.unless(copilotSucceeded(mcp) && copilotCalledGithubMcp(mcp))(
+      s"no successful turn with a GitHub MCP call; see ${tail(work.resolve("mcp.err"))}",
+    ))
+    // The generic host, which every plan's client can reach; the plan's own host varies by account.
+    upload(work, "api.githubcopilot.com", "https://api.githubcopilot.com/responses",
+      "-H", "Authorization: Bearer gho_measurement-not-a-token")
+
   // What stays manual (doc/plan-tls-inspect-agents.md, "The measurement suite"). The record names each item with the
   // version it was measured at.
   private val ManualItems = Map(
@@ -170,6 +207,9 @@ object MeasureAgents:
     "codex" ->
       """- codex: the TUI with two turns and two compactions; codex logout, codex login --device-auth; a token refresh,
         |  forced by a rejected access token; codex exec under an API key, in a throwaway CODEX_HOME""".stripMargin,
+    "copilot" ->
+      """- copilot: an interactive session with two turns and /compact; /login and a message (/logout fails in the
+        |  sandbox); a launch under --egress=deny-unless-model, with copilot as its command""".stripMargin,
   )
 
   private def deleteTree(root: Path): Unit =
@@ -177,7 +217,7 @@ object MeasureAgents:
 
   def run(arguments: Seq[String]): Int =
     if !arguments.forall(Agents.contains) then
-      System.err.println("usage: src/test/measurement/MeasureAgents.scala -- [claude] [codex]")
+      System.err.println("usage: src/test/measurement/MeasureAgents.scala -- [claude] [codex] [copilot]")
       return 2
     val agents = if arguments.isEmpty then Agents else arguments.toVector.distinct
     (agents :+ "curl").find(program => !onPath(program)) match
@@ -194,8 +234,12 @@ object MeasureAgents:
         .foreach((name, text) => Files.writeString(work.resolve(s"notes/$name"), text))
       agents.foreach: agent =>
         println(s"measure: $agent ${output(agent, "--version").linesIterator.nextOption().getOrElse("")}")
-        if agent == "claude" then measureClaude(work) else measureCodex(work)
-    finally deleteTree(work)
+        agent match
+          case "claude" => measureClaude(work)
+          case "codex"  => measureCodex(work)
+          case _        => measureCopilot(work)
+    // A failed mode's event files are the evidence for its message.
+    finally if failed then println(s"measure: the turns' files stay in $work") else deleteTree(work)
     println()
     println("Manual items, in this session, before the reader runs on the host:")
     agents.foreach(agent => println(ManualItems(agent)))

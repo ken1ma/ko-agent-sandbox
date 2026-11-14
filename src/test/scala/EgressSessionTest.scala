@@ -77,16 +77,26 @@ class EgressSessionTest extends munit.FunSuite:
   /** Asserts that the proxy does not complete an allowed host's *origin* leg. The host's CONNECT
     * succeeded and the proxy terminated the client's TLS, so the refusal arrives as a status inside
     * the tunnel and curl exits 0. For the same reason, an unverified origin would look like a
-    * verified one in here, so the proxy's own audit line settles the cause. */
+    * verified one in here, so the proxy's own audit line settles the cause.
+    *
+    * badssl.com's server failed 7 of 27 tunnelled handshakes before presenting its certificate
+    * (2026-11-14): it closed after the ClientHello, or the connect timed out. Such an attempt
+    * proves nothing either way, so the check repeats until the log names a certificate verdict
+    * (EgressSessionTest.certificateVerdict). Any attempt that the proxy completes fails at once. */
   private def refusedAtOrigin(session: Session, host: String, markers: Seq[String], why: String): Unit =
-    assertEquals(status(session, s"https://$host/"), "502", s"$host: $why")
-
-    val audit = run(podman, "logs", session.proxy)
-    val line = (audit.text + "\n" + audit.err).linesIterator.filter(_.contains(host)).mkString("\n")
+    def log: Vector[String] =
+      val audit = run(podman, "logs", session.proxy)
+      (audit.text + "\n" + audit.err).linesIterator.toVector
+    val verdict = Iterator.range(0, OriginAttempts).exists: _ =>
+      assertEquals(status(session, s"https://$host/"), "502", s"$host: $why")
+      EgressSessionTest.certificateVerdict(log, host, markers)
     assert(
-      markers.exists(line.contains),
-      s"$host failed at the origin, but not over its certificate — the origin may be down:\n$line",
+      verdict,
+      s"$host never presented its certificate in $OriginAttempts attempts — the origin may be down:\n" +
+        log.filter(_.contains(host)).mkString("\n"),
     )
+
+  private val OriginAttempts = 6
 
   private def withSession(rule: Option[String])(body: Session => Unit): Unit =
     val workspace = scratchWorkspace()
@@ -295,7 +305,7 @@ class EgressSessionTest extends munit.FunSuite:
       refusedAtConnect(session, "https://pypi.org/", "a defaults host survived `deny defaults`")
       refusedAtConnect(session, "https://github.com/", "a defaults host survived `deny defaults`")
 
-  test("the defaults inspect Claude Code's and Codex's model hosts, and only deny defaults returns a tunnel"):
+  test("the defaults inspect Claude Code's, Codex's and Copilot's model hosts; only deny defaults returns a tunnel"):
     requireTestWithPodman()
 
     // A refused CONNECT or a failed handshake prints no issuer, and "(no issuer line)" differs from any CA.
@@ -313,7 +323,7 @@ class EgressSessionTest extends munit.FunSuite:
       var live: Option[Session] = None
       try
         ruleFile(workspace, rule)
-        val options = Vector("--egress=deny-unless-allowed", "--model-provider=anthropic,openai")
+        val options = Vector("--egress=deny-unless-allowed", "--model-provider=anthropic,openai,github")
         val session = launchWith(workspace, workspace.resolve("session.log"), options)
         live = Some(session)
         body(session)
@@ -323,9 +333,10 @@ class EgressSessionTest extends munit.FunSuite:
 
     // The leaf names the host through the launcher's reading of the ruleset (EgressRules.inspectedHostsOf).
     launched(None): session =>
-      Vector("api.anthropic.com", "platform.claude.com", "chatgpt.com", "api.openai.com", "auth.openai.com")
-        .foreach: host =>
-          assertEquals(reachedIssuer(session, host), caSubject(session), s"$host is not inspected")
+      val hosts = Vector("api.anthropic.com", "platform.claude.com", "chatgpt.com", "api.openai.com", "auth.openai.com")
+        ++ Vector("api", "api.individual", "api.business", "api.enterprise").map(name => s"$name.githubcopilot.com")
+      hosts.foreach: host =>
+        assertEquals(reachedIssuer(session, host), caSubject(session), s"$host is not inspected")
       assert(Files.readString(session.log).contains(", 0 tunnel"), Files.readString(session.log))
 
     // The way back to the tunnel: deny defaults, then the whole ruleset (egress-proxy.md, "The rule file").
@@ -403,3 +414,39 @@ class EgressSessionTest extends munit.FunSuite:
         audit.exists(line => line.contains(" allow registry.npmjs.org POST /-/npm/v1/security/advisories/bulk")),
         "the audit POST was not allowed at its path",
       )
+
+  test("a certificate verdict is an error line's reason for the host, never a transport failure or the host's name"):
+    import EgressSessionTest.certificateVerdict
+    val expired = Seq("PKIX", "validity", "expired")
+    val wrongName = Seq("subject alternative", "No name matching", "PKIX")
+    def error(host: String, reason: String) = s"2026-11-14T03:50:16Z error $host GET / origin: $reason"
+    // The run that failed: the origin closed the handshake before presenting its certificate.
+    assert(!certificateVerdict(
+      Vector(error("wrong.host.badssl.com", "Remote host terminated the handshake")), "wrong.host.badssl.com",
+      wrongName,
+    ))
+    // The host's own name holds a marker, and neither a connect failure nor an allow line is a verdict.
+    assert(!certificateVerdict(Vector(error("expired.badssl.com", "Connect timed out")), "expired.badssl.com", expired))
+    assert(!certificateVerdict(
+      Vector("2026-11-14T03:50:08Z allow https://expired.badssl.com/ read"), "expired.badssl.com", expired,
+    ))
+    assert(certificateVerdict(
+      Vector(error("expired.badssl.com", "PKIX path validation failed: validity check failed")), "expired.badssl.com",
+      expired,
+    ))
+    assert(certificateVerdict(
+      Vector(error("wrong.host.badssl.com", "No subject alternative DNS name matching wrong.host.badssl.com found.")),
+      "wrong.host.badssl.com", wrongName,
+    ))
+    // Another host's verdict does not count.
+    assert(!certificateVerdict(
+      Vector(error("expired.badssl.com", "PKIX path validation failed")), "wrong.host.badssl.com", wrongName,
+    ))
+
+object EgressSessionTest:
+
+  /** Whether the proxy's log holds an `error` line for the host whose reason holds a marker. The reason alone counts:
+    * a host name such as expired.badssl.com holds a marker itself. */
+  def certificateVerdict(log: Seq[String], host: String, markers: Seq[String]): Boolean =
+    log.flatMap(MeasurementReport.parseLine)
+      .exists(line => line.action == "error" && line.host == host && markers.exists(line.why.contains))

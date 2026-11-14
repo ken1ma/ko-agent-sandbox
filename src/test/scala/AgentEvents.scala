@@ -30,6 +30,7 @@ object AgentEvents:
     def is(key: String, value: String): Boolean = text(key).contains(value)
 
   private val True = Json.Bool(true)
+  private val Zero = Json.Num("0")
 
   /** Whether `claude -p --output-format stream-json` ended in success. A run can exit 0 with the error in the result
     * (anthropics/claude-code#79500), so the result event decides. */
@@ -70,7 +71,7 @@ object AgentEvents:
   def codexRanCommand(run: Vector[Json]): Boolean =
     run.exists(event =>
       event.is("type", "item.completed") && event.text("item", "type").contains("command_execution") &&
-        event.text("item", "status").contains("completed") && event.at("item", "exit_code").contains(Json.Num("0")),
+        event.text("item", "status").contains("completed") && event.at("item", "exit_code").contains(Zero),
     )
 
   def codexThread(run: Vector[Json]): Option[String] =
@@ -101,3 +102,36 @@ object AgentEvents:
       paths.iterator.asScala
         .filter(path => path.getFileName.toString.matches("rollout-.*\\.jsonl") && childOf(path))
         .exists(path => codexChildAnswered(events(path), parent, words))
+
+  /** Whether `copilot -p --output-format json` ended in success: its result event's exit code. A subagent's failed
+    * model call leaves a session.error in a run that still succeeds. */
+  def copilotSucceeded(run: Vector[Json]): Boolean =
+    run.exists(event => event.is("type", "result") && event.at("exitCode").contains(Zero))
+
+  private def copilotShellCalls(run: Vector[Json]): Vector[Json] =
+    run.filter(_.is("type", "tool.execution_complete")).flatMap(_.at("data"))
+      .filter(data => data.at("success").contains(True) && data.at("shellExecution", "exitCode").contains(Zero))
+
+  /** What the run lacks of a shell call, a subagent that completed, and that subagent's own shell call. A failed call
+    * is a tool.execution_complete too, so its success and exit code decide. */
+  def copilotLacks(run: Vector[Json]): Vector[String] =
+    val shells = copilotShellCalls(run)
+    val agents = run.filter(_.is("type", "subagent.completed")).flatMap(_.text("data", "toolCallId")).toSet
+    Vector(
+      Option.unless(shells.exists(_.at("parentToolCallId").isEmpty))("a shell call"),
+      Option.when(agents.isEmpty)("a subagent"),
+      Option.unless(shells.exists(_.text("parentToolCallId").exists(agents)))("the subagent's shell call"),
+    ).flatten
+
+  def copilotRanShell(run: Vector[Json]): Boolean = copilotShellCalls(run).nonEmpty
+
+  def copilotSession(run: Vector[Json]): Option[String] =
+    run.find(_.is("type", "result")).flatMap(_.text("sessionId"))
+
+  /** Whether a call to the built-in GitHub MCP server succeeded. The server's name is on the call's start event
+    * alone. */
+  def copilotCalledGithubMcp(run: Vector[Json]): Boolean =
+    val calls = run.filter(_.is("type", "tool.execution_start")).flatMap(_.at("data"))
+      .filter(_.is("mcpServerName", "github-mcp-server")).flatMap(_.text("toolCallId")).toSet
+    run.filter(_.is("type", "tool.execution_complete")).flatMap(_.at("data"))
+      .exists(data => data.at("success").contains(True) && data.text("toolCallId").exists(calls))

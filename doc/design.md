@@ -503,15 +503,18 @@ headers. Chosen instead: the `upgrade=websocket` grant, at a path that a line na
   - The client's `supports_websockets = false` cannot be set for that provider: codex-cli 0.169.0
     keeps a built-in provider's routing and accepts only `model_catalog_url` from an override
     (`codex-rs/model-provider-info/src/lib.rs`, `merge_configured_providers`).
+- Copilot CLI opens a WebSocket at its plan host's `/responses`, and after the `403` sends the
+  turn over HTTP at once (`defaults/model-provider/github` has the measurement). Its hosts take no
+  grant, for Codex's reason above.
 - The binaries of the other installed agents hold no `wss://` literal for a model host.
   - `claude` holds one for its Remote Control bridge, `bridge.claudeusercontent.com`, which no
     default rule allows.
   - A URL built at run time escapes that search.
 
-Revisit the Codex hosts' missing grant if one Codex turn fails on the HTTP fallback, or the
-provider drops the HTTP path. Remove the `426` once Codex gains an HTTPS-only option
-(openai/codex #27381) or stops retrying before the fallback (#19821), and a measurement shows that a
-`403` costs no retries.
+Revisit the Codex or Copilot hosts' missing grant if one of that agent's turns fails on the HTTP
+fallback, or the provider drops the HTTP path. Remove the `426` once Codex gains an HTTPS-only
+option (openai/codex #27381) or stops retrying before the fallback (#19821), and a measurement shows
+that a `403` costs no retries.
 
 ### No inspecting every allowed host
 
