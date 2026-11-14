@@ -2,35 +2,16 @@
 # chosen by account kind. daily-cloudcode-pa is a production endpoint despite its name.
 # - Google's Code Assist page names cloudcode-pa, "an internal API that provides IDE-related features":
 #   https://docs.cloud.google.com/gemini/docs/codeassist/set-up-gemini
+# - The enterprise doc lists cloudcode-pa as "Cloud Code Telemetry & Client Services", which a Business sign-in reaches
+#   in every location (the Business mode, below).
 # - No page that was read names daily-cloudcode-pa or the split. agy's own log under ~/.gemini/antigravity-cli/log/
 #   shows the split after a consumer sign-in.
-# The Business and API-key modes below come from agy's changelog entries 1.1.10 and 1.1.13:
-# https://github.com/google-antigravity/antigravity-cli/blob/main/CHANGELOG.md
-allow https://cloudcode-pa.googleapis.com/        tunnel  # GCP-licensed accounts
-allow https://daily-cloudcode-pa.googleapis.com/  tunnel  # consumer accounts: AI Pro/Ultra/One/Free
+allow https://cloudcode-pa.googleapis.com/        read method=POST,PUT,PATCH,DELETE  # GCP-licensed and Business
+allow https://daily-cloudcode-pa.googleapis.com/  read method=POST,PUT,PATCH,DELETE  # consumer: AI Pro/Ultra/One/Free
 
-# GEMINI_API_KEY, the Gemini API with no sign-in: https://antigravity.google/docs/cli/install
-allow https://generativelanguage.googleapis.com/  tunnel
-
-# Business sign-in with a Gemini Enterprise license in a Google Cloud project uses two APIs, at the host of the
-# license's location:
-# - the Business AI Code API, for the license, the configuration and generateContent;
-# - the Agent Platform API, which the enterprise doc has the project enable.
-# The location is `global`, `us` or `eu`, the doc's whole choice: https://antigravity.google/docs/enterprise
-# Business AI Code "provides AI-powered code generation for Antigravity in Gemini Enterprise":
-# https://docs.cloud.google.com/gemini/enterprise/docs/ai-developer-tools-settings
-# The multi-region hosts: https://docs.cloud.google.com/vertex-ai/generative-ai/docs/learn/locations
-# SECURITY.md, "Not defended", has what the aiplatform tunnels open to the credential.
-# Advanced WIF sign-in exchanges tokens at sts.googleapis.com and iamcredentials.googleapis.com. That exchange is a
-# workspace's own setup: add the host to .ko-agent-sandbox/egress/rule when the proxy's 403 names the host.
-allow https://businessaicode.googleapis.com/      tunnel
-allow https://aiplatform.googleapis.com/          tunnel  # global
-allow https://aiplatform.us.rep.googleapis.com/   tunnel  # us
-allow https://aiplatform.eu.rep.googleapis.com/   tunnel  # eu
-
-# Google-account sign-in, consumer and Business alike.
-allow https://accounts.google.com/                tunnel  # printed sign-in URL
-allow https://oauth2.googleapis.com/              tunnel  # code exchange and token refresh
+# Google-account sign-in, consumer and Business alike. The browser on the host opens the printed sign-in URL on
+# accounts.google.com. agy itself sent that host nothing in a consumer sign-in, so the host has no line.
+allow https://oauth2.googleapis.com/              read method=POST,PUT,PATCH,DELETE  # code exchange, token refresh
 
 # Eligibility check. Signed in, agy reads the account at userinfo, then the profile picture at the URL that the
 # `picture` field names. A refusal at either host shows agy's "Eligibility check failed" banner, with the model list
@@ -43,9 +24,73 @@ allow https://oauth2.googleapis.com/              tunnel  # code exchange and to
 allow https://www.googleapis.com/oauth2/v2/userinfo read
 allow https://lh3.googleusercontent.com/            read
 
-# `/voice` under --audio=mic streams the recording over gRPC, which needs HTTP/2 and so a tunnel. The proxy refused
-# this host in agy 1.3.4's "Could not start transcription" error.
-allow https://aicode.googleapis.com/              tunnel
+# The modes below have no line, since no measurement covers them, and the proxy's refusal names the host. A workspace
+# that uses one adds its hosts to .ko-agent-sandbox/egress/rule as `allow https://HOST/ tunnel` lines.
+# - /voice under --audio=mic streams the recording to aicode.googleapis.com over gRPC, which needs HTTP/2 and so a
+#   tunnel (TODO.md, "Deferred — an HTTP/2 relay for gRPC hosts"). Refused, /voice shows "Could not start
+#   transcription" (agy 1.3.4). agy 1.5.8 also asks the host for its flags at each start, logs "AICode FetchConfig
+#   failed, falling back to CCPA ListExperiments" when refused, and completes its turns.
+# - GEMINI_API_KEY, the Gemini API with no sign-in, which also needs "modelProvider": "gemini" in agy's settings.json:
+#   generativelanguage.googleapis.com (https://antigravity.google/docs/cli/install).
+# - Business sign-in with a Gemini Enterprise license in a Google Cloud project: businessaicode.googleapis.com and
+#   aiplatform.googleapis.com, and for the `us` or `eu` location also businessaicode.<location>.rep.googleapis.com and
+#   aiplatform.<location>.rep.googleapis.com.
+#   - https://antigravity.google/docs/enterprise, "Network allowlists and mTLS endpoints": the client reaches the
+#     global businessaicode and cloudcode-pa hosts at sign-in in every location, for the licenses and the model
+#     catalog, then sends inference to the location's rep host. The allowlist also names Discovery Engine hosts and
+#     mTLS variants for the Antigravity App, CLI and IDEs together.
+#   - SECURITY.md, "Not defended", has what an aiplatform tunnel opens to the signed-in credential.
+#   - Advanced WIF sign-in also exchanges tokens at sts.googleapis.com and iamcredentials.googleapis.com.
+# The Business and API-key modes come from agy's changelog entries 1.1.10 and 1.1.13:
+# https://github.com/google-antigravity/antigravity-cli/blob/main/CHANGELOG.md
 
 # play.googleapis.com serves telemetry and experiment polling. The host is absent, as ab.chatgpt.com is absent from
 # model-provider/openai.
+
+# Measured with agy 1.5.8 on 2026-11-14, signed in with a consumer account, under deny-unless-allowed
+# (doc/plan-tls-inspect-agents.md, "Measurement"):
+# - Modes: agy -p with a shell call and a subagent that makes its own shell call; agy --conversation -p with a shell
+#   call; the interactive TUI in this repository, with two turns and /compact, a sign-out, a sign-in and a message,
+#   then /voice under --audio=mic; a token refresh, forced by moving the token file's expiry into the past; the TUI
+#   with a turn under deny-unless-model.
+# - The path, refused and error lines are what MeasurementReport accepts (doc/plan-tls-inspect-agents.md, "The
+#   measurement suite"). Each <...> stands for one segment.
+#   path daily-cloudcode-pa.googleapis.com /v1internal:loadCodeAssist /v1internal:fetchAvailableModels
+#   path daily-cloudcode-pa.googleapis.com /v1internal:fetchAdminControls /v1internal:fetchUserInfo
+#   path daily-cloudcode-pa.googleapis.com /v1internal:retrieveUserQuotaSummary /v1internal:listExperiments
+#   path daily-cloudcode-pa.googleapis.com /v1internal:streamGenerateContent /v1internal:writeTrajectoryAcls
+#   path daily-cloudcode-pa.googleapis.com /v1internal:recordTrajectoryAnalytics /v1internal/cascadeNuxes
+#   path oauth2.googleapis.com /token
+#   path www.googleapis.com /oauth2/v2/userinfo
+#   path lh3.googleusercontent.com /a/<picture>
+#   path github.com /<owner>/<repo>
+#   refused play.googleapis.com CONNECT
+#   refused www.gstatic.com CONNECT
+#   refused github.com CONNECT
+#   refused aicode.googleapis.com CONNECT
+#   error daily-cloudcode-pa.googleapis.com tunnel: Connection reset
+#   error daily-cloudcode-pa.googleapis.com client closed before sending a request
+#   error daily-cloudcode-pa.googleapis.com relay: Broken pipe
+# - The client negotiated HTTP/1.1 and trusted the launch CA. The language server sends the model requests as
+#   antigravity/cli/1.5.8; the sign-in, userinfo and picture requests are Go-http-client/1.1.
+# - Within each sign-in, the model host's requests and the userinfo read carried the same credential index. The token
+#   endpoint's codes and tokens travel in bodies, so its lines carry no cred=.
+# - streamGenerateContent bodies are chunked, with ?alt=sse in the query; every other body declared a Content-Length.
+#   No query held a credential.
+# - After each turn, recordTrajectoryAnalytics uploaded 37 to 208 KB to the model host.
+# - In this repository, the TUI sent github.com a HEAD of the repository's own path, without a credential, after a
+#   turn. Under deny-unless-model, which admits no catalog host, the proxy refused that CONNECT, and the turn
+#   completed.
+# - The sign-out sent no request. The sign-in exchanged its code at oauth2.googleapis.com/token; without a D-Bus
+#   session, agy keeps the token in ~/.gemini/antigravity-cli/antigravity-oauth-token.
+# - Other Google clients in a session, such as gcloud, exchange their tokens at oauth2.googleapis.com too. Only agy's
+#   exchange and refresh are measured.
+# - The refusals: play.googleapis.com (telemetry), every few seconds while agy runs; www.gstatic.com (the plugin
+#   marketplace), at the TUI's start; aicode.googleapis.com (the flags), at each start. agy works without them.
+# - The errors, each at a process's exit: a connection that agy closed or reset without a request; and the response to
+#   a recordTrajectoryAnalytics upload that agy abandoned ("context canceled" in agy's log), whose relay to agy failed
+#   with Broken pipe.
+# - /voice and fetchConfig went through a tunnel to aicode.googleapis.com, which the measurement allowed. No mode or
+#   turn failed.
+# - Unmeasured: the GCP-licensed accounts on cloudcode-pa, inspected on this client's evidence; the Business sign-in;
+#   GEMINI_API_KEY, whose key may travel in the query (doc/plan-tls-inspect-agents.md, "Guarantees", 3).

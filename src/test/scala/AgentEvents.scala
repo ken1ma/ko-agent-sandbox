@@ -103,6 +103,43 @@ object AgentEvents:
         .filter(path => path.getFileName.toString.matches("rollout-.*\\.jsonl") && childOf(path))
         .exists(path => codexChildAnswered(events(path), parent, words))
 
+  /** Whether `agy -p --output-format stream-json` ended in success: its result event's status. */
+  def agySucceeded(run: Vector[Json]): Boolean = run.exists(_.text("result", "status").contains("SUCCESS"))
+
+  // A failed command is a completed step too, and only its output tells the two apart.
+  private val AgyCommandSucceeded = "Command exited with code 0."
+
+  private def agyDone(run: Vector[Json], stepType: String): Vector[Json] =
+    run.flatMap(_.at("step_update")).filter(step => step.is("state", "DONE") && step.is("step_type", stepType))
+
+  def agyRanShell(run: Vector[Json]): Boolean =
+    agyDone(run, "tool").exists(step =>
+      step.is("tool_name", "run_command") && step.text("tool_info", "output").exists(_.contains(AgyCommandSucceeded)),
+    )
+
+  /** The transcripts of the subagents that the run started. agy's stream leaves a subagent's own steps out; the
+    * subagent writes them to the transcript that its log_uri names. */
+  def agySubagentTranscripts(run: Vector[Json]): Vector[Path] =
+    agyDone(run, "subagent").flatMap(_.items("subagent_info", "subagents")).flatMap(_.text("log_uri"))
+      .map(uri => Path.of(java.net.URI(uri)))
+
+  /** Whether a subagent's transcript holds a shell call that exited 0: the call, then a step whose output says so. */
+  def agyTranscriptRanShell(transcript: Vector[Json]): Boolean =
+    val call = transcript.indexWhere(_.items("tool_calls").exists(_.is("name", "run_command")))
+    call >= 0 && transcript.drop(call + 1).exists(_.text("content").exists(_.contains(AgyCommandSucceeded)))
+
+  /** What the run lacks of a shell call, a subagent, and that subagent's own shell call. */
+  def agyLacks(run: Vector[Json]): Vector[String] =
+    val transcripts = agySubagentTranscripts(run)
+    Vector(
+      Option.unless(agyRanShell(run))("a shell call"),
+      Option.when(transcripts.isEmpty)("a subagent"),
+      Option.unless(transcripts.exists(path => agyTranscriptRanShell(events(path))))("the subagent's shell call"),
+    ).flatten
+
+  def agyConversation(run: Vector[Json]): Option[String] =
+    run.flatMap(_.at("result")).flatMap(_.text("conversation_id")).headOption
+
   /** Whether `copilot -p --output-format json` ended in success: its result event's exit code. A subagent's failed
     * model call leaves a session.error in a run that still succeeds. */
   def copilotSucceeded(run: Vector[Json]): Boolean =

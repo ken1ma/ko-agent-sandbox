@@ -160,8 +160,13 @@ object MeasurementReport:
           val credText = (creds.map(c => s"cred=$c") ++ Option.when(bare > 0)(s"$bare without cred")).mkString(", ")
           out += s"  $host $method $path: ${same.size}${if credText.isEmpty then "" else s"; $credText"}" +
             s"${if framing.isEmpty then "" else s"; ${framing.mkString(", ")}"}"
-          if !record.recordsPath(host, path) then
-            findings += s"$host $method $path (${same.size}): ${record.provider} names no such path"
+          // A host that two records name, such as github.com, takes a path that either records. The first record
+          // that names the host reports the finding, so that it shows once.
+          val namers = measured.filter(_.names(host))
+          if recordOf(host).contains(record) && !namers.exists(_.recordsPath(host, path)) then
+            val names = namers.map(_.provider)
+            findings += s"$host $method $path (${same.size}): ${names.mkString(" and ")} " +
+              s"${if names.size == 1 then "names" else "name"} no such path"
       val called = own.map(line => (line.host, pathOf(line.target.get)))
       val uncalled = record.paths.filterNot((hostPattern, pathPattern) =>
         called.exists((host, path) => matches(hostPattern, host, HostPart) && matches(pathPattern, path, PathPart)),

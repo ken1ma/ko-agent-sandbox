@@ -113,9 +113,10 @@ Each item gives a pi provider id and its hosts, from `packages/ai/src/providers/
 - `openai`: `api.openai.com` with an API key. `openai-codex`: `chatgpt.com/backend-api`, with
   OAuth at `auth.openai.com`. The `openai` selection allows all three.
 - `google`: `generativelanguage.googleapis.com` with an API key, and pi has no Google OAuth. The
-  `google` selection allows it.
+  `google` selection has no line for it, since agy's API-key mode is unmeasured.
 - `google-vertex`: `aiplatform.googleapis.com`, and `oauth2.googleapis.com` for the credential
-  refresh. The `google` selection allows the global host, not a regional one.
+  refresh. The `google` selection allows `oauth2.googleapis.com`, and has no line for any
+  `aiplatform` host.
 - `github-copilot`: `api.individual.githubcopilot.com`, with the device flow at
   `github.com/login/device/code`, `github.com/login/oauth/access_token` and
   `api.github.com/copilot_internal/v2/token`. The `github` selection allows all four. An

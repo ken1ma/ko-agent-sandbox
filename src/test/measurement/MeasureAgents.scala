@@ -7,10 +7,10 @@
   (doc/plan-tls-inspect-agents.md, "The measurement suite"). The session's proxy log then goes to MeasurementReport on
   the host. Each mode prints its UTC start and end, so that the report can be matched with the modes.
 
-  Run it in the session, from the repository root. Both agents run when none is named:
+  Run it in the session, from the repository root. Every agent runs when none is named:
 
       scala $KO_AGENT_SANDBOX_JAVA_OPTS run --workspace ~/.cache/measure-agents \
-          src/test/measurement/MeasureAgents.scala -- [claude] [codex] [copilot]
+          src/test/measurement/MeasureAgents.scala -- [claude] [codex] [agy] [copilot]
 
   - The image's native scala launcher reads no proxy settings, so the options go on its command line.
   - --workspace keeps Scala CLI's build state out of the workspace, where a host's run of another script would trip
@@ -34,7 +34,7 @@ import scala.util.Using
 
 object MeasureAgents:
 
-  val Agents = Vector("claude", "codex", "copilot")
+  val Agents = Vector("claude", "codex", "agy", "copilot")
   val TurnTimeoutSeconds = 900L
   // The turns read these files, so that their tool calls have something to find.
   val NoteNames = Vector("a.txt", "b.txt")
@@ -161,6 +161,34 @@ object MeasureAgents:
     upload(work, "api.openai.com", "https://api.openai.com/v1/files",
       "-H", "Authorization: Bearer sk-measurement-not-a-key")
 
+  private def measureAgy(work: Path): Unit =
+    val prompt = Vector("agy", "--output-format", "stream-json", "-p")
+    start("agy -p with a shell call and a subagent")
+    val first = turn(work, "agy", (prompt :+
+      "Use the shell to run 'wc -l words.txt'. Then start one subagent with your invoke_subagent tool, and have it " +
+        "list the notes directory with its own shell tool. Answer in one line with the line count and the file " +
+        "names. Do not modify anything.")*)
+    if !agySucceeded(first) then
+      val seen = s"${tail(work.resolve("agy.err"))} ${tail(work.resolve("agy.jsonl"))}"
+      finish(Some(s"no successful result; see $seen"))
+    else
+      val lacks = agyLacks(first)
+      finish(Option.when(lacks.nonEmpty)(s"the run lacked ${lacks.mkString(", ")}"))
+    val conversation = agyConversation(first)
+    start("agy --conversation -p")
+    val resumed = conversation.toVector.flatMap(id =>
+      turn(work, "agy-resume", (Vector("agy", "--conversation", id) ++ prompt.drop(1) :+
+        "Now run 'cat words.txt' in the shell and answer with its last line. Do not modify anything.")*),
+    )
+    finish(Option.unless(agySucceeded(resumed) && agyRanShell(resumed))(
+      s"no successful resumed turn with a shell call${conversation.fold("")(id => s" of conversation $id")}; see " +
+        tail(work.resolve("agy-resume.err")),
+    ))
+    // The consumer accounts' host, which the measured sign-in uses.
+    upload(work, "daily-cloudcode-pa.googleapis.com",
+      "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent",
+      "-H", "Authorization: Bearer ya29.measurement-not-a-token", "-H", "Content-Type: application/json")
+
   private def measureCopilot(work: Path): Unit =
     val prompt = Vector("copilot", "--allow-all-tools", "--output-format", "json", "-p")
     start("copilot -p with a shell call and a subagent")
@@ -207,6 +235,11 @@ object MeasureAgents:
     "codex" ->
       """- codex: the TUI with two turns and two compactions; codex logout, codex login --device-auth; a token refresh,
         |  forced by a rejected access token; codex exec under an API key, in a throwaway CODEX_HOME""".stripMargin,
+    "agy" ->
+      """- agy: an interactive session with two turns and /compact; /voice under --audio=mic; a sign-out, a sign-in and
+        |  a message; a token refresh, forced by moving .token.expiry in
+        |  ~/.gemini/antigravity-cli/antigravity-oauth-token into the past; a launch under --egress=deny-unless-model,
+        |  with agy as its command""".stripMargin,
     "copilot" ->
       """- copilot: an interactive session with two turns and /compact; /login and a message (/logout fails in the
         |  sandbox); a launch under --egress=deny-unless-model, with copilot as its command""".stripMargin,
@@ -217,7 +250,7 @@ object MeasureAgents:
 
   def run(arguments: Seq[String]): Int =
     if !arguments.forall(Agents.contains) then
-      System.err.println("usage: src/test/measurement/MeasureAgents.scala -- [claude] [codex] [copilot]")
+      System.err.println("usage: src/test/measurement/MeasureAgents.scala -- [claude] [codex] [agy] [copilot]")
       return 2
     val agents = if arguments.isEmpty then Agents else arguments.toVector.distinct
     (agents :+ "curl").find(program => !onPath(program)) match
@@ -237,6 +270,7 @@ object MeasureAgents:
         agent match
           case "claude" => measureClaude(work)
           case "codex"  => measureCodex(work)
+          case "agy"    => measureAgy(work)
           case _        => measureCopilot(work)
     // A failed mode's event files are the evidence for its message.
     finally if failed then println(s"measure: the turns' files stay in $work") else deleteTree(work)

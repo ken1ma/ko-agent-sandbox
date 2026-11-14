@@ -497,10 +497,11 @@ Copilot CLI's sign-in stores a forge credential, not merely a model-provider cre
 
 agy's Business sign-in stores a Google Cloud credential for the licensed project.
 
-- Google's default rules tunnel the Agent Platform API, Vertex AI's API, at
+- Google's default rules have no line for the Business hosts, which a workspace adds as tunnels
+  (`defaults/model-provider/google`). Among them is the Agent Platform API, Vertex AI's API, at
   `aiplatform.googleapis.com` and its `us` and `eu` multi-region hosts. The API manages the
   project's resources as well as serving the project's model endpoints.
-- Through those opaque tunnels, the credential can perform whatever operations the user's IAM roles
+- Through such opaque tunnels, the credential can perform whatever operations the user's IAM roles
   allow in the signed-in project. The proxy cannot distinguish those operations from model traffic.
   - Sufficient permissions can permit deploying or deleting model endpoints, starting paid
     training, tuning or batch-prediction jobs, or deploying agent code. Jobs may also require
@@ -512,7 +513,7 @@ agy's Business sign-in stores a Google Cloud credential for the licensed project
     describes those execution identities.
 - Storage, Compute and IAM use separate hosts. The sandbox reaches those hosts only where the
   profile or a workspace rule allows them.
-- A workspace can deny the three aiplatform hosts while keeping the Business AI Code API. A
+- A workspace can add the Business AI Code API's hosts without the three aiplatform hosts. A
   workspace can also use `deny model-provider google` to deny every host in Google's default rules,
   unless a later rule grants access again.
 - Resetting the workspace's agent-state volume discards the stored token ("What the persistent
@@ -771,12 +772,15 @@ lifecycle, benchmark and launcher suites binds its figures to the digest of its 
 - In the defaults, the `tunnel` hosts are the model and login hosts that no measurement of their
   agent's client has cleared. Inspection fails some requests that a tunnel carries
   (`doc/plan-tls-inspect-agents.md`, "Measurement").
-- An inspected model host, such as `api.anthropic.com`, `chatgpt.com`, `api.openai.com` and
-  Copilot's four hosts in the defaults, grants every method at its root.
+- An inspected model host, such as `api.anthropic.com`, `chatgpt.com`, `api.openai.com`, agy's two
+  `cloudcode-pa.googleapis.com` hosts and Copilot's four hosts in the defaults, grants every method
+  at its root.
   The proxy holds each request's conversation and provider token in memory, in plaintext, whether
   or not the launch selects a credential.
-- An inspected login host, such as `auth.openai.com` and `platform.claude.com`, puts the sign-in's
-  codes and tokens in the proxy's memory in plaintext, refresh tokens included.
+- An inspected login host, such as `auth.openai.com`, `platform.claude.com` and
+  `oauth2.googleapis.com`, puts the sign-in's codes and tokens in the proxy's memory in plaintext,
+  refresh tokens included. `oauth2.googleapis.com` serves every Google client's token exchange, not
+  agy's alone.
 - Inspection lets the retained log record each request's method and target. An opaque tunnel logs
   the `CONNECT` alone.
 - Every other defaults host is inspected, including the bulk package registries, at a known
@@ -1921,6 +1925,10 @@ commands execute outside the container, so the profile provides their confinemen
     - A build can refuse such a task in that server (`doc/run-on-host.md`, "Telling a host command
       apart in a build"). This repository's `dist` refuses there.
     - `doc/TODO.md`, "A terminal's sbt in a launch's server", tracks a fix in the launcher.
+  - The build output in the workspace has no such separation. A session writes `target/` as it
+    writes the sources, and `git diff` shows neither the class files nor the jars there. Your own
+    server's incremental build reuses them, so run `sbt clean dist` when a session's writes to
+    `target/` are in doubt.
   - `--reset` discards all of these caches with the workspace's other state. `--reset-run-on-host`
     discards those caches alone.
   - The separation is by root, because Seatbelt has no mount namespace to overlay with. One

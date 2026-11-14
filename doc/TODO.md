@@ -554,6 +554,22 @@ SECURITY.md, "The supply chain", has npm's seven-day window and why uv gets none
   - The change needs a larger state machine at the enforcement point, and the one-request rule's
     smuggling argument re-argued in SECURITY.md.
 
+## Deferred — an HTTP/2 relay for gRPC hosts
+
+- [ ] Inspect HTTP/2 on a host, only if an agent's model traffic needs HTTP/2, or
+  `aicode.googleapis.com` serves more than agy's `/voice` and its `fetchConfig`.
+  - agy's `/voice` streams over gRPC, which needs HTTP/2, so a workspace that dictates in agy adds
+    `aicode.googleapis.com` as a tunnel. The proxy offers only `http/1.1` to the client
+    (`TLSHelper`).
+  - The relay would read each stream's headers, check its method and path against the rules,
+    print a line per stream, and relay the data and trailers to an HTTP/2 origin connection.
+  - The proxy has no HTTP/2 code: the framing, HPACK, flow control and stream resets are new code
+    or a new dependency.
+  - SECURITY.md's one-request argument is re-argued for the streams of one connection, as
+    keep-alive needs.
+  - The relay is the only way to inspect such a host. Tunnelling only the connections whose
+    ClientHello offers `h2` alone would give any process a tunnel by offering it.
+
 ## Deferred — Git LFS batch downloads
 
 If `git lfs pull` becomes important:

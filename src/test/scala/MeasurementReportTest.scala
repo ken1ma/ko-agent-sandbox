@@ -82,6 +82,24 @@ class MeasurementReportTest extends munit.FunSuite:
       ),
     )
 
+  test("a host that two records name takes a path that either records, and an unrecorded path is one finding"):
+    val other = parseRecord(
+      "forge",
+      """allow https://forge.example/login read method=POST
+        |#   path forge.example /login
+        |""".stripMargin,
+    )
+    val agent = parseRecord("agent", "#   path forge.example /<owner>/<repo>\n")
+    val both = report(
+      Vector(
+        "allow forge.example POST /login content-length=10 id=1 -> 1.2.3.4",
+        "allow forge.example HEAD /o/r id=2 client=Go-http-client/1.1 -> 1.2.3.4",
+        "allow forge.example GET /o/r/issues id=3 -> 1.2.3.4",
+      ).map(stamped),
+      Vector(other, agent),
+    )
+    assertEquals(both.findings, Vector("forge.example GET /o/r/issues (1): forge and agent name no such path"))
+
   test("curl's uploads are probes: their paths, body ends and errors are shown, never judged"):
     val probed = reportOf(
       "allow api.example POST /v1/files content-length=2000 id=1 client=curl/8.5.0 cred=2 -> 1.2.3.4",

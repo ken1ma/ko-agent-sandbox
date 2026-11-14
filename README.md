@@ -197,7 +197,13 @@ credentials in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#
 #### `agy`
 
 1. Sign in with the URL and pasted code, as for [`claude`](#claude).
-1. `/voice` needs `--audio=mic`.
+1. `/voice` needs `--audio=mic` and the line `allow https://aicode.googleapis.com/ tunnel` in
+   `.ko-agent-sandbox/egress/rule`: agy streams the recording over gRPC (HTTP/2), which the proxy
+   carries only through a tunnel.
+1. A `GEMINI_API_KEY` session or a Business sign-in with a Gemini Enterprise license needs its
+   hosts as `tunnel` lines in `.ko-agent-sandbox/egress/rule`. The proxy image's
+   `defaults/model-provider/google` lists them with Google's pages; no measurement covers those
+   modes yet.
 1. `agy`'s terminal sandbox fails to start in a session, so in Auto mode its commands run without
    that sandbox ([doc/limitations.md](doc/limitations.md#agys-terminal-sandbox-and-auto-mode)).
 
@@ -283,9 +289,9 @@ credentials another cloud's login produced, and what forwarding costs.
 
 Every session accesses the network through the launcher's HTTPS proxy. The `--egress=` profile
 and the workspace's `.ko-agent-sandbox/egress/rule` determine which destinations and operations are
-allowed. The defaults include the supported model providers, with Claude Code's, Codex's and
-Copilot's model hosts TLS-inspected and the others tunnelled, and TLS-inspected access to selected
-documentation sites, package registries, and Git hosting services.
+allowed. The defaults include the supported model providers, with the measured model hosts of
+Claude Code, Codex, agy and Copilot TLS-inspected and the others tunnelled, and TLS-inspected access
+to selected documentation sites, package registries, and Git hosting services.
 
 On the host, write one rule per line in `.ko-agent-sandbox/egress/rule`, then relaunch:
 

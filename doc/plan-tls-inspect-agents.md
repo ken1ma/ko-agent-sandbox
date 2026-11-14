@@ -51,9 +51,11 @@ such as `OPENAI_API_KEY@api.openai.com`, is accepted from the commit that inspec
 - Inspection cannot read the conversation for intent (`design.md`, "No DLP/entropy/LLM firewall").
 - Inspection cannot refuse the foreign key either. Refusing that key needs the session's own key,
   and so the brokered overlay (`TODO.md`, "Credential brokering", the `require-placeholder` item).
-- agy's control-plane writes travel through the same tunnels as its model traffic, and are
-  indistinguishable there (SECURITY.md, "Not defended"). Under inspection, each write is a line
-  with its path, as Copilot's GitHub MCP calls are on Copilot's inspected hosts.
+- agy's control-plane writes share the model host with its model traffic, such as
+  `writeTrajectoryAcls` beside `streamGenerateContent` on `daily-cloudcode-pa.googleapis.com`.
+  Under inspection, each write is a line with its path, as Copilot's GitHub MCP calls are on
+  Copilot's inspected hosts. The `aiplatform` tunnels that a Business workspace adds still carry
+  its project's operations opaquely (SECURITY.md, "Not defended").
 
 ## Guarantees
 
@@ -158,9 +160,10 @@ The agents are measured in the README's order.
   - `/voice` is not served (`TODO.md`, "Codex's `/voice`"). That item reads the call's setup on
     `chatgpt.com`, which an inspected host logs by path.
 - `agy` 1.5.3, `cloudcode-pa.googleapis.com`, `daily-cloudcode-pa.googleapis.com`,
-  `generativelanguage.googleapis.com`, `businessaicode.googleapis.com` and the `aiplatform` hosts.
-  - `aicode.googleapis.com` stays a tunnel: `/voice` streams there over gRPC, which needs HTTP/2
-    (`model-provider/google`).
+  `generativelanguage.googleapis.com`, and the `businessaicode` and `aiplatform` hosts.
+  - `aicode.googleapis.com` has no line: `/voice` streams there over gRPC, which needs HTTP/2, so a
+    workspace adds the host as a tunnel (`model-provider/google`; `TODO.md`, "Deferred — an HTTP/2
+    relay for gRPC hosts"). Without the host, agy falls back for its flags, and its turns complete.
   - Documented: nothing on a proxy or a CA in the 28 CLI pages under
     https://antigravity.google/docs/cli.
   - Reported:
@@ -168,12 +171,20 @@ The agents are measured in the README's order.
       (google-antigravity/antigravity-cli #181, closed as a duplicate).
     - 1.1.21 on Windows sent `loadCodeAssist` through the proxy, and the model calls,
       `streamGenerateContent`, directly (#875, open).
-  - Measure:
-    - whether the client trusts the launch CA at all;
-    - the HTTP version each host negotiates. The reports show HTTP paths, and the relay refuses
-      HTTP/2;
-    - where a `GEMINI_API_KEY` session sends the key. A key in the query, `?key=`, leaves
-      `generativelanguage.googleapis.com` a tunnel ("Guarantees", 3).
+  - Measured on 2026-11-14 with 1.5.8 under a consumer sign-in, and inspected by default with
+    `cloudcode-pa.googleapis.com` and `oauth2.googleapis.com`: `defaults/model-provider/google`
+    holds the record. The client trusted the launch CA, and every request went over HTTP/1.1.
+    - Every model call went to `daily-cloudcode-pa.googleapis.com`, as `POST /v1internal:<method>`;
+      `streamGenerateContent` sends a chunked body.
+    - The TUI, with a compaction, a sign-out and a sign-in, passed. The sign-in sent
+      `accounts.google.com` nothing, so the defaults have no line for that host.
+    - In a repository, the TUI sends `github.com` a `HEAD` of the repository's path. Under
+      `deny-unless-model` the proxy refuses it, and the turn completes.
+  - The API-key and Business modes' hosts have no line, and a workspace adds them as tunnels
+    (`model-provider/google`). Still to measure: the GCP-licensed accounts on `cloudcode-pa`, the
+    Business sign-in, which waits for such an account, and where a `GEMINI_API_KEY` session sends
+    the key, which waits for a key. A key in the query, `?key=`, keeps
+    `generativelanguage.googleapis.com` out of inspection ("Guarantees", 3).
 - `kiro-cli` 3.1.0, `runtime.us-east-1.kiro.dev`, `q.us-east-1.amazonaws.com` and
   `management.us-east-1.kiro.dev`, each also in `eu-central-1`.
   - Documented: `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` from v1.8.0
@@ -240,9 +251,10 @@ covers the agent's sign-in and a token refresh.
 - The log then shows every request to them by path, so a request that no sign-in makes stands out.
 - The proxy then holds the sign-in's codes and tokens in plaintext, refresh tokens included, which
   outlive the access tokens it sees on the model hosts.
-- `auth.openai.com` and `platform.claude.com` are inspected. `claude.ai` is absent, since Claude
-  Code sends it no request (`defaults/model-provider/anthropic`). The Google and AWS sign-in hosts
-  wait for their agents' measurements.
+- `auth.openai.com`, `platform.claude.com` and `oauth2.googleapis.com` are inspected. `claude.ai`
+  and `accounts.google.com` are absent, since Claude Code and agy send them no request
+  (`defaults/model-provider/anthropic` and `google`). The AWS sign-in hosts wait for Kiro's
+  measurement.
 
 ## The `upgrade=websocket` grant
 
@@ -373,12 +385,14 @@ For a release:
 
    ```sh
    scala $KO_AGENT_SANDBOX_JAVA_OPTS run --workspace ~/.cache/measure-agents \
-       src/test/measurement/MeasureAgents.scala -- [claude] [codex] [copilot]
+       src/test/measurement/MeasureAgents.scala -- [claude] [codex] [agy] [copilot]
    ```
 
    - Claude Code: `claude -p` with a Bash call and a subagent that makes its own Bash call.
    - Codex: `codex exec` and `codex exec resume`, each with a shell command, and a turn whose
      subagent answers.
+   - agy: `agy -p` with a shell call and a subagent that makes its own, and `agy --conversation -p`
+     with a shell call. The subagent's calls are read from its transcript, which the stream names.
    - Copilot: `copilot -p` with a shell call and a subagent that makes its own, a resumed turn
      with a shell call, and a read through the built-in GitHub MCP server.
    - For each: a `curl` upload under a foreign key to the model host, whole, and chunked and cut
@@ -397,8 +411,9 @@ The reader (`MeasurementReport.scala`):
 - It lists each recorded host's methods and paths with their counts, `cred=` indexes and framing,
   and the recorded paths that the run did not call. A record with no `path` line is unmeasured.
 - It counts the requests to every other host by method, such as an unmeasured record's hosts.
-- A finding is a path on a recorded host that the record does not name, or a `deny` or `error`
-  line that no record accepts.
+- A finding is a path on a recorded host that no record naming the host lists, or a `deny` or
+  `error` line that no record accepts. A host can belong to two records: agy reads a repository on
+  `github.com`, where the `github` record has Copilot's sign-in.
 - `curl`'s requests are probes. The report lists each probe with its framing, credential index and
   body end, and never judges them.
 - The records hold the reader's lines among their comments: `path <host> </path>...`,

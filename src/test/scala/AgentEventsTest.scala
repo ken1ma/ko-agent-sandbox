@@ -4,8 +4,8 @@ import java.nio.file.Files
 
 import AgentEvents.*
 
-// The events follow claude 2.1.323's, codex 0.169.0's and copilot 1.0.111's, with the fields that the checks do not
-// read left out.
+// The events follow claude 2.1.323's, codex 0.169.0's, agy 1.5.8's and copilot 1.0.111's, with the fields that the
+// checks do not read left out.
 class AgentEventsTest extends munit.FunSuite:
 
   private def message(kind: String, parent: String, block: String) =
@@ -80,6 +80,63 @@ class AgentEventsTest extends munit.FunSuite:
       Files.writeString(day.resolve("rollout-2026-11-14T08-47-18-child.jsonl"), rollout("th-1", Some("a.txt, b.txt")))
       assert(codexChildAnswered(sessions, "th-1", words))
     finally FileHelper.deleteRecursively(sessions)
+
+  private def agyStep(index: Int, stepType: String, fields: String) =
+    s"""{"event":"step_update","step_update":{"conversation_id":"cv-1","step_index":$index,"state":"DONE",""" +
+      s""""step_type":"$stepType"$fields}}"""
+
+  private def agyCommand(index: Int, exitCode: Int) =
+    agyStep(index, "tool",
+      s""","tool_name":"run_command","tool_info":{"name":"run_command",""" +
+        s""""output":"Created At: 2026-11-14T13:45:22+09:00\\nCommand exited with code $exitCode.\\n"}""")
+
+  private def agyResult(status: String = "SUCCESS") =
+    s"""{"event":"result","result":{"conversation_id":"cv-1","status":"$status","num_turns":1}}"""
+
+  /** A subagent's transcript, whose shell call exits as given. */
+  private def agyTranscript(exitCode: Int) = Vector(
+    """{"step_index":0,"source":"SYSTEM","type":"SYSTEM_MESSAGE","status":"DONE"}""",
+    """{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE",""" +
+      """"tool_calls":[{"name":"run_command","args":{"CommandLine":"\"ls notes\""}}]}""",
+    s"""{"step_index":2,"source":"MODEL","type":"GENERIC","status":"DONE",""" +
+      s""""content":"Command exited with code $exitCode.\\n\\nCommand output:\\na.txt"}""",
+  ).mkString("\n")
+
+  /** A run whose shell call exits as given, and whose subagent writes the transcript at `log`, if any. */
+  private def agyRun(exitCode: Int = 0, log: Option[java.nio.file.Path], end: String = agyResult()) =
+    parseLines(
+      (Vector(agyStep(0, "user_input", ""), agyCommand(2, exitCode)) ++
+        log.map(path =>
+          agyStep(4, "subagent",
+            s""","tool_name":"invoke_subagent","subagent_info":{"subagents":[{"type_name":"self",""" +
+              s""""conversation_id":"cv-2","log_uri":"${path.toUri}"}]}""")) :+
+        end).mkString("\n"),
+    )
+
+  test("an agy run whose shell call, subagent and the subagent's shell call succeeded lacks nothing"):
+    val dir = Files.createTempDirectory("agy-brain")
+    try
+      val log = dir.resolve("transcript.jsonl")
+      Files.writeString(log, agyTranscript(0))
+      assert(agySucceeded(agyRun(log = Some(log))))
+      assertEquals(agyLacks(agyRun(log = Some(log))), Vector.empty)
+      assertEquals(agyConversation(agyRun(log = Some(log))), Some("cv-1"))
+    finally FileHelper.deleteRecursively(dir)
+
+  test("an agy command that exited non-zero counts as missing, and the result's status decides the run"):
+    val dir = Files.createTempDirectory("agy-brain")
+    try
+      val log = dir.resolve("transcript.jsonl")
+      Files.writeString(log, agyTranscript(0))
+      assertEquals(agyLacks(agyRun(exitCode = 1, log = Some(log))), Vector("a shell call"))
+      assert(!agyRanShell(agyRun(exitCode = 1, log = None)))
+      assertEquals(agyLacks(agyRun(log = None)), Vector("a subagent", "the subagent's shell call"))
+      Files.writeString(log, agyTranscript(1))
+      assertEquals(agyLacks(agyRun(log = Some(log))), Vector("the subagent's shell call"))
+      // A transcript the subagent never wrote holds no shell call.
+      assertEquals(agyLacks(agyRun(log = Some(dir.resolve("absent.jsonl")))), Vector("the subagent's shell call"))
+      assert(!agySucceeded(agyRun(log = None, end = "")))
+    finally FileHelper.deleteRecursively(dir)
 
   private def copilotEvent(kind: String, data: String) = s"""{"type":"$kind","data":{$data}}"""
 

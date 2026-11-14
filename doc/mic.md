@@ -209,7 +209,8 @@ Read from the image's binaries on 2026-10-09.
   - On Linux, agy records with `parec --raw` when `PULSE_SERVER` is set.
   - agy can instead read a microphone that `agy mic-serve` serves on another machine, at
     `127.0.0.1:4713`, through agy's own protocol over an SSH forward.
-  - agy transcribes at `aicode.googleapis.com`, which `model-provider/google` tunnels.
+  - agy transcribes at `aicode.googleapis.com` over gRPC (HTTP/2). The defaults have no line for
+    that host, so a workspace adds a `tunnel` line (README, "`agy`").
 - kiro-cli 2.28.0, Copilot 1.0.94 and OpenCode 1.18.35 dictate nothing.
 
 ## The launch
