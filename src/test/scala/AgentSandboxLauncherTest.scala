@@ -1385,7 +1385,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       managedImageTags("1.2-3").filterNot(_ == "ko-agent-self-test:latest"),
     )
 
-  test("an image cleanup names each kind of removal once, above all of its commands"):
+  test("an image cleanup names each kind of removal once, and the retry of images that containers use once"):
     assume(!System.getProperty("os.name").toLowerCase.contains("win"), "the stub podman is a /bin/sh script")
     val dir = Files.createTempDirectory("superseded-cleanup").toRealPath()
     val podman = dir.resolve("podman")
@@ -1395,6 +1395,8 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         |case "$*" in
         |  "image ls"*) printf 'localhost/ko-agent-sandbox:latest\tsandbox-current\n' ;;
         |  *proxy-old) echo 'image is busy' >&2; exit 1 ;;
+        |  *fs-old|*bpf-old)
+        |    echo "Error: image used by 7$(printf '%063d' 0): image is in use by a container" >&2; exit 1 ;;
         |esac
         |""".stripMargin,
     )
@@ -1407,7 +1409,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         System.setErr(java.io.PrintStream(captured, true))
         removeSupersededImages(
           stub,
-          Vector("fs-old", "proxy-old", "sandbox-current"),
+          Vector("fs-old", "proxy-old", "bpf-old", "sandbox-current"),
           Vector("ko-agent-sandbox:latest"),
           Vector(
             TaggedImage("debian-coursier:1.1-2", "coursier-old"),
@@ -1417,7 +1419,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       finally
         System.setErr(saved)
         FileHelper.deleteRecursively(dir)
-    assertEquals(remaining, Vector("proxy-old"))
+    assertEquals(remaining, Vector("fs-old", "proxy-old", "bpf-old"))
     def echoed(words: String*) = HostCommands.renderCommand(stub +: words, None)
     assertEquals(
       captured.toString.linesIterator.toVector,
@@ -1427,9 +1429,13 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         echoed("image", "untag", "temurin-old", "localhost/debian-temurin:1.1-2"),
         "removing launcher images from older builds",
         echoed("image", "rm", "--ignore", "fs-old"),
+        s"note: keeping superseded image fs-old while container 7${"0" * 11} still uses it",
         echoed("image", "rm", "--ignore", "proxy-old"),
         "note: keeping superseded image proxy-old; podman did not remove it",
         "image is busy",
+        echoed("image", "rm", "--ignore", "bpf-old"),
+        s"note: keeping superseded image bpf-old while container 7${"0" * 11} still uses it",
+        SupersededImageRetryNote,
       ),
     )
 
@@ -1521,15 +1527,14 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       SelfTestImageTags.reverse.map(tag => s"localhost/$tag"),
     )
 
-  test("an image retained by a container is reported as a later cleanup retry"):
+  test("an image retained by a container is named with the container, without podman's error"):
     val imageId = "sha256:" + "1" * 64
     val containerId = "2" * 64
     val error = s"Error: image used by $containerId: image is in use by a container"
     val note = supersededImageRetentionNote(imageId, error)
     assert(note.contains(s"image ${"1" * 12} while container ${"2" * 12} still uses it"), note)
     assert(!note.contains(containerId) && !note.contains("sha256"), note)
-    assert(note.contains("\n  a later --build, --update, or --self-test will retry"), note)
-    assert(!note.contains("Error:"), note)
+    assert(!note.contains("\n") && !note.contains("Error:"), note)
 
     val unexpected = supersededImageRetentionNote(imageId, "Error: storage is unavailable")
     assert(unexpected.contains("podman did not remove it"), unexpected)

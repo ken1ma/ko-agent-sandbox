@@ -2,29 +2,74 @@
 # us-east-1 and eu-central-1.
 # - runtime serves inference.
 # - management serves the profile and subscription state.
-# - The legacy q.<region> host is required beside runtime and management.
 # The CLI tab of https://kiro.dev/docs/privacy-and-security/firewalls/ lists these hosts with their purposes.
-allow https://runtime.us-east-1.kiro.dev/       tunnel
-allow https://management.us-east-1.kiro.dev/    tunnel
-allow https://q.us-east-1.amazonaws.com/        tunnel
-allow https://runtime.eu-central-1.kiro.dev/    tunnel
-allow https://management.eu-central-1.kiro.dev/ tunnel
-allow https://q.eu-central-1.amazonaws.com/     tunnel
+# Only us-east-1 was measured; eu-central-1 is inspected on the same client's evidence.
+allow https://runtime.us-east-1.kiro.dev/       read method=POST,PUT,PATCH,DELETE
+allow https://management.us-east-1.kiro.dev/    read method=POST,PUT,PATCH,DELETE
+allow https://runtime.eu-central-1.kiro.dev/    read method=POST,PUT,PATCH,DELETE
+allow https://management.eu-central-1.kiro.dev/ read method=POST,PUT,PATCH,DELETE
+
+# The same page lists the legacy q.<region>.amazonaws.com as required. Only the V2 engine, kiro-cli's own `acp` child,
+# sends its model calls there; V3 sent it nothing. Kiro's startup prompt says that V2 "will be removed in January",
+# and V2 is the default only for a headless run without --trust-all-tools. So the host has no line, and the proxy's
+# refusal names it. A V2 run needs --v3 in its place, or the workspace's own
+# `allow https://q.us-east-1.amazonaws.com/ read method=POST,PUT,PATCH,DELETE` line, under which V2's turns completed.
 
 # Sign-in, `kiro-cli login --use-device-flow`: the CLI prints the code, and the browser approves the code. The CLI
 # then polls for the tokens and refreshes them at a host that depends on the account kind.
-# - Google and GitHub accounts use Kiro's own host, plus the Cognito federation that the same page lists for them.
-# - Builder ID and IAM Identity Center use AWS SSO OIDC in the instance's region. Builder ID's region is us-east-1.
-# - An Identity Center in another region needs a workspace's own `allow https://oidc.<region>.amazonaws.com/ tunnel`
-#   line. Without the line, the sign-in fails with `error: dispatch failure`, and the proxy log names the refused
-#   host.
-allow https://prod.us-east-1.auth.desktop.kiro.dev/     tunnel
-allow https://cognito-identity.us-east-1.amazonaws.com/ tunnel
-allow https://oidc.us-east-1.amazonaws.com/             tunnel
+# - Google and GitHub accounts use Kiro's own host. The page also lists Cognito federation for them, which the Google
+#   sign-in did not call, so cognito-identity.us-east-1.amazonaws.com has no line.
+# - Builder ID and IAM Identity Center use AWS SSO OIDC in the instance's region. Builder ID's region is us-east-1. It
+#   is inspected on the evidence of the same client's AWS SDK at management.
+# - An Identity Center in another region needs a workspace's own
+#   `allow https://oidc.<region>.amazonaws.com/ read method=POST,PUT,PATCH,DELETE` line. Without the line, the sign-in
+#   fails with `error: dispatch failure`, and the proxy log names the refused host.
+allow https://prod.us-east-1.auth.desktop.kiro.dev/ read method=POST,PUT,PATCH,DELETE
+allow https://oidc.us-east-1.amazonaws.com/         read method=POST,PUT,PATCH,DELETE
 
-# These hosts of the same list are absent:
-# - telemetry.<region>.kiro.dev and prod.us-east-1.telemetry.desktop.kiro.dev receive telemetry. Each attempt leaves
-#   a refusal in the log, or none with `kiro-cli settings telemetry.enabled false`.
+# These hosts of the same list are absent, and Kiro works without them:
+# - telemetry.<region>.kiro.dev, client-telemetry.<region>.amazonaws.com and prod.us-east-1.telemetry.desktop.kiro.dev
+#   receive telemetry. Each attempt leaves a refusal in the log, or none with `kiro-cli settings telemetry.enabled
+#   false`.
+# - app.kiro.dev serves the device sign-in page, which the browser on the host opens. V3 also reads its user settings
+#   and a cloud configuration there at each start.
 # - prod.download.cli.kiro.dev and desktop-release.q.us-east-1.amazonaws.com serve updates and installer downloads,
-#   which the image turns off (app.disableAutoupdates).
+#   which the image turns off (app.disableAutoupdates). V2 also downloads its semantic-search model from
+#   desktop-release.
 # - cli.kiro.dev serves the install script.
+
+# Measured with kiro-cli 3.3.0 on 2026-11-14, signed in with a Google account in us-east-1, under deny-unless-allowed
+# (doc/plan-tls-inspect-agents.md, "Measurement"):
+# - Modes: kiro-cli chat --v3 --no-interactive with a shell call and a subagent that makes its own shell call;
+#   --resume-id with a shell call; the V3 TUI in this repository, with two turns, /compact and a message; kiro-cli
+#   logout, kiro-cli login --use-device-flow and a turn; a token refresh at the token's expiry; the TUI with a turn
+#   under deny-unless-model.
+# - The path, refused and error lines are what MeasurementReport accepts (doc/plan-tls-inspect-agents.md, "The
+#   measurement suite").
+#   path runtime.us-east-1.kiro.dev / /v1/responses
+#   path management.us-east-1.kiro.dev /
+#   path prod.us-east-1.auth.desktop.kiro.dev /oauth/device/authorization /oauth/device/poll /logout /refreshToken
+#   refused telemetry.us-east-1.kiro.dev CONNECT
+#   refused client-telemetry.us-east-1.amazonaws.com CONNECT
+#   refused app.kiro.dev CONNECT
+#   refused prod.download.cli.kiro.dev CONNECT
+#   refused cognito-identity.us-east-1.amazonaws.com CONNECT
+# - Each mode ran in a Node child of kiro-cli, which sent the model calls as KiroCLI/3.3.0 and the rest as
+#   aws-sdk-js. kiro-cli itself sent the sign-in requests as Kiro-CLI, and read the profile at management as
+#   aws-sdk-rust. Every client negotiated HTTP/1.1 and trusted the launch CA.
+# - Within each sign-in, every request to runtime and management carried the same credential index. The sign-in
+#   host's codes and tokens travel in bodies, so its lines carry no cred=.
+# - Every body declared a Content-Length; /v1/responses bodies held 54 to 63 KB. No query held a credential.
+# - A request to / names its operation in a header, as AWS's JSON protocol does, so its line does not.
+# - management's query names the Kiro profile's ARN, which holds an AWS account number.
+# - The sign-in polled /oauth/device/poll every five seconds until the browser approved the code. The logout sent
+#   /logout.
+# - The refusals: telemetry every few seconds while Kiro runs; app.kiro.dev twice at each start; the update host at the
+#   TUI's start.
+# - Signed out, kiro-cli whoami sent cognito-identity two requests without a credential. With the host refused,
+#   kiro-cli tried it three to six times at each start, and the turns completed.
+# - At the token's expiry, kiro-cli refreshed the token at /refreshToken, and the turn completed. A refresh forced by
+#   moving the stored expiry 50 minutes early was answered 401 there instead, and kiro-cli deleted the token.
+# - A token from a sign-in three minutes after that 401 was rejected from its first use: "The bearer token included in
+#   the request is invalid", in Kiro's log, under both profiles. The next sign-in's token worked and refreshed.
+# - Unmeasured: eu-central-1; the Builder ID and Identity Center sign-ins at oidc; the GitHub sign-in.

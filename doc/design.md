@@ -530,7 +530,7 @@ serious first:
   - The measurement finds these clients one agent at a time. Each provider's defaults file records
     the result beside its lines.
 - It would take away a workspace's way to keep a host out of the proxy's plaintext view: a
-  `tunnel` line of its own, or a defaults tunnel restored under `deny defaults`.
+  `tunnel` line of its own, under `deny defaults` for a host the defaults inspect.
   - For a measured model host, the defaults accept that view without a per-launch consent
     (`plan-tls-inspect-agents.md`, "Outcome").
   - SECURITY.md has the exposure ("Not defended", "What is inside TLS").

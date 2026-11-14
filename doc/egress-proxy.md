@@ -35,11 +35,13 @@ The proxy's default rules are listed in the proxy image's `defaults/host` and
 - for every supported model provider (`anthropic`, `openai`, `google`, `aws` and `github`), the
   model, authentication and control-plane endpoints:
   - `api.anthropic.com`, `platform.claude.com`, `chatgpt.com`, `api.openai.com`,
-    `auth.openai.com`, agy's two `cloudcode-pa.googleapis.com` hosts, `oauth2.googleapis.com` and
+    `auth.openai.com`, agy's two `cloudcode-pa.googleapis.com` hosts, `oauth2.googleapis.com`,
+    Kiro's `runtime` and `management` hosts in both regions and its two sign-in hosts, and
     Copilot's four `githubcopilot.com` hosts inspected, with every method, and a WebSocket at Claude
     Code's `/voice` path.
     Each file records, beside the lines, the measurement that cleared its hosts;
-  - tunnels to the other model and login hosts;
+  - no tunnel: a host that inspection breaks, such as agy's `/voice` host, is a workspace's own
+    `tunnel` line, which the file names;
   - GitHub's two inspected login `POST`s, its token read and three account reads, and Google's two
     inspected reads of the signed-in account;
 - inspected documentation, package-registry and forge hosts, with `read` on every line and
@@ -366,9 +368,9 @@ session, and `ko-sandbox-egress-check <host>` prints
 The proxy terminates TLS for every inspected host and checks each request against its grants.
 Only hosts with the `tunnel` treatment stay opaque:
 
-- under `deny-unless-allowed`, the selected providers' tunnel hosts, unless the workspace's file
-  removes them or adds more;
-- under `deny-unless-model`, the selected providers' remaining tunnel hosts;
+- under `deny-unless-allowed`, the hosts of the workspace file's `tunnel` lines, since no
+  provider's file holds a tunnel;
+- under `deny-unless-model`, none, since that profile reads only the providers' files;
 - under `deny-all`, none.
 
 The per-workspace CA is stored on the host, under
@@ -531,8 +533,8 @@ No format limits that placeholder's length (`EgressCredentials.placeholderFor`):
   - `ANTHROPIC_API_KEY@api.anthropic.com:x-api-key`, the header Claude Code sends the key in;
   - `OPENAI_API_KEY@api.openai.com`. Codex also fetches its model list from `chatgpt.com` with
     that key, which the binding does not reach.
-- Not an API key at a model host that is still a tunnel, where nothing is substituted, and not an
-  agent's own login. The same design.md section says why.
+- Not an API key at a model host that a workspace made a tunnel, where nothing is substituted, and
+  not an agent's own login. The same design.md section says why.
 
 ## Through an upstream proxy
 

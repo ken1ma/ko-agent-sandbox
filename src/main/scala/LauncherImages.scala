@@ -431,18 +431,19 @@ object LauncherImages:
   private val ImageUsingContainer =
     "(?i)image used by ([0-9a-f]{12,64}): image is in use by a container".r
 
-  /**
-   * The continuation line is indented under the note, because every launcher line starts with a label
-   * and an unindented bare line reads as a subprocess's line. The second form's continuation is
-   * podman's error text, so it stays as podman wrote it.
-   */
+  private def containerUsingImage(error: String): Option[String] =
+    ImageUsingContainer.findFirstMatchIn(error).map(_.group(1))
+
+  /** The second form's next line is podman's error text, as podman wrote it. */
   def supersededImageRetentionNote(imageId: String, error: String): String =
-    ImageUsingContainer.findFirstMatchIn(error) match
-      case Some(matched) =>
-        s"note: keeping superseded image ${shortId(imageId)} while container ${shortId(matched.group(1))}"
-          + " still uses it;\n  a later --build, --update, or --self-test will retry once that container is gone"
+    containerUsingImage(error) match
+      case Some(container) =>
+        s"note: keeping superseded image ${shortId(imageId)} while container ${shortId(container)} still uses it"
       case None =>
         s"note: keeping superseded image ${shortId(imageId)}; podman did not remove it\n${error.trim}"
+
+  val SupersededImageRetryNote =
+    "note: a later --build, --update, or --self-test retries each kept image once its container is gone"
 
   def removeSupersededImages(
     podman: String,
@@ -467,10 +468,13 @@ object LauncherImages:
     val remaining = Vector.newBuilder[String]
     val removals = supersededImageRemoveCommands(podman, candidates, current)
     if removals.nonEmpty then System.err.println("removing launcher images from older builds")
+    var keptForContainer = false
     removals.foreach: command =>
       echoCommand(command)
       val removed = run(command*)
       if !removed.ok then
         remaining += command.last
+        keptForContainer ||= containerUsingImage(removed.err).nonEmpty
         System.err.println(supersededImageRetentionNote(command.last, removed.err))
+    if keptForContainer then System.err.println(SupersededImageRetryNote)
     remaining.result()

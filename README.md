@@ -33,8 +33,8 @@ The containers run rootless, and the programs run as the `nonroot` user.
     │       │                      │                                            │
     │  ┏━ sandbox container ━━━━━━━┷━━━┓     ┌─ egress proxy container ──────┐  │
     │  ┃  runs claude/codex/agy/...    ┃     │  https only, stateless,       │  │
-    │  ┃  capabilities dropped,        ┃     │  TLS-inspects except the      │  │
-    │  ┃  read-only rootfs,            ┠────>│  tunnelled model hosts        ├──┼─> Internet
+    │  ┃  capabilities dropped,        ┃     │  TLS-inspects by default      │  │
+    │  ┃  read-only rootfs,            ┠────>│                               ├──┼─> Internet
     │  ┃  ephemeral $HOME and /tmp     ┃     │                               │  │
     │  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛     └─────┬─────────────────────────┘  │
     │              only internal network,          │                            │
@@ -211,6 +211,10 @@ credentials in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#
 
 1. `kiro-cli login --use-device-flow` prints a URL and a one-time code to enter there, and exits
    once signed in; run `kiro-cli` again to chat.
+1. Kiro's V2 engine, which `kiro-cli --v2` and a headless run without `--trust-all-tools` start,
+   sends its model calls to `q.us-east-1.amazonaws.com`, which the defaults refuse. Pass `--v3`, or
+   add `allow https://q.us-east-1.amazonaws.com/ read method=POST,PUT,PATCH,DELETE` to
+   `.ko-agent-sandbox/egress/rule`.
 
 #### `copilot`
 
@@ -289,9 +293,8 @@ credentials another cloud's login produced, and what forwarding costs.
 
 Every session accesses the network through the launcher's HTTPS proxy. The `--egress=` profile
 and the workspace's `.ko-agent-sandbox/egress/rule` determine which destinations and operations are
-allowed. The defaults include the supported model providers, with the measured model hosts of
-Claude Code, Codex, agy and Copilot TLS-inspected and the others tunnelled, and TLS-inspected access
-to selected documentation sites, package registries, and Git hosting services.
+allowed. The defaults include the supported model providers' model and login hosts, and selected
+documentation sites, package registries, and Git hosting services, all TLS-inspected.
 
 On the host, write one rule per line in `.ko-agent-sandbox/egress/rule`, then relaunch:
 

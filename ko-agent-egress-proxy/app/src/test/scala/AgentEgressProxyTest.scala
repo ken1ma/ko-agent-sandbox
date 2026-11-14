@@ -226,7 +226,6 @@ class AgentEgressProxyTest extends munit.FunSuite:
       "deny https://*/" -> "invalid hostname",
       "allow https://x.example/ tunnel\nallow https://x.example/api/ read" -> "inspects x.example while it is a tunnel",
       "allow https://x.example/api/ read\nallow https://x.example/ tunnel" -> "makes x.example a tunnel while it holds",
-      "allow https://q.us-east-1.amazonaws.com/safe/ read" -> "inspects q.us-east-1.amazonaws.com while it is a tunnel",
       "allow https://github.com/ tunnel" -> "makes github.com an opaque tunnel, which the defaults inspect",
       "deny https://github.com/\nallow https://github.com/ tunnel" -> "makes github.com an opaque tunnel",
     ).foreach: (rule, problem) =>
@@ -267,7 +266,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // A grant no line gave, a subtree over nothing, a provider after `deny defaults`, and `tunnel`
     // on an inspected host: each names its line.
     Vector(
-      "deny https://q.us-east-1.amazonaws.com/ read" -> "matches nothing",
+      "allow https://api.example/ tunnel\ndeny https://api.example/ read" -> "matches nothing",
       "deny https://**.example.com/" -> "matches nothing",
       "deny https://github.com/ tunnel" -> "matches nothing",
       "deny defaults\ndeny model-provider google" -> "matches nothing",
@@ -297,7 +296,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       "allow https://github.com/ read git-fetch",
       "allow https://github.com/login/device/code method=POST",
       "allow https://api.github.com/copilot_internal/v2/token read",
-      "allow https://q.us-east-1.amazonaws.com/ tunnel",
+      "allow https://runtime.us-east-1.kiro.dev/ read method=POST,PUT,PATCH,DELETE",
       "allow https://platform.claude.com/ read method=POST,PUT,PATCH,DELETE",
       "allow https://auth.openai.com/ read method=POST,PUT,PATCH,DELETE",
       "allow https://api.anthropic.com/ read method=POST,PUT,PATCH,DELETE",
@@ -567,6 +566,18 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // /voice's aicode and the unmeasured modes' hosts are a workspace's own lines (defaults/model-provider/google).
     assertEquals(resolved.tunnelHosts, Set.empty)
 
+  test("deny-unless-model for kiro-cli inspects V3's model hosts in both regions and the sign-in hosts"):
+    val resolved = rulesetOf(profile = "deny-unless-model", provider = "aws")
+    assertEquals(
+      resolved.inspectedScopes,
+      Vector(
+        "runtime.us-east-1.kiro.dev", "management.us-east-1.kiro.dev", "runtime.eu-central-1.kiro.dev",
+        "management.eu-central-1.kiro.dev", "prod.us-east-1.auth.desktop.kiro.dev", "oidc.us-east-1.amazonaws.com",
+      ).map(_ -> ReadWriteScopes).toMap,
+    )
+    // V2's q.<region>.amazonaws.com is a workspace's own line (defaults/model-provider/aws).
+    assertEquals(resolved.tunnelHosts, Set.empty)
+
   test("the lines apply in the order written: for each grant the last applicable line decides"):
     val narrowed =
       rulesetOf(rule = "deny https://codeberg.org/ git-fetch\nallow https://codeberg.org/my-org/ git-fetch")
@@ -631,7 +642,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       Set("read", "git-fetch"),
     )
     // The tunnel word takes the treatment.
-    assert(!every("deny https://q.us-east-1.amazonaws.com/ tunnel").hosts.contains("q.us-east-1.amazonaws.com"))
+    assert(!every("allow https://api.example/ tunnel\ndeny https://api.example/ tunnel").hosts.contains("api.example"))
     // Provider denials also remove catalog grants on the same hosts.
     val noGithub = every("deny model-provider github")
     Vector("github.com", "api.github.com", "api.githubcopilot.com").foreach: host =>
@@ -674,9 +685,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
     intercept[Refusal](authorize("github.com", 443, lockdown))
     // Under every profile a provider's lines meet the one-treatment check like any line.
     val ex = intercept[IllegalArgumentException](
-      rulesetOf(rule = "deny defaults\nallow model-provider aws\nallow https://q.us-east-1.amazonaws.com/ read"),
+      rulesetOf(rule = "deny defaults\nallow model-provider aws\nallow https://runtime.us-east-1.kiro.dev/ tunnel"),
     )
-    assert(ex.getMessage.contains("inspects q.us-east-1.amazonaws.com while it is a tunnel"), ex.getMessage)
+    assert(ex.getMessage.contains("makes runtime.us-east-1.kiro.dev a tunnel while it holds"), ex.getMessage)
 
   test("every provider deny overrides earlier grants on its hosts and permits later exceptions"):
     ModelProviders.foreach: provider =>
@@ -720,14 +731,18 @@ class AgentEgressProxyTest extends munit.FunSuite:
           assert(!deniedAgain.allows(host), s"repeated $deny after $allow")
 
   test("a host has one treatment: narrowing a tunnel to inspected is local, widening needs deny defaults"):
-    val narrowed =
-      rulesetOf(rule = "deny https://q.us-east-1.amazonaws.com/ tunnel\nallow https://q.us-east-1.amazonaws.com/ read")
-    assertEquals(narrowed.inspectedScopes("q.us-east-1.amazonaws.com"), Map("/" -> Set("read")))
-    assertEquals(narrowed.warnings, Vector.empty)
-    val beneath = rulesetOf(
-      rule = "deny https://q.us-east-1.amazonaws.com/ tunnel\nallow https://q.us-east-1.amazonaws.com/api/ read",
+    // The defaults hold no tunnel, so the file states its own, which the narrowing leaves granting nothing.
+    val tunnel = "allow https://api.example/ tunnel\n"
+    val narrowed = rulesetOf(rule = tunnel + "deny https://api.example/ tunnel\nallow https://api.example/ read")
+    assertEquals(narrowed.inspectedScopes("api.example"), Map("/" -> Set("read")))
+    assertEquals(
+      narrowed.warnings,
+      Vector(
+        "rule: allow https://api.example/ tunnel grants nothing: every grant it names is taken back by a later line",
+      ),
     )
-    assertEquals(beneath.inspectedScopes("q.us-east-1.amazonaws.com"), Map("/api/" -> Set("read")))
+    val beneath = rulesetOf(rule = tunnel + "deny https://api.example/ tunnel\nallow https://api.example/api/ read")
+    assertEquals(beneath.inspectedScopes("api.example"), Map("/api/" -> Set("read")))
     // Widened, with the whole ruleset stated after deny defaults; and a new host as a tunnel.
     assertEquals(
       rulesetOf(rule = "deny defaults\nallow https://github.com/ tunnel").hosts,
@@ -735,14 +750,9 @@ class AgentEgressProxyTest extends munit.FunSuite:
     )
     assertEquals(rulesetOf(rule = "allow https://api.example/ tunnel").hosts("api.example"), Treatment.Tunnel)
     // The tunnel taken alone denies the host.
-    val taken = rulesetOf(rule = "deny https://q.us-east-1.amazonaws.com/ tunnel")
-    assert(!taken.hosts.contains("q.us-east-1.amazonaws.com"))
-    intercept[Refusal](authorize("q.us-east-1.amazonaws.com", 443, taken))
-    // deny defaults with an inspected line on a defaults tunnel is valid: the defaults are cleared
-    // before the line meets them.
-    val cleared = rulesetOf(rule = "deny defaults\nallow https://q.us-east-1.amazonaws.com/ read")
-    assertEquals(cleared.inspectedScopes("q.us-east-1.amazonaws.com"), Map("/" -> Set("read")))
-    assertEquals(cleared.warnings, Vector.empty)
+    val taken = rulesetOf(rule = tunnel + "deny https://api.example/ tunnel")
+    assert(!taken.hosts.contains("api.example"))
+    intercept[Refusal](authorize("api.example", 443, taken))
     // A host the defaults inspect returns to a tunnel only under deny defaults (egress-proxy.md, "The rule file").
     assert(
       refusalOf("allow https://api.anthropic.com/ tunnel")
@@ -866,10 +876,10 @@ class AgentEgressProxyTest extends munit.FunSuite:
           "allow https://github.com/login/ method=POST    # the defaults grant it on two paths below\n" +
           "allow https://www.googleapis.com/oauth2/v2/userinfo read  # the defaults' own line, restated\n" +
           "allow https://www.googleapis.com/oauth2/ read  # the defaults grant it on one path below\n" +
-          "allow https://runtime.us-east-1.kiro.dev/ tunnel  # the defaults' own tunnel, restated\n" +
+          "allow https://runtime.us-east-1.kiro.dev/ read  # a grant the defaults hold\n" +
           "deny https://gitlab.com/\ndeny model-provider google\nallow model-provider anthropic\n" +
-          "deny https://management.us-east-1.kiro.dev/ tunnel\n" +
-          "allow https://management.us-east-1.kiro.dev/ read  # a tunnel narrowed to inspected reads\n" +
+          "deny https://management.us-east-1.kiro.dev/\n" +
+          "allow https://management.us-east-1.kiro.dev/ read  # narrowed to reads\n" +
           "deny https://github.com/ git-fetch\nallow https://github.com/my-org/ git-fetch\n",
     )
     val widening = Vector(
@@ -974,7 +984,10 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assert(lines.contains("allow https://github.com/ read git-fetch"), lines.toString)
     assert(lines.contains("allow https://github.com/login/device/code read git-fetch method=POST"), lines.toString)
     assert(lines.contains("allow https://api.github.com/copilot_internal/v2/token read"), lines.toString)
-    assert(lines.contains("allow https://q.us-east-1.amazonaws.com/ tunnel"), lines.toString)
+    assert(
+      lines.contains("allow https://runtime.us-east-1.kiro.dev/ read method=POST,PUT,PATCH,DELETE"),
+      lines.toString,
+    )
     assert(lines.contains("allow https://platform.claude.com/ read method=POST,PUT,PATCH,DELETE"), lines.toString)
     assert(lines.contains("allow https://auth.openai.com/ read method=POST,PUT,PATCH,DELETE"), lines.toString)
     assert(lines.contains("allow https://chatgpt.com/ read method=POST,PUT,PATCH,DELETE"), lines.toString)
@@ -1007,7 +1020,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       rulesetOf(
         provider = Every,
         rule = "deny https://codeberg.org/ git-fetch\nallow https://codeberg.org/my-org/ git-fetch\n" +
-          "deny https://gitlab.com/",
+          "deny https://gitlab.com/\nallow https://api.example/ tunnel",
       ),
     )
     assertEquals(lines(0), "provenance:")
@@ -1039,17 +1052,19 @@ class AgentEgressProxyTest extends munit.FunSuite:
         "defaults/model-provider/github: allow https://api.github.com/copilot_internal/v2/token read",
     )
     assert(
-      lines.contains("  tunnel: defaults/model-provider/aws: allow https://q.us-east-1.amazonaws.com/ tunnel"),
+      lines.contains("  tunnel: rule: allow https://api.example/ tunnel"),
       lines.toString,
     )
     assert(lines.contains("denied hosts:"), lines.toString)
     assert(lines.contains("  gitlab.com: denied by rule: deny https://gitlab.com/"), lines.toString)
     // A provider the file expanded names both lines.
+    val expanded = provenanceLines(rulesetOf(rule = "deny defaults\nallow model-provider aws"))
     assert(
-      provenanceLines(rulesetOf(rule = "deny defaults\nallow model-provider aws")).contains(
-        "  tunnel: rule: allow model-provider aws " +
-          "(defaults/model-provider/aws: allow https://q.us-east-1.amazonaws.com/ tunnel)",
-      ),
+      expanded.exists(_.endsWith(
+        ": rule: allow model-provider aws " +
+          "(defaults/model-provider/aws: allow https://runtime.us-east-1.kiro.dev/ read method=POST,PUT,PATCH,DELETE)",
+      )),
+      expanded.mkString("\n"),
     )
     // A refusal names every line that matched the host: the provider behind an expanded pattern,
     // a subtree and the exact line beneath it, the two forms behind one host.
@@ -1058,7 +1073,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
         "deny https://x.example/\ndeny https://x.example/ read",
     )
     assertEquals(
-      intercept[Refusal](authorize("q.us-east-1.amazonaws.com", 443, patterns)).getMessage,
+      intercept[Refusal](authorize("runtime.us-east-1.kiro.dev", 443, patterns)).getMessage,
       "host denied (rule: deny model-provider aws)",
     )
     assertEquals(

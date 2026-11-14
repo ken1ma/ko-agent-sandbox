@@ -140,6 +140,47 @@ object AgentEvents:
   def agyConversation(run: Vector[Json]): Option[String] =
     run.flatMap(_.at("result")).flatMap(_.text("conversation_id")).headOption
 
+  /** The engine that `kiro-cli chat --output-format stream-json` ran, from its runStarted event. */
+  def kiroEngine(run: Vector[Json]): Option[String] =
+    run.find(_.is("type", "runStarted")).flatMap(_.text("data", "engine"))
+
+  def kiroSucceeded(run: Vector[Json]): Boolean =
+    run.exists(event => event.is("type", "runFinished") && event.text("data", "status").contains("success"))
+
+  def kiroSession(run: Vector[Json]): Option[String] =
+    run.find(_.is("type", "runFinished")).flatMap(_.text("data", "sessionId"))
+
+  private def kiroUpdates(run: Vector[Json], kind: String): Vector[Json] =
+    run.filter(_.is("type", "sessionUpdate")).flatMap(_.at("data", "update")).filter(_.is("sessionUpdate", kind))
+
+  // A failed command completes too.
+  private def kiroExitedZero(update: Json): Boolean = update.at("rawOutput", "exitCode").contains(Zero)
+
+  private def kiroSubtask(update: Json): Option[String] = update.text("_meta", "kiro", "agentSubtaskId")
+
+  /** The agent subtask of each shell call that exited 0, None for the session's own calls. Only a call's first event
+    * names its kind, and only its completed update has the exit code. */
+  private def kiroShellCalls(run: Vector[Json]): Vector[Option[String]] =
+    val shells = kiroUpdates(run, "tool_call").filter(_.is("kind", "execute"))
+      .flatMap(call => call.text("toolCallId").map(_ -> kiroSubtask(call))).toMap
+    kiroUpdates(run, "tool_call_update").filter(update => update.is("status", "completed") && kiroExitedZero(update))
+      .flatMap(_.text("toolCallId")).flatMap(shells.get)
+
+  def kiroRanShell(run: Vector[Json]): Boolean = kiroShellCalls(run).nonEmpty
+
+  /** What the run lacks of a shell call, a subagent that completed, and that subagent's own shell call. A
+    * subagent's calls carry the agentSubtaskId of the call that started it. */
+  def kiroLacks(run: Vector[Json]): Vector[String] =
+    val shells = kiroShellCalls(run)
+    val agents = kiroUpdates(run, "tool_call_update").filter(update =>
+      update.is("status", "completed") && update.text("_meta", "kiro", "kind").contains("agent-subtask"),
+    ).flatMap(kiroSubtask).toSet
+    Vector(
+      Option.unless(shells.contains(None))("a shell call"),
+      Option.when(agents.isEmpty)("a subagent"),
+      Option.unless(shells.exists(_.exists(agents)))("the subagent's shell call"),
+    ).flatten
+
   /** Whether `copilot -p --output-format json` ended in success: its result event's exit code. A subagent's failed
     * model call leaves a session.error in a run that still succeeds. */
   def copilotSucceeded(run: Vector[Json]): Boolean =

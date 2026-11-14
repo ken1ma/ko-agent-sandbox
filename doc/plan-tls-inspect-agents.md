@@ -185,8 +185,8 @@ The agents are measured in the README's order.
     Business sign-in, which waits for such an account, and where a `GEMINI_API_KEY` session sends
     the key, which waits for a key. A key in the query, `?key=`, keeps
     `generativelanguage.googleapis.com` out of inspection ("Guarantees", 3).
-- `kiro-cli` 3.1.0, `runtime.us-east-1.kiro.dev`, `q.us-east-1.amazonaws.com` and
-  `management.us-east-1.kiro.dev`, each also in `eu-central-1`.
+- `kiro-cli` 3.1.0, `runtime.us-east-1.kiro.dev` and `management.us-east-1.kiro.dev`, each also
+  in `eu-central-1`.
   - Documented: `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` from v1.8.0
     (https://kiro.dev/docs/cli/quick-start, "Proxy configuration"). Neither that page nor the
     firewall page has a CA setting.
@@ -199,10 +199,21 @@ The agents are measured in the README's order.
       certificate variables (kirodotdev/Kiro #9608, closed as completed).
     - 2.10.0 under WSL failed behind a TLS-inspecting proxy in its v3 harness, while v2 worked
       (#9860, closed as completed).
-  - Measure: interactive and headless mode each; whether the client trusts the launch CA; whether
-    each model host's lines have `cred=`. A host whose lines lack the field may receive
-    SigV4-signed requests, which the index does not count ("Audit line additions"). A completed
-    turn shows that such a request passes the relay unchanged.
+  - Measured on 2026-11-14 with 3.3.0 under a Google sign-in, and inspected by default with the
+    sign-in hosts: `defaults/model-provider/aws` holds the record.
+    - Every mode ran the V3 engine, in a Node child that kept the proxy and CA variables. Every
+      client trusted the launch CA, and every request went over HTTP/1.1.
+    - Every request to `runtime` and `management` carried `cred=`: a bearer token, not a SigV4
+      signature.
+    - V3's model calls are `POST /v1/responses` on `runtime`. Its other calls are `POST /`, which
+      names its operation in a header, so their lines do not tell the operations apart.
+    - Under `deny-unless-model`, which admits the provider file alone, a TUI turn completed.
+    - The device-flow sign-in, a logout and a refresh at the token's expiry passed on the inspected
+      sign-in host. A refresh forced before the expiry is answered `401`, and kiro-cli signs out.
+  - The V2 engine, kiro-cli's own `acp` child, sends its model calls to
+    `q.us-east-1.amazonaws.com`, and its turns completed under inspection. Kiro removes V2 in
+    January, so `q` has no line, and a workspace that runs V2 adds it (README, `kiro-cli`).
+  - Still to measure: `eu-central-1`, and the Builder ID, Identity Center and GitHub sign-ins.
 - `copilot` 1.0.111, `api.githubcopilot.com` and the three plan hosts.
   - Documented: `proxyUrl` in the CLI's configuration reference, overridden by `HTTP_PROXY` or
     `HTTPS_PROXY`
@@ -251,10 +262,13 @@ covers the agent's sign-in and a token refresh.
 - The log then shows every request to them by path, so a request that no sign-in makes stands out.
 - The proxy then holds the sign-in's codes and tokens in plaintext, refresh tokens included, which
   outlive the access tokens it sees on the model hosts.
-- `auth.openai.com`, `platform.claude.com` and `oauth2.googleapis.com` are inspected. `claude.ai`
-  and `accounts.google.com` are absent, since Claude Code and agy send them no request
-  (`defaults/model-provider/anthropic` and `google`). The AWS sign-in hosts wait for Kiro's
-  measurement.
+- `auth.openai.com`, `platform.claude.com`, `oauth2.googleapis.com` and Kiro's
+  `prod.us-east-1.auth.desktop.kiro.dev` are inspected. `claude.ai` and `accounts.google.com` are
+  absent, since Claude Code and agy send them no request (`defaults/model-provider/anthropic` and
+  `google`). `cognito-identity.us-east-1.amazonaws.com` is absent too: Kiro's Google sign-in sent
+  it nothing, and Kiro's turns complete with the host refused (`defaults/model-provider/aws`).
+- `oidc.us-east-1.amazonaws.com`, for Kiro's Builder ID and Identity Center sign-ins, is inspected
+  unmeasured, on the evidence of kiro-cli's AWS SDK at `management.us-east-1.kiro.dev`.
 
 ## The `upgrade=websocket` grant
 
@@ -385,7 +399,7 @@ For a release:
 
    ```sh
    scala $KO_AGENT_SANDBOX_JAVA_OPTS run --workspace ~/.cache/measure-agents \
-       src/test/measurement/MeasureAgents.scala -- [claude] [codex] [agy] [copilot]
+       src/test/measurement/MeasureAgents.scala -- [claude] [codex] [agy] [kiro-cli] [copilot]
    ```
 
    - Claude Code: `claude -p` with a Bash call and a subagent that makes its own Bash call.
@@ -393,6 +407,8 @@ For a release:
      subagent answers.
    - agy: `agy -p` with a shell call and a subagent that makes its own, and `agy --conversation -p`
      with a shell call. The subagent's calls are read from its transcript, which the stream names.
+   - Kiro: `kiro-cli chat --v3 --no-interactive` with a shell call and a subagent that makes its
+     own, and `--resume-id` with a shell call.
    - Copilot: `copilot -p` with a shell call and a subagent that makes its own, a resumed turn
      with a shell call, and a read through the built-in GitHub MCP server.
    - For each: a `curl` upload under a foreign key to the model host, whole, and chunked and cut

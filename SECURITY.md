@@ -76,8 +76,8 @@ The sections below describe the limits and costs of each.
 
 **Writing to remote hosts**, subject to the resolved egress rules.
 
-- The defaults allow every method on the model hosts, inspected or through a tunnel per host, and
-  inspected requests for reading, Git fetch (`clone` and `pull`), and GitHub device login.
+- The defaults allow every method on the inspected model hosts, and inspected requests for
+  reading, Git fetch (`clone` and `pull`), and GitHub device login.
 - An inspected request is refused unless its operation is granted at its path.
 - The defaults refuse `git push`. A workspace can grant `git push` through `method=POST` or an
   opaque tunnel.
@@ -769,18 +769,18 @@ lifecycle, benchmark and launcher suites binds its figures to the digest of its 
 
 - A `tunnel` host is deliberately not inspected. So the proxy sees only the handshake, and cannot
   tell a `GET` from a `POST`.
-- In the defaults, the `tunnel` hosts are the model and login hosts that no measurement of their
-  agent's client has cleared. Inspection fails some requests that a tunnel carries
+- The defaults hold no `tunnel` host. A host stays opaque only through a workspace's own `tunnel`
+  line, such as agy's `/voice` host, where inspection fails the client's HTTP/2
   (`doc/plan-tls-inspect-agents.md`, "Measurement").
 - An inspected model host, such as `api.anthropic.com`, `chatgpt.com`, `api.openai.com`, agy's two
-  `cloudcode-pa.googleapis.com` hosts and Copilot's four hosts in the defaults, grants every method
-  at its root.
+  `cloudcode-pa.googleapis.com` hosts, Kiro's `runtime` and `management` hosts and Copilot's four
+  hosts in the defaults, grants every method at its root.
   The proxy holds each request's conversation and provider token in memory, in plaintext, whether
   or not the launch selects a credential.
-- An inspected login host, such as `auth.openai.com`, `platform.claude.com` and
-  `oauth2.googleapis.com`, puts the sign-in's codes and tokens in the proxy's memory in plaintext,
-  refresh tokens included. `oauth2.googleapis.com` serves every Google client's token exchange, not
-  agy's alone.
+- An inspected login host, such as `auth.openai.com`, `platform.claude.com`,
+  `oauth2.googleapis.com` and Kiro's `prod.us-east-1.auth.desktop.kiro.dev`, puts the sign-in's
+  codes and tokens in the proxy's memory in plaintext, refresh tokens included.
+  `oauth2.googleapis.com` serves every Google client's token exchange, not agy's alone.
 - Inspection lets the retained log record each request's method and target. An opaque tunnel logs
   the `CONNECT` alone.
 - Every other defaults host is inspected, including the bulk package registries, at a known

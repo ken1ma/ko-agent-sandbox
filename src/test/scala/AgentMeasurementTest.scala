@@ -27,7 +27,7 @@ class AgentMeasurementTest extends munit.FunSuite:
     val logs = Files.createTempDirectory("agent-measurement")
     val session = launchWith(
       workspace, logs.resolve("session.log"),
-      Vector("--egress=deny-unless-allowed", "--model-provider=anthropic,openai,google,github"),
+      Vector("--egress=deny-unless-allowed", "--model-provider=anthropic,openai,google,aws,github"),
     )
     try
       assume(signedIn(session), s"$agent is not signed in in this workspace's volume; sign in in a session first")
@@ -81,6 +81,13 @@ class AgentMeasurementTest extends munit.FunSuite:
       // agy has no status command. Without a D-Bus session, its sign-in writes the token to this file.
       session => execSh(session, "jq -e '.token.refresh_token' ~/.gemini/antigravity-cli/antigravity-oauth-token").ok,
       "daily-cloudcode-pa.googleapis.com",
+    )
+
+  test("Kiro's unattended modes leave only lines that its record accepts"):
+    measured(
+      "kiro-cli",
+      session => exec(session, "kiro-cli", "whoami").ok,
+      "runtime.us-east-1.kiro.dev",
     )
 
   test("Copilot's unattended modes leave only lines that its record accepts"):

@@ -4,8 +4,8 @@ import java.nio.file.Files
 
 import AgentEvents.*
 
-// The events follow claude 2.1.323's, codex 0.169.0's, agy 1.5.8's and copilot 1.0.111's, with the fields that the
-// checks do not read left out.
+// The events follow claude 2.1.323's, codex 0.169.0's, agy 1.5.8's, kiro-cli 3.3.0's and copilot 1.0.111's, with the
+// fields that the checks do not read left out.
 class AgentEventsTest extends munit.FunSuite:
 
   private def message(kind: String, parent: String, block: String) =
@@ -137,6 +137,47 @@ class AgentEventsTest extends munit.FunSuite:
       assertEquals(agyLacks(agyRun(log = Some(dir.resolve("absent.jsonl")))), Vector("the subagent's shell call"))
       assert(!agySucceeded(agyRun(log = None, end = "")))
     finally FileHelper.deleteRecursively(dir)
+
+  private def kiroUpdate(update: String) = s"""{"type":"sessionUpdate","data":{"update":{$update}}}"""
+
+  private def kiroMeta(subtask: Option[String], kind: String = "") =
+    subtask.fold("")(id => s""","_meta":{"kiro":{$kind"agentSubtaskId":"$id"}}""")
+
+  private def kiroShell(id: String, output: String, subtask: Option[String] = None) = Vector(
+    kiroUpdate(s""""sessionUpdate":"tool_call","toolCallId":"$id","kind":"execute"${kiroMeta(subtask)}"""),
+    kiroUpdate(s""""sessionUpdate":"tool_call_update","toolCallId":"$id","status":"completed","rawOutput":$output""" +
+      kiroMeta(subtask)),
+  )
+
+  private def exitOutput(code: Int) = s"""{"exitCode":$code}"""
+
+  private def kiroRun(engine: String, calls: Vector[String], status: String = "success") =
+    parseLines(
+      (s"""{"type":"runStarted","data":{"engine":"$engine"}}""" +: calls :+
+        s"""{"type":"runFinished","data":{"sessionId":"sess_1","status":"$status"}}""").mkString("\n"),
+    )
+
+  /** A run whose shell call, subagent and the subagent's shell call end as given. The subagent's call carries the
+    * agentSubtaskId of the call that started it. */
+  private def kiroSubagentRun(shell: Int = 0, childShell: Int = 0, agent: String = "completed") =
+    val subtask = kiroMeta(Some("st-1"), """"kind":"agent-subtask",""")
+    kiroRun("v3", kiroShell("k1", exitOutput(shell)) ++ Vector(
+      kiroUpdate(s""""sessionUpdate":"tool_call","toolCallId":"k2"$subtask"""),
+    ) ++ kiroShell("k3", exitOutput(childShell), Some("st-1")) :+
+      kiroUpdate(s""""sessionUpdate":"tool_call_update","toolCallId":"k2","status":"$agent"$subtask"""))
+
+  test("a kiro run whose shell call, subagent and the subagent's shell call succeeded lacks nothing"):
+    val run = kiroSubagentRun()
+    assert(kiroSucceeded(run))
+    assertEquals(kiroEngine(run), Some("v3"))
+    assertEquals(kiroSession(run), Some("sess_1"))
+    assertEquals(kiroLacks(run), Vector.empty)
+
+  test("a kiro command that exited non-zero counts as missing, and runFinished decides the run"):
+    assertEquals(kiroLacks(kiroSubagentRun(shell = 1)), Vector("a shell call"))
+    assertEquals(kiroLacks(kiroSubagentRun(childShell = 1)), Vector("the subagent's shell call"))
+    assertEquals(kiroLacks(kiroSubagentRun(agent = "failed")), Vector("a subagent", "the subagent's shell call"))
+    assert(!kiroSucceeded(kiroRun("v3", Vector.empty, status = "error")))
 
   private def copilotEvent(kind: String, data: String) = s"""{"type":"$kind","data":{$data}}"""
 

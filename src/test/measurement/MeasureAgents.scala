@@ -10,7 +10,7 @@
   Run it in the session, from the repository root. Every agent runs when none is named:
 
       scala $KO_AGENT_SANDBOX_JAVA_OPTS run --workspace ~/.cache/measure-agents \
-          src/test/measurement/MeasureAgents.scala -- [claude] [codex] [agy] [copilot]
+          src/test/measurement/MeasureAgents.scala -- [claude] [codex] [agy] [kiro-cli] [copilot]
 
   - The image's native scala launcher reads no proxy settings, so the options go on its command line.
   - --workspace keeps Scala CLI's build state out of the workspace, where a host's run of another script would trip
@@ -34,7 +34,7 @@ import scala.util.Using
 
 object MeasureAgents:
 
-  val Agents = Vector("claude", "codex", "agy", "copilot")
+  val Agents = Vector("claude", "codex", "agy", "kiro-cli", "copilot")
   val TurnTimeoutSeconds = 900L
   // The turns read these files, so that their tool calls have something to find.
   val NoteNames = Vector("a.txt", "b.txt")
@@ -189,6 +189,35 @@ object MeasureAgents:
       "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent",
       "-H", "Authorization: Bearer ya29.measurement-not-a-token", "-H", "Content-Type: application/json")
 
+  // Each mode names V3: a headless run that names no engine takes V2 without --trust-all-tools
+  // (https://kiro.dev/docs/cli/headless/), and defaults/model-provider/aws has no line for V2's model host.
+  private def measureKiro(work: Path): Unit =
+    val chat = Vector("kiro-cli", "chat", "--no-interactive", "--trust-all-tools", "--output-format", "stream-json")
+    def ran(run: Vector[agentsandbox.launcher.JsonText.Json]) = kiroSucceeded(run) && kiroEngine(run).contains("v3")
+    start("kiro-cli chat --v3 with a shell call and a subagent")
+    val first = turn(work, "kiro", (chat ++ Vector("--v3",
+      "Use the shell to run 'wc -l words.txt'. Then start one subagent, and have it list the notes directory with " +
+        "its own shell tool. Answer in one line with the line count and the file names. Do not modify anything."))*)
+    if !ran(first) then
+      val seen = s"${tail(work.resolve("kiro.err"))} ${tail(work.resolve("kiro.jsonl"))}"
+      finish(Some(s"no successful V3 run; see $seen"))
+    else
+      val lacks = kiroLacks(first)
+      finish(Option.when(lacks.nonEmpty)(s"the run lacked ${lacks.mkString(", ")}"))
+    val session = kiroSession(first)
+    start("kiro-cli chat --v3 --resume-id")
+    val resumed = session.toVector.flatMap(id =>
+      turn(work, "kiro-resume", (chat ++ Vector("--v3", "--resume-id", id,
+        "Now run 'cat words.txt' in the shell and answer with its last line. Do not modify anything."))*),
+    )
+    finish(Option.unless(ran(resumed) && kiroRanShell(resumed))(
+      s"no successful resumed turn with a shell call${session.fold("")(id => s" of session $id")}; see " +
+        tail(work.resolve("kiro-resume.err")),
+    ))
+    // The model path, which V3 sends every model call to.
+    upload(work, "runtime.us-east-1.kiro.dev", "https://runtime.us-east-1.kiro.dev/v1/responses",
+      "-H", "Authorization: Bearer aoa-measurement-not-a-token", "-H", "Content-Type: application/json")
+
   private def measureCopilot(work: Path): Unit =
     val prompt = Vector("copilot", "--allow-all-tools", "--output-format", "json", "-p")
     start("copilot -p with a shell call and a subagent")
@@ -240,6 +269,11 @@ object MeasureAgents:
         |  a message; a token refresh, forced by moving .token.expiry in
         |  ~/.gemini/antigravity-cli/antigravity-oauth-token into the past; a launch under --egress=deny-unless-model,
         |  with agy as its command""".stripMargin,
+    "kiro-cli" ->
+      """- kiro-cli: the V3 TUI with two turns and /compact; kiro-cli logout, kiro-cli login --use-device-flow and a
+        |  message; a turn after the token's expiry, an hour after the sign-in (a refresh forced by an earlier
+        |  expires_at in ~/.local/share/kiro-cli/data.sqlite3 is answered 401 and signs kiro-cli out); a launch
+        |  under --egress=deny-unless-model, with kiro-cli as its command""".stripMargin,
     "copilot" ->
       """- copilot: an interactive session with two turns and /compact; /login and a message (/logout fails in the
         |  sandbox); a launch under --egress=deny-unless-model, with copilot as its command""".stripMargin,
@@ -250,7 +284,8 @@ object MeasureAgents:
 
   def run(arguments: Seq[String]): Int =
     if !arguments.forall(Agents.contains) then
-      System.err.println("usage: src/test/measurement/MeasureAgents.scala -- [claude] [codex] [agy] [copilot]")
+      val names = Agents.map(agent => s"[$agent]").mkString(" ")
+      System.err.println(s"usage: src/test/measurement/MeasureAgents.scala -- $names")
       return 2
     val agents = if arguments.isEmpty then Agents else arguments.toVector.distinct
     (agents :+ "curl").find(program => !onPath(program)) match
@@ -268,10 +303,11 @@ object MeasureAgents:
       agents.foreach: agent =>
         println(s"measure: $agent ${output(agent, "--version").linesIterator.nextOption().getOrElse("")}")
         agent match
-          case "claude" => measureClaude(work)
-          case "codex"  => measureCodex(work)
-          case "agy"    => measureAgy(work)
-          case _        => measureCopilot(work)
+          case "claude"   => measureClaude(work)
+          case "codex"    => measureCodex(work)
+          case "agy"      => measureAgy(work)
+          case "kiro-cli" => measureKiro(work)
+          case _          => measureCopilot(work)
     // A failed mode's event files are the evidence for its message.
     finally if failed then println(s"measure: the turns' files stay in $work") else deleteTree(work)
     println()

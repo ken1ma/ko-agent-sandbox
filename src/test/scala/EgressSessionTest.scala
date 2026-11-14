@@ -305,8 +305,8 @@ class EgressSessionTest extends munit.FunSuite:
       refusedAtConnect(session, "https://pypi.org/", "a defaults host survived `deny defaults`")
       refusedAtConnect(session, "https://github.com/", "a defaults host survived `deny defaults`")
 
-  test("the defaults inspect the measured model hosts of Claude Code, Codex, agy and Copilot; only deny defaults " +
-    "returns a tunnel"):
+  test("the defaults inspect the measured model hosts of Claude Code, Codex, agy, Kiro and Copilot; only deny " +
+    "defaults returns a tunnel"):
     requireTestWithPodman()
 
     // A refused CONNECT or a failed handshake prints no issuer, and "(no issuer line)" differs from any CA.
@@ -324,7 +324,7 @@ class EgressSessionTest extends munit.FunSuite:
       var live: Option[Session] = None
       try
         ruleFile(workspace, rule)
-        val options = Vector("--egress=deny-unless-allowed", "--model-provider=anthropic,openai,google,github")
+        val options = Vector("--egress=deny-unless-allowed", "--model-provider=anthropic,openai,google,aws,github")
         val session = launchWith(workspace, workspace.resolve("session.log"), options)
         live = Some(session)
         body(session)
@@ -336,6 +336,10 @@ class EgressSessionTest extends munit.FunSuite:
     launched(None): session =>
       val hosts = Vector("api.anthropic.com", "platform.claude.com", "chatgpt.com", "api.openai.com", "auth.openai.com")
         ++ Vector("cloudcode-pa", "daily-cloudcode-pa", "oauth2").map(name => s"$name.googleapis.com")
+        ++ Vector("runtime", "management").flatMap(name =>
+          Vector("us-east-1", "eu-central-1").map(region => s"$name.$region.kiro.dev"),
+        )
+        ++ Vector("prod.us-east-1.auth.desktop.kiro.dev", "oidc.us-east-1.amazonaws.com")
         ++ Vector("api", "api.individual", "api.business", "api.enterprise").map(name => s"$name.githubcopilot.com")
       hosts.foreach: host =>
         assertEquals(reachedIssuer(session, host), caSubject(session), s"$host is not inspected")
