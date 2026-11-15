@@ -1,0 +1,6 @@
+{
+  "formatVersion": "0.2.0",
+  "writtenAt": "2026-11-15T04:02:52.031Z",
+  "exitStatus": 1,
+  "error": {"code": "REVIEWER_FAILED", "message": "codex failed: boom", "reviewer": "codex"}
+}

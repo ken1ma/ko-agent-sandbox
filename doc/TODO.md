@@ -236,9 +236,10 @@ Ten probes in `src/probe/` are shell scripts. Nine run on the macOS host, and
 
 ## Open questions under the `--nesting=none` seccomp profile
 
-- [ ] Find what made `KoReviewTest`'s review cycle against the fake codex and claude exceed its
-  300 s timeout in a `--nesting=none` session on Windows, in a `/mnt/c` workspace (2026-10-26):
-  the profile or the share's speed.
+- [ ] Rerun ko-review's suites in a `--nesting=none` session on Windows, in a `/mnt/c` workspace.
+  The review-cycle test of the helper's Python version exceeded its 300 s timeout there
+  (2026-10-26); should the suites slow there too, find whether the profile or the share's speed
+  causes it.
 
 ## BPF suite reruns
 
@@ -1070,29 +1071,6 @@ The build:
 - [ ] Decide the native image together with the published identity: whether the binary is a
   release artifact at all, or `java -jar` and a Coursier command are the two forms.
 
-## Review plugin (`ko-review.md`)
-
-- [ ] Have a Codex author ask the skill's three questions, reviewer, model and effort, as
-  selectable menus, as a Claude author does with AskUserQuestion. A Codex author asks them instead
-  in its reply, with numbered options that the user types back (`ko-review.md`). Codex's
-  `request_user_input` can be that menu once both of these hold:
-  - Codex's default mode offers the tool as a stable feature;
-  - the tool allows more than three options per question.
-
-  Until both hold, the skill keeps the prose question.
-  - `default_mode_request_user_input` is under development (`ko-review.md` has the measurement).
-    Once the feature is stable but still off, the image's Codex defaults enable it.
-  - The tool's schema asks for "2-3 mutually exclusive choices" (openai/codex `main`, 2026-10-18).
-    That limit leaves out choices such as `high` after the default, `low` and `medium`, and
-    free-form entry does not replace a selectable option. The option limit of
-    `request_user_input_async` is unverified.
-  - Codex's default-mode prompt reserves the tool for optional questions and has required ones
-    asked in plain text. So the menu words each question as optional, with the recommended choice
-    first.
-- [ ] Check a linked worktree whose main Git directory is mounted read-only. The test suite covers
-  the helper's path (`ko-review.md`, "Tests"), and `SECURITY.md` covers the session's git reads.
-  One session launched from such a worktree and driven to approval closes this item.
-
 ## Deferred — `--add-dir`, a further host directory in the workspace
 
 - [ ] `--add-dir=<path>` exposes another host directory to the sandbox beside the workspace root,
@@ -1170,3 +1148,19 @@ launcher jar. `--build` builds every image locally from the jar's bundle.
     the user's machine.
 - [ ] Check whether `--proxy-image` already runs a pulled image. Launches pass `--pull=never`, so
   the user pulls the image first.
+
+## Deferred — the egress proxy's jar from the launcher's build
+
+The proxy's image build runs `sbt dist` and then `native-image`
+(`ko-agent-egress-proxy/Containerfile`). The launcher's own `sbt dist` could build the proxy's jar
+instead, as it builds ko-review's (`ko-review/doc/design.md`, "Where the parts are"):
+
+- The launcher jar carries the proxy's jar and a list of its dependencies' resolved versions. The
+  build stage fetches those with `cs fetch` and runs `native-image` on them. No image build runs sbt
+  or resolves dependencies.
+- The launcher jar grows by the proxy's jar alone.
+- `ko-agent-egress-proxy-build:cache` stays: the build stage still runs `native-image`, which the
+  distroless final stage cannot, and the cache tag keeps that stage's layers
+  (`ImageBuilds.buildCommands`).
+- Once CI builds the proxy's native binary per architecture and publishes it, the image build
+  fetches the binary instead, and the build stage goes.

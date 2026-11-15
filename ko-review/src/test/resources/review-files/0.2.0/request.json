@@ -1,0 +1,19 @@
+{
+  "formatVersion": "0.2.0",
+  "writtenAt": "2026-11-15T04:00:25.120Z",
+  "reviewer": "codex",
+  "model": "gpt-6-astra",
+  "effort": "high",
+  "reviewerVersion": "codex-cli 0.162.1",
+  "pluginVersion": "0.2.0",
+  "instructions": "Be strict.\n",
+  "message": "## Task\n\nreview me\n",
+  "scope": ["app.py", "work.py"],
+  "from": {"store": "ko-review:turn", "turn": "001"},
+  "coordinator": {
+    "tool": "claude",
+    "sessionId": "53618e63-eb84-44e9-b08c-6759d050dbb5",
+    "version": "2.1.325 (Claude Code)",
+    "effort": "high"
+  }
+}

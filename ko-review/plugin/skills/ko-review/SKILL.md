@@ -11,7 +11,9 @@ argument-hint: >-
 
 # Independent review cycle
 
-The `ko-review` command runs a review by the reviewer the user chooses, `codex` or `claude`.
+The `ko-review` command runs a review by the reviewer the user chooses, `codex` or `claude`. You
+coordinate the review, and you also act as its author: you answer the reviewer, fixing what you
+accept and disputing the rest.
 
 The skill's argument is the text after `/ko-review` in Claude Code. Codex passes a skill no
 argument, so there the argument is the text after `$ko-review` in the user's message. When you
@@ -22,7 +24,7 @@ line that you invoked the skill, quoting their request.
 
 ## Steps
 
-To ask the user, make one AskUserQuestion call in Claude Code. In Codex, end your turn with the
+To ask the user, make one AskUserQuestion call in Claude Code. In Codex, end your reply with the
 questions and their numbered options.
 
 1. A review id as the argument continues that review, with its reviewer, model, effort and scope:
@@ -66,7 +68,7 @@ questions and their numbered options.
      efforts, `defaultEffort` first.
    - Where you cannot ask, take `codex` and `recommended`, and say so.
 3. Re-read every changed hunk with the unchanged lines around it against `AGENTS.md`, as the
-   reviewer will, and fix what you find, so that the reviewer does not spend a round on what you
+   reviewer will, and fix what you find, so that the reviewer does not spend a turn on what you
    could catch yourself. Then write a Markdown brief outside the repository, so that the review does
    not include it: in your scratchpad, else in a `mktemp -d` directory.
    - Sections: `## Task`, `## Changes`, `## Verification` and `## Notes` (ambiguities and known
@@ -80,11 +82,11 @@ questions and their numbered options.
      value is null.
    - Add `--instructions-file FILE` when step 1 wrote the instructions file.
    - Add `--base REF` for the argument's base.
-5. Tell the user how the round went: the outcome, each open finding and suggestion by id in one
+5. Tell the user how the turn went: the outcome, each open finding and suggestion by id in one
    sentence, and what you do next.
    - Name each adopted suggestion that changes an interface, such as a command, an option, a
      schema or a file format, or how the work splits into components.
-   - `ko-review transcript REVIEW_ID --round N` prints the round in full for a user who asks.
+   - `ko-review transcript REVIEW_ID --turn N` prints the turn in full for a user who asks.
 6. Fix the findings you accept, and run the relevant tests and checks. Dispute the other findings
    with evidence: a file and line, a test result, a specification. Never accept a finding to end
    the review.
@@ -99,7 +101,7 @@ questions and their numbered options.
    `## Verification`. Then run `ko-review continue REVIEW_ID --message-file FILE`.
    - Write instructions for the reviewer that the user sent meanwhile to a file, and add
      `--instructions-file FILE`. They replace the instructions given earlier.
-8. Repeat from step 5 until `disposition` is `APPROVED` and you adopt none of the round's
+8. Repeat from step 5 until `disposition` is `APPROVED` and you adopt none of the turn's
    suggestions.
    - On `USER_DECISION_REQUIRED`, read `userDecision`. When evidence can settle it, `continue`
      with that evidence.
@@ -112,8 +114,8 @@ questions and their numbered options.
 
 However it ends, report:
 
-- a table from `ko-review transcript REVIEW_ID` with a row per round: the outcome or the error that
-  ended the round, each finding and suggestion by id in one sentence, and what your next message
+- a table from `ko-review transcript REVIEW_ID` with a row per turn: the outcome or the error that
+  ended the turn, each finding and suggestion by id in one sentence, and what your next message
   did with each;
 - for each finding you disputed, the evidence you gave against it;
 - each suggestion you left to the user, with the reviewer's reason, your view and why the user
@@ -136,4 +138,6 @@ However it ends, report:
 - `WORKTREE_CHANGED_DURING_REVIEW`: the change may come from the host. Check the tree, and
   `continue` again.
 - `LOOP_LIMIT_REACHED`: the review is over. Report what stayed open.
+- `REVIEW_FORMAT_NEWER`: a newer plugin wrote part of the review. Quote the message, and start a new
+  review unless the user updates the plugin.
 - `REVIEW_CLOSED`: start a new review.

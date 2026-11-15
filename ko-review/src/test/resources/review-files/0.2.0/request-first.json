@@ -1,0 +1,9 @@
+{
+  "formatVersion": "0.2.0",
+  "writtenAt": "2026-11-15T04:00:25.120Z",
+  "reviewer": "claude",
+  "message": "## Task\n\nreview me\n",
+  "scope": ["work.py"],
+  "from": {"store": "git", "commit": "82ebc99c5acf69efe3e4747b5b2a4e0574082556"},
+  "coordinator": {"tool": "codex", "sessionId": "01a1ddfc-ce82-7660-aea8-70a45ec2059b", "version": "0.169.0"}
+}

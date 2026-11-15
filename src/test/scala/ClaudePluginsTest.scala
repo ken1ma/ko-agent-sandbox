@@ -243,15 +243,16 @@ class ClaudePluginsTest extends munit.FunSuite:
         "their hooks and mods run as managed",
     )
 
-  test("the image plugin names are the Containerfile's plugin directories, and their manifests' names"):
-    val directories = FileHelper.directoryEntries(Path.of("container/ko-agent-sandbox/claude-code/plugins"))
-      .filter(Files.isDirectory(_))
-    assertEquals(directories.map(_.getFileName.toString).sorted, ImagePluginNames.sorted)
+  test("the image plugin names are the plugins the launcher bundles, and their manifests' names"):
+    // The build bundles ko-review's assembly as claude-code/plugins/ko-review (build.sbt), from a source tree
+    // whose manifest sits in claude-plugin/ until the assembly renames it.
+    val bundled = Vector("ko-review" -> Path.of("ko-review/plugin/claude-plugin/plugin.json"))
+    assertEquals(bundled.map(_._1).sorted, ImagePluginNames.sorted)
     // One list covers both names that Claude Code compares: the name part of the id and the manifest's
     // name.
-    directories.foreach: directory =>
-      val manifest = JsonText.parse(Files.readString(directory.resolve(ManifestFile))).toOption.get
-      assertEquals(manifest.field("name"), Some(JsonText.Json.Str(directory.getFileName.toString)))
+    bundled.foreach: (name, manifestPath) =>
+      val manifest = JsonText.parse(Files.readString(manifestPath)).toOption.get
+      assertEquals(manifest.field("name"), Some(JsonText.Json.Str(name)))
 
   test("the probe plugin under src/test is a --claude-plugin-dir operand from any other workspace"):
     val workspace = Files.createTempDirectory("workspace").toRealPath()

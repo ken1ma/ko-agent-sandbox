@@ -1,0 +1,8 @@
+#!/bin/sh
+# Runs the helper from the assembled plugin's lib/, which holds its jar and its dependencies' jars (README.md), and
+# names the plugin's directory, where the helper reads prompts/ and schemas/.
+plugin=$(dirname "$(dirname "$(realpath "$0")")")
+# The calls into the C library need native access, and Scala's lazy values call sun.misc.Unsafe, which prints a
+# warning at every start otherwise.
+exec java --enable-native-access=ALL-UNNAMED --sun-misc-unsafe-memory-access=allow \
+    -Dko-review.plugin-root="$plugin" -cp "$plugin/lib/*" koreview.Main "$@"

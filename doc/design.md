@@ -895,8 +895,8 @@ enforcement.
 ### No Stop hook that gates on a ko-review approval
 
 A managed Stop hook could refuse to let Claude end its turn while the working tree differs from
-HEAD without a fresh approval or a recorded escalation from a `ko-review` skill (`ko-review.md`).
-Rejected:
+HEAD without a fresh approval or a recorded escalation from a `ko-review` skill
+(`ko-review/doc/design.md`). Rejected:
 
 - The only check a local hook can make cannot tell Claude's changes from the user's own uncommitted
   edits, from a one-line change the user asked for, or from a turn that answered a question. The

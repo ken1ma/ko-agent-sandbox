@@ -1,0 +1,7 @@
+{
+  "formatVersion": "0.2.0",
+  "writtenAt": "2026-11-15T04:00:24.990Z",
+  "base": {"store": "git", "ref": "main", "commit": "82ebc99c5acf69efe3e4747b5b2a4e0574082556"},
+  "maxAnsweredTurns": 12,
+  "timeoutSeconds": 3600
+}

@@ -97,6 +97,8 @@ Errors, refusals and prompts say what to do next when naming what failed does no
 Until the first release, persisted text describes the current design: readers have no before-state.
 Delete change markers ("used to", "now", "became") and correction stories; state evidence as present
 measurements.
+Persisted text cites only evidence its readers can reach, such as a commit, a file in the repository
+or a URL, never a review id, session id or path that exists only on your machine.
 Delete completed TODO rows once the document or code their facts belong in records them.
 
 Replies lead with the result and include only details affecting the reader's next action; narrate

@@ -22,6 +22,14 @@ scalacOptions ++= Seq(
 // - sbt 2 scopes a bare setting to the whole build, so the settings that are the launcher's sit in `root`.
 lazy val egressProxy = project.in(file("ko-agent-egress-proxy/app"))
 
+// ko-review, the review plugin, is a subproject of its own with no dependency on the launcher, as a repository of its
+// own would build it (ko-review/doc/design.md, "Where the parts are"). The launcher bundles its assembled plugin into
+// the runtime image's build context below. As with the egress proxy, the root does not aggregate it, and the root's
+// `test` and `testFull` run its suites first.
+lazy val koReview = project.in(file("ko-review"))
+// ko-review/build.sbt defines the task; a key is found by its name, so this declaration names the same task.
+lazy val pluginAssembly = taskKey[File]("Assemble the plugin without its dependencies' jars")
+
 lazy val dist = taskKey[Unit]("Assemble one self-contained jar under target/dist")
 
 lazy val root = project.in(file(".")).dependsOn(egressProxy).settings(
@@ -29,9 +37,11 @@ lazy val root = project.in(file(".")).dependsOn(egressProxy).settings(
   libraryDependencies ++= Seq(
     "org.scalameta" %% "munit" % "1.3.6" % Test,
   ),
-  Test / test := (Test / test).dependsOn((egressProxy / Test / test).toTask("")).evaluated,
+  Test / test := (Test / test).dependsOn((egressProxy / Test / test).toTask(""), (koReview / Test / test).toTask(""))
+    .evaluated,
   // Uncached, as dist is: a TestResult has no JSON format.
-  Test / testFull := Def.uncached((Test / testFull).dependsOn(egressProxy / Test / testFull).value),
+  Test / testFull := Def.uncached((Test / testFull).dependsOn(egressProxy / Test / testFull, koReview / Test / testFull)
+    .value),
 
   // The container-launching suites share one podman, and each suite asserts on resources scoped to a workspace it
   // created. Run in parallel, the suites interleave: one suite's launch observes another suite's container, and one
@@ -186,11 +196,24 @@ lazy val root = project.in(file(".")).dependsOn(egressProxy).settings(
         IO.copyFile(source, target)
         relative -> target
 
-    val index = outputRoot / "INDEX"
-    IO.write(index, bundled.map(_._1).sorted.mkString("\n") + "\n")
+    // The runtime image installs the assembled ko-review plugin from claude-code/plugins/ko-review, and fetches the
+    // jars that its lib/dependencies.txt lists (container/ko-agent-sandbox/Containerfile).
+    val plugin = (koReview / pluginAssembly).value
+    val pluginFiles =
+      for
+        source <- plugin.allPaths.get()
+        if source.isFile
+      yield
+        val relative = "ko-agent-sandbox/claude-code/plugins/ko-review/" + bundlePath(plugin, source).get
+        val target = outputRoot / relative
+        IO.copyFile(source, target)
+        relative -> target
 
-    log.info(s"bundled ${bundled.size} build-context files into the jar")
-    index +: bundled.map(_._2)
+    val index = outputRoot / "INDEX"
+    IO.write(index, (bundled ++ pluginFiles).map(_._1).sorted.mkString("\n") + "\n")
+
+    log.info(s"bundled ${bundled.size + pluginFiles.size} build-context files into the jar")
+    index +: (bundled ++ pluginFiles).map(_._2)
   }.taskValue,
 
   assembly / assemblyJarName := "ko-agent-sandbox.jar",

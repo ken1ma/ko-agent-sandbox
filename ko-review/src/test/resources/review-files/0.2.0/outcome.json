@@ -1,0 +1,17 @@
+{
+  "formatVersion": "0.2.0",
+  "writtenAt": "2026-11-15T04:02:52.031Z",
+  "exitStatus": 0,
+  "result": {
+    "disposition": "USER_DECISION_REQUIRED",
+    "summary": "needs a call",
+    "findings": [{"id": "F1", "severity": "high", "location": "app.py:1", "description": "d", "evidence": "e"}],
+    "suggestions": [{"id": "S1", "kind": "design", "location": "app.py:3", "description": "s", "reason": "r"}],
+    "userDecision": {
+      "issue": "i",
+      "reviewerPosition": "p",
+      "whyTechnicalEvidenceCannotDecide": "w",
+      "decisionRequested": "d"
+    }
+  }
+}

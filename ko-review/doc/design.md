@@ -3,13 +3,25 @@
 `/ko-review` asks a separate Codex or Claude Code session, the reviewer, to review the working
 tree. The user chooses the reviewer.
 
-- The author, the session that made the changes, fixes or disputes each finding on the same
-  reviewer thread.
+- The coordinator, the session that runs ko-review, sends the author's answer to each finding on
+  the same reviewer thread.
 - The cycle ends when the reviewer approves every change in the scope, or when the reviewer asks
   for a decision only the user can make.
 - The reviewer's suggestions never block approval ("The cycle", step 2).
 
 Each new review has its own reviewer thread, and so audits the scope independently.
+
+Four roles take part in a review. Today the coordinator acts as the author, and no advisor exists.
+
+- The coordinator runs ko-review: it starts and continues the review, decides each step, reports
+  to the user and escalates. SKILL.md addresses the coordinator.
+- The author answers the reviewer: it fixes the findings it accepts, disputes the others with
+  evidence, and adopts or disputes each suggestion. The reviewer prompts address the author, whose
+  statements are claims, whoever wrote the change.
+- The reviewer reviews the change on its own thread and decides each turn's disposition.
+- The advisor would give the coordinator a second opinion on the reviewer's findings, suggestions
+  or a dispute before the coordinator answers (`TODO.md`). An advisor decides nothing, and its
+  opinion is a claim like the author's.
 
 - Before the skill opens a new review, the skill offers to continue an approved review whose
   approval still covers part of the scope (`approvals`, below).
@@ -22,42 +34,61 @@ Each new review has its own reviewer thread, and so audits the scope independent
 Who starts a review, and how:
 
 - A Claude session that reviews another Claude session's changes has its own thread and none of
-  the author's context. The same applies to Codex.
+  the coordinator's context. The same applies to Codex.
 - A review starts only at the user's request: `/ko-review`, `$ko-review` in Codex, or a request in
   words ("ko-review the changes since the last review with Claude"). The sandbox's
-  `AGENTS-SANDBOX.md` has the author offer a review after a non-trivial change.
+  `AGENTS-SANDBOX.md` has the coordinator offer a review after a non-trivial change.
   - The skill has the plugin's name, `ko-review`. Claude Code lists a plugin skill as
     `/ko-review:ko-review`, and also runs it by its bare name, `/ko-review`, which no other command
     has.
     - A skill named `review` would have the bare name `/review`, which is a built-in alias of
       `/code-review`.
     - Codex lists its copy without a plugin prefix, so a Codex user types `$ko-review`.
-  - The skill's description tells the author to invoke the skill only on such a request. Nothing
-    enforces that rule.
+  - The skill's description tells the coordinator to invoke the skill only on such a request.
+    Nothing enforces that rule.
     - Claude Code's `disable-model-invocation` or Codex's `allow_implicit_invocation: false` would
-      enforce the rule, but each setting also stops the author from acting on a request in words.
+      enforce the rule, but each setting also stops the coordinator from acting on a request in
+      words.
 - A base commit or branch in the skill's argument becomes `--base` (below).
   - `/ko-review HEAD~1` reviews the last commit and whatever is uncommitted.
   - `/ko-review main` reviews whatever differs from `main`.
-- A reviewer of the author's product uses the sign-in of the author's session. A reviewer of the
-  other product needs its own sign-in in this workspace's sandbox (`REVIEWER_AUTH_FAILED`, below).
+- A reviewer of the coordinator's product uses the sign-in of the coordinator's session. A reviewer
+  of the other product needs its own sign-in in this workspace's sandbox (`REVIEWER_AUTH_FAILED`,
+  below).
 - The skill asks the user for the reviewer, the model and the effort, offered from
   `ko-review defaults REVIEWER`, unless the argument names them.
-  - Codex has no question tool outside Plan mode, so a Codex author asks in its reply. Codex's
+  - Codex has no question tool outside Plan mode, so a Codex coordinator asks in its reply. Codex's
     `default_mode_request_user_input` feature is under development and off in codex-cli 0.162.1.
 
 Where the parts are:
 
-- The plugin `ko-review` (`container/ko-agent-sandbox/claude-code/plugins/ko-review`) holds these
-  parts:
-  - the skill;
-  - the helper `ko-review`, whose `start` takes the reviewer's name, so that another reviewer can
-    be added under another name;
-  - the reviewer prompts and the result schema.
+- `ko-review/` at the repository root holds what a repository of the plugin's own would hold:
+  - `doc/`: this design and the plugin's `TODO.md`;
+  - `plugin/`: the plugin's files, which `plugin/README.md` describes: the skill, the reviewer
+    prompts, the result schema, the manifest in `claude-plugin/`, and `bin/ko-review`;
+  - `src/`: the helper `ko-review`, the sbt subproject of the same name. The helper is a Scala 3
+    program with no dependency on the launcher. Its `start` takes the reviewer's name, so that
+    another reviewer can be added under another name.
+- Installing takes an assembled plugin, which the subproject's `pluginAssembly` task builds:
+  - `claude-plugin/` becomes `.claude-plugin/`, which Claude Code requires and most listings hide;
+  - `lib/` holds the helper's jar and its dependencies' jars, and `bin/ko-review` runs
+    `java -cp "lib/*"`;
+  - `lib/dependencies.txt` lists every module of the helper's runtime classpath at the version sbt
+    resolved.
+- The launcher jar carries the assembled plugin in the runtime image's build context, without the
+  dependencies' jars. The image build fetches the listed modules with `cs fetch --intransitive`,
+  which checks each file's checksum, into `lib/`.
+  - `--intransitive` names one module, so the command passes it before each listed module. It
+    keeps Coursier from resolving the graph again, so `lib/` holds the jars sbt tested with.
+  - So the launcher jar grows by the helper's own jar, about 0.5 MiB, not by the Scala library,
+    circe, cats and tomlj, about 20 MiB, and no image build compiles anything.
+  - sbt writes every jar entry with one fixed timestamp, so the jar's bytes, and the runtime
+    image's id, change only with the helper's sources.
+  - Once CI publishes the helper's jar, the image build fetches it the same way.
+- Outside the image, the subproject's `sbt dist` builds the same assembly with the dependencies'
+  jars, which it copies from its own classpath.
 - The image loads the plugin from `/etc/claude-code/plugins` through `CLAUDE_CODE_PLUGIN_DIRS`
   (Claude Code 2.1.280 or later).
-  - The helper needs only the reviewer's CLI, `git` and Python 3, so
-    `claude --plugin-dir <the plugin directory>` loads the plugin on a host too.
 - Codex reads a copy of the skill from `/etc/codex/skills`, its admin scope, and runs the helper
   through the helper's link in `/usr/local/bin`. The Containerfile explains why.
   - On a host, a copy of the skill directory in `~/.agents/skills` and the plugin's `bin/` on PATH
@@ -70,11 +101,11 @@ Where the parts are:
 
 ## The cycle
 
-1. The author starts the review with a summary of the work.
+1. The coordinator starts the review with the author's summary of the work.
    - The author first re-reads every changed hunk against `AGENTS.md`, with the unchanged lines
      around it, and fixes what it finds.
      - The reviewer prompt limits findings to material issues. So conformance to the project's
-       instructions is the author's to check, and a round spent on it would cost reviewer quota.
+       instructions is the author's to check, and a turn spent on it would cost reviewer quota.
      - Claude Code reads `AGENTS.md` from 2.1.277 on, or through a `CLAUDE.md` import.
    - `ko-review start REVIEWER --message-file FILE` opens a reviewer thread with the reviewer
      prompt and the author's summary. The reviewer reads the repository itself.
@@ -101,9 +132,9 @@ Where the parts are:
      - A reviewer turn on nothing would yield an approval that looks like an approval of the
        session's committed work.
    - `--instructions-file FILE` adds the user's own instructions, from the skill's argument, to
-     every round's prompt. The user's instructions follow the reviewer instructions and take
+     every turn's prompt. The user's instructions follow the reviewer instructions and take
      precedence over them.
-   - `--model` and `--effort` choose the reviewer's model and reasoning effort for every round:
+   - `--model` and `--effort` choose the reviewer's model and reasoning effort for every turn:
      `codex exec --model` and the `model_reasoning_effort` configuration key, or `claude --model`
      and `--effort` ("Defaults", below).
 2. The reviewer answers with a structured result:
@@ -125,40 +156,45 @@ Where the parts are:
    - The user decides an item that depends on what the user owns, the task's scope, ownership of
      the work, a recorded decision (AGENTS.md's boundary rule), a product requirement or a risk
      acceptance, or on a disagreement evidence cannot settle.
-     - `USER_DECISION_REQUIRED` and the author's "ask the user to decide" apply that one condition.
+     - `USER_DECISION_REQUIRED` and the coordinator's "ask the user to decide" apply that one
+       condition.
        The prompt and the skill state the condition in the same words, and the test suite checks
        them, so that neither side escalates what the other side acts on.
    - The author adopts or disputes every other suggestion rather than relaying it to the user.
      - The reviewer already judges a suggestion worth attention before raising it, and the next
-       round reviews what the author adopted.
-   - The author's round report names each adopted suggestion that changes an interface or the
+       turn reviews what the author adopted.
+   - The coordinator's turn report names each adopted suggestion that changes an interface or the
      split into components. So the user learns of a design change made on the reviewer's opinion
      without reading the transcript.
    - `continue --instructions-file FILE` sends instructions that the user gives during a review.
-     - The new instructions replace the earlier instructions from that round on.
+     - The new instructions replace the earlier instructions from that turn on.
      - An approval holds for the instructions it was given, so instructions with a different text
        make it stale until a turn under them ends in a new approval.
-4. The review repeats until `APPROVED`, or until `maxRounds` completed rounds end it with
+4. The review repeats until `APPROVED`, or until the limit of answered turns ends it with
    `LOOP_LIMIT_REACHED`.
-   - The default limit is 12; `start REVIEWER --max-rounds` sets another.
+   - The default limit is 12; `start REVIEWER --max-answered-turns` sets another. A turn that ends
+     in an error does not count.
    - A `continue` that the limit refuses leaves an approval in place.
-   - A request for a user decision ends the review only when the author agrees and runs
+   - `status` reads `LOOP_LIMIT_REACHED` once the limit is reached without an approval, so the
+     coordinator learns that the review is over before sending another response. A request for
+     the user's decision stays `USER_PROPOSED`, so that the coordinator can still escalate it.
+   - A request for a user decision ends the review only when the coordinator agrees and runs
      `ko-review escalate REVIEW_ID --message-file FILE`. Otherwise the author argues the point on
      the same thread.
-5. Before the author reports an approval, `ko-review check-approval REVIEW_ID` confirms that the
-   approval covers the current working tree ("Approval binds to the reviewed changes and the
+5. Before the coordinator reports an approval, `ko-review check-approval REVIEW_ID` confirms that
+   the approval covers the current working tree ("Approval binds to the reviewed changes and the
    review's instructions", below).
 
-The author reports each round's outcome, and when the review ends, a table of every round and the
+The coordinator reports each turn's outcome, and when the review ends, a table of every turn and the
 command `ko-review transcript REVIEW_ID`.
 
 - The reader of that report needs at most the transcript, whose footer lists the other `inspect`
-  lines. `start` deletes a review eight weeks after its last update ("Where the state is").
+  lines. `start` deletes a review 30 days after its last update ("Where the state is").
 - The table comes from `ko-review transcript`, since the session's context may have been
   summarized by then.
 
-The author's own model and effort are those of the author's session, set with `/model` or the
-launch options.
+The coordinator's own model and effort are those of the coordinator's session, set with `/model`
+or the launch options.
 
 
 ## Commands
@@ -166,31 +202,36 @@ launch options.
 Every command prints one JSON object, except `transcript`, which prints Markdown, and `diff`, which
 prints git's output. A command exits 1 when its object contains an `error` field.
 
-- Each summary carries the review id, `snapshots`, `inspect` and `reviewer`.
-- A failure carries the review id, `snapshots` and `inspect` when the command had loaded the
-  review's state as a JSON object before failing.
+- Each summary carries the review id, `inspect` and `reviewer`.
+- A failure carries the review id and `inspect` when the command had read the review's records
+  before failing.
 
 The commands:
 
-- `list`: one short entry per review of this checkout, oldest first, which gives the id that the
+- `list`: one short entry per review of this worktree, oldest first, which gives the id that the
   other commands take.
-  - A review whose state this helper cannot read is listed with the error's code as its
+  - A review whose records this helper cannot read is listed with the error's code as its
     `effectiveStatus`, so that `delete` can be given its id.
 - `digest`: the content digest of the reviewable files, with HEAD's commit id.
-- `show REVIEW_ID`: the review's state.
-  - For a round in progress, `show` adds `activity`: the event log's path, the time elapsed, and
-    the type and time of the last event received.
-  - The event log's path is known as soon as the round starts.
+- `show REVIEW_ID`: the review's state, computed from its records.
+  - For a turn in progress, `show` adds `activity`: the path of the reviewer's standard output, the
+    time elapsed, and the type and time of the last event received.
   - The last event says when the reviewer last wrote, not that the reviewer is still working.
-- `transcript REVIEW_ID [--round N]`: the transcript as Markdown, one section per round, or the
-  named round's section alone.
-- `diff REVIEW_ID [--round N] [-- git options]`: the working tree, untracked files included,
-  against a round's snapshot. Without `--round`, the round is the approved one, or the last one
-  when none is approved.
-- `delete REVIEW_ID`: deletes the review's state and its refs, whatever `schemaVersion` its state
-  has. The author runs `delete` on the user's request only.
-  - Git removes the tag and tree objects that nothing else points to at a later garbage
-    collection.
+- `transcript REVIEW_ID [--turn N]`: the transcript as Markdown, one section per turn, or the
+  named turn's section alone.
+- `diff REVIEW_ID [--from N] [--to M] [-- git options]`: the difference between two turns' starts,
+  rebuilt from their patches ("The patches", below).
+  - Without `--from`, the turn is the approved one, or the last one when none is approved.
+  - Without `--to`, the other side is the working tree, untracked files included.
+  - The two sides become trees in a scratch repository, so git's options, such as `--stat`, name
+    the files as a diff of the worktree does.
+  - A path that the patches leave out ("The patches", below) is named on stderr when its hashes in
+    the two sides' manifests differ. The rebuilt trees leave such paths out, so their content
+    never decides.
+- `restore REVIEW_ID --turn N DIR`: rebuilds a turn's start in `DIR`, a new or empty directory,
+  without the paths that the patches leave out, and lists those paths in its output.
+- `delete REVIEW_ID`: deletes the review's directory, whatever its records hold. The coordinator
+  runs `delete` on the user's request only.
 - `defaults REVIEWER`: the model and effort that the reviewer's local configuration selects for
   this repository, the models to offer with each model's efforts, and the `recommended` pair
   ("Defaults", below).
@@ -199,8 +240,8 @@ The commands:
   - Each entry has `coveredPaths` and `newPaths`, so that the skill can offer to continue a review
     instead of opening a thread.
   - A path is covered when two conditions hold:
-    - the path is in the scope that the approved round recorded beside its manifest;
-    - the path's content is the one in that round's manifest.
+    - the path is in the scope that the approved turn recorded;
+    - the path's content is the one in that turn's manifest.
   - Content decides, so staging or committing the approved paths keeps them covered.
   - A path that no reviewer was told to look at is not covered, however long its content has been
     the approved one, as when HEAD moves under an untouched file.
@@ -214,18 +255,21 @@ working-tree edits like any other, and the user commits them when and as they ch
 
 ## What the helper guarantees
 
-- **The same thread.** Every round of a review runs on the reviewer thread that its first round
+- **The same thread.** Every turn of a review runs on the reviewer thread that its first turn
   opened. A resumed turn that names another thread fails with `REVIEWER_RESUME_MISMATCH`.
-  - The thread id is the id that the reviewer's first event names. The helper persists the id the
-    moment the event arrives:
+  - The thread id is the id that the reviewer's first event names. The helper writes the id to the
+    turn's `thread.json` the moment the event arrives:
     - Codex: the `thread.started` event's `thread_id`, resumed with `codex exec resume <that id>`;
     - Claude Code: the `system` `init` event's `session_id`, resumed with
       `claude -p --resume <that id>`.
-  - The author never chooses a thread, and nothing uses `--last` or `--continue`.
+  - The coordinator never chooses a thread, and nothing uses `--last` or `--continue`.
 - **Approval binds to the reviewed changes and the review's instructions.** After a file changes,
   an unreviewed path enters the scope, or the instructions change, `check-approval` fails with
   `NOT_APPROVED` and the `effectiveStatus` `STALE_APPROVAL`. The error's `staleReasons` says what
   changed, and `continue` obtains a new approval.
+  - The approval is the result of the latest turn the reviewer answered, when that result is
+    `APPROVED`. `effectiveStatus` is then `APPROVED` or `STALE_APPROVAL`, and otherwise the latest
+    outcome.
   - The content digest covers every reviewable file's raw content ("The digest", below).
   - Staging, committing or moving HEAD keeps the approval, because the reviewer approved the
     files, not the index or HEAD. Content that is staged and then removed from the files can
@@ -236,33 +280,17 @@ working-tree edits like any other, and the user commits them when and as they ch
     Approvals of other reviews of the same content, by other reviewers, models or efforts, hold
     alongside it.
   - `staleReasons`, in `show` and in `check-approval`'s error, gives these reasons:
-    - "working files changed", with the paths, from the manifest of hashes that the round saved
-      beside its snapshot;
+    - "working files changed", with the paths, from the approved turn's manifest;
     - "paths entered the scope since the approval", with the paths;
     - the instructions changed after the approval.
-- **Each round's tree and transcript are kept in Git**, under
-  `refs/ko-review/<review id>/round-NNN`, without touching the user's index, HEAD or files.
-  - The ref points at a tag object. The tag object's message is the round's transcript: the
-    author's message, and the reviewer's result or the error.
-  - The tag object points at the tree of the working tree as reviewed.
-  - `git for-each-ref --format='%(contents)' <ref>` prints the transcript alone. `git show`
-    follows the transcript with a listing of the tree's top level.
-  - `git diff` between two rounds' refs shows what the author changed in response to a finding.
-  - `ko-review diff` compares the current tree with a round, because `git diff <tree>` alone reads
-    the user's index and reports every untracked file as deleted.
-  - `git for-each-ref` lists the refs; `git tag`, `git branch` and `git log` do not:
-
-    ```sh
-    git for-each-ref --format='%(objecttype) %(objectname:short) %(refname)' refs/ko-review/
-    ```
-
-  - A clone or push copies the refs only when it names them, as `--mirror` does.
-  - A tree holds a submodule or nested repository as a commit id, not as its working tree. The
-    snapshot names those paths in `excludes`, and the content digest alone covers their contents.
-  - In a linked worktree, whose Git directory is read-only, the round records no snapshot. The
-    manifest and the recorded scope still bind the round.
-  - When the transcript cannot be written, the tree stays on the ref, and the snapshot's
-    `transcriptError` holds the diagnostic.
+- **Each turn is kept as files written once** ("Where the state is", below), and nothing is
+  written to the user's repository, index, HEAD or files.
+  - A turn's start can be rebuilt from the patches: the first turn's commit, then each turn's patch
+    in order ("The patches", below).
+  - A rebuilt turn lacks the paths that the patches leave out. The manifest still hashes them, so
+    the approval rules still cover them.
+  - A turn cannot be rebuilt once its commit is gone from the repository, as after a rebase and a
+    garbage collection.
 - **A change to the files during a turn discards the turn's result.** The helper compares the
   content digest before and after the reviewer runs. A difference fails with
   `WORKTREE_CHANGED_DURING_REVIEW`, with the changed paths.
@@ -272,19 +300,19 @@ working-tree edits like any other, and the user commits them when and as they ch
   - Nothing is reverted.
   - The helper does not say who changed the tree: a host editor, another session or the reviewer
     itself may have.
-- **Failures are never outcomes.** A failed turn leaves `status` at the previous outcome, and
-  records the failure in `lastError` and the journal.
+- **Failures are never outcomes.** A failed turn's `outcome.json` holds the error, and the status
+  stays the outcome of the latest turn the reviewer answered.
   - A `continue` retries on the same thread once the reviewer has named a thread. When the failure
     came before that, the `continue` opens a thread.
-  - The helper persists the thread id the moment the reviewer names it. So the retry resumes that
+  - The helper writes the thread id the moment the reviewer names it. So the retry resumes that
     thread, whatever ends the turn after that: a timeout, an interrupt or termination signal,
     unparsable later output, or a helper bug (`HELPER_FAILED`).
-  - The retry's prompt carries again every author message since the last round the reviewer
+  - The retry's prompt carries again every author message since the last turn the reviewer
     answered, oldest first and as written. A failed turn may not have left its message in the
     thread.
-  - Before any round has completed, the retry sends the reviewer prompt again.
-  - A round that ends in an error does not count toward `maxRounds`, so retries after a usage
-    limit do not use up the review.
+  - Before any turn has been answered, the retry sends the reviewer prompt again.
+  - A turn that ends in an error does not count toward the limit of answered turns, so retries
+    after a usage limit do not use up the review.
   - Whatever ends the turn, the reviewer's own exit included, the helper kills the reviewer's
     process group and waits for the reviewer before the helper returns. So neither the reviewer
     nor a process the reviewer left in that group runs on past the lock that serialized the turn.
@@ -298,8 +326,8 @@ working-tree edits like any other, and the user commits them when and as they ch
     - `REVIEWER_AUTH_FAILED`: `codex login status` or `claude auth status` reports no sign-in,
       whichever credential store the CLI uses. Sign in to that CLI in this workspace's sandbox.
     - `REVIEWER_EGRESS_DENIED`: the ruleset in `KO_AGENT_SANDBOX_EGRESS_RULESET` allows none of
-      the reviewer's hosts, as when the launch admitted the author's provider alone. Relaunch with
-      `--model-provider` naming both providers, such as `--model-provider=anthropic,openai`.
+      the reviewer's hosts, as when the launch admitted the coordinator's provider alone. Relaunch
+      with `--model-provider` naming both providers, such as `--model-provider=anthropic,openai`.
       - Codex's hosts are `api.openai.com` and `chatgpt.com`. Claude's hosts are
         `api.anthropic.com` and `platform.claude.com`.
     - `REVIEWER_FAILED`: any other failure of the reviewer.
@@ -313,11 +341,16 @@ working-tree edits like any other, and the user commits them when and as they ch
     - `TURN_INTERRUPTED`: a timeout or a signal ended the reviewer. A signal that ended the helper
       itself raises the same code without `reviewer`.
   - The helper never edits the egress rules or a reviewer's configuration.
-- **One mutation per review at a time.** `start`, `continue`, `escalate` and `delete` take `flock`
-  on the review's lock file before reading the state they act on.
+- **One mutation per review at a time.** `start`, `continue`, `escalate` and `delete` take an
+  exclusive lock on the review's `review.lock` before reading the files they act on.
   - A second such command fails at once with `REVIEW_LOCKED`, instead of waiting behind a reviewer
     turn.
-  - The helper replaces `state.json` atomically, so `show` and `list` read it without a lock.
+  - The lock is a POSIX record lock, which closing any descriptor of the file releases for the
+    whole process. So a command that holds the lock never opens the file again, as when it asks
+    whether a turn is in progress.
+  - Each record is written to a temporary name and linked to its final name. So `show` and
+    `list` read without the lock and never see part of a record, and a mistaken second write
+    fails instead of replacing a record.
 
 
 ## Where the state is
@@ -325,35 +358,87 @@ working-tree edits like any other, and the user commits them when and as they ch
 The state directory:
 
 ```text
-$HOME/persistent-volume/ko-review/repositories/<sha256 of the checkout path>/
-├── repository.json          the unhashed path
-└── reviews/<review id>/
-    ├── state.json           reviewer, status, round, thread id, reviewed and approved content
-    ├── journal.jsonl        every author message, reviewer result, escalation and error
-    ├── review.lock
-    └── rounds/NNN-{input.md,manifest.json,scope.json,result.json,
-                    <reviewer>.jsonl,<reviewer>.stderr}
+$HOME/persistent-volume/ko-review/
+└── worktrees/<sha256 of the worktree path>/
+    ├── worktree.json        the unhashed worktree path
+    └── reviews/<review id>/
+        ├── start.json       the base, answered-turn limit and turn timeout
+        ├── review.lock
+        └── turns/
+            ├── 001/
+            │   ├── request.json
+            │   ├── thread.json
+            │   ├── outcome.json
+            │   ├── escalation.json
+            │   ├── manifest.json
+            │   ├── start.patch
+            │   ├── reviewer.stdout
+            │   └── reviewer.stderr
+            └── 002/ …
 ```
 
-The repository's own Git directory holds `refs/ko-review/<review id>/round-NNN` for each round's
-transcript and tree. `delete` removes those refs together with the review's directory above.
+A turn's files:
 
-- `start` deletes the checkout's reviews whose last update, `updatedAt`, is 56 days old or more.
-  `start` deletes their state and refs as `delete` does, and names them in its output's
-  `expiredReviews`.
-  - A review that `start` cannot delete, as under a read-only Git directory, is in
-    `expiryFailures` with the error. The new review starts regardless.
+- `request.json`: the reviewer, model, effort, reviewer CLI and plugin versions, the instructions,
+  the author's message, the scope's paths, what `start.patch` applies to, and the coordinator
+  ("The coordinator's record", below).
+- `thread.json`: the reviewer's thread id, only in a turn that opened a thread.
+- `outcome.json`: the exit code, and the validated result or the helper's error.
+- `escalation.json`: only when the coordinator escalates the turn's request for a decision.
+- `manifest.json`: the content hash of every reviewable file at the turn's start.
+- `start.patch`: the turn's start, as text changes from what `request.json` names.
+- `reviewer.stdout` and `reviewer.stderr`: the reviewer CLI's output, whatever its format.
+
+- Each JSON file and the patch are written once, at the moment their fact exists: the request
+  before the reviewer runs, the thread id when the reviewer names it, the outcome when the reviewer
+  exits, and an escalation when the coordinator decides. A JSON file also records when it was
+  written.
+  - The reviewer's output files grow while the reviewer runs, and stay unchanged once
+    `outcome.json` exists.
+- The helper computes the review's status, its approval, its last error, the count of answered
+  turns, the content digest and the binary paths from these files rather than storing them.
+  - A turn is in progress while it has a `request.json` and no `outcome.json`, and a command holds
+    the review's lock. A turn without an outcome whose lock nobody holds was left by a helper that
+    died, and its error reads `HELPER_FAILED`.
+  - The content digest is the SHA-256 of the manifest's entries, sorted by path, in one fixed
+    encoding. So `manifest.json`'s write time and JSON layout never enter the digest.
+  - The binary paths are Git's entries in `start.patch`.
+- `request.json`'s `from` names what `start.patch` applies to, by the store that holds it:
+  - `{"store": "git", "commit": "…"}` in the first turn: the base, or HEAD at the turn's start.
+    Without a `commit`, the start is an empty tree, as under an unborn HEAD.
+  - `{"store": "ko-review:turn", "turn": "001"}` in a later turn: that turn's start.
+- The classes in the subproject's `ReviewFiles.scala`, one per JSON file, define every field and its
+  default. Their header comment states how the files may change, so that a review stays readable
+  across helper versions.
+- Every JSON file carries `formatVersion`, the semantic version of the format the file follows,
+  `0.2.0` for this design. A review's files may come from different helpers, one per turn or
+  escalation, so each file names its own.
+  - Until 1.0.0, a newer patch version only adds fields that an older helper may ignore.
+  - A newer minor version changes what an older helper must not ignore. The older helper then
+    refuses to continue the review with `REVIEW_FORMAT_NEWER`, which says to update the plugin.
+    Read-only commands still work.
+  - A munit test compares one of each file, every field set, with samples checked in under the
+    format version. A format change fails the test until samples under a bumped version join them.
+- `start` deletes every review under the state root whose latest record is 30 days old or more,
+  whichever worktree it belongs to, and names them in its output's `expiredReviews`.
+  - The sweep covers every worktree, so that the reviews of a removed linked worktree or a deleted
+    checkout expire too. A worktree's directory goes once it holds no review.
+  - A review that `start` cannot delete is in `expiryFailures` with the error. The new review
+    starts regardless.
   - A review that another command holds stays, silently.
-  - For a state that the helper cannot read, the start minute in the id counts as the last update.
+  - For a review whose records the helper cannot read, the start minute in the id counts as the
+    latest record.
 - A review id is its local start minute, `2026-09-24-1005-`, plus eight hex digits.
-  - The state directory and the refs group reviews by start minute, in an arbitrary order within
-    one minute.
+  - The state directory groups reviews by start minute, in an arbitrary order within one minute.
   - The id can be typed.
-- State is namespaced by checkout path, because a review is about one checkout. A persistent
-  volume can be shared by several workspaces (`--persistent-volume`), or by a main worktree and its
-  linked worktrees.
+- State is namespaced by worktree path, because a review is about one worktree: Git's main
+  worktree or a linked one. A persistent volume can be shared by several workspaces
+  (`--persistent-volume`), or by a main worktree and its linked worktrees.
 - The reviewers' own session files stay in `~/.codex` and `~/.claude`. Sharing them is safe,
   because every continuation names its thread id.
+  - A session file holds each turn's exact prompt, which the helper does not keep. Claude Code
+    deletes its transcripts after `cleanupPeriodDays`, 30 days by default, and the 30-day expiry
+    above follows that default.
 - `--reset` removes the workspace's own volume, and with it the review state and those session
   files.
   - `--reset` keeps a volume named through `--persistent-volume` and, from a linked worktree, the
@@ -369,35 +454,111 @@ transcript and tree. `delete` removes those refs together with the review's dire
 
 - The content digest covers every file Git would review, from
   `git ls-files --cached --others --exclude-standard`.
-  - Each file contributes its raw content with its executable bit, or its symlink target. An absent
-    path contributes nothing.
+  - Each file contributes its raw content with its executable bit, or its symlink target byte for
+    byte, through `readlink`: a JVM path loses bytes that are not UTF-8 and trailing slashes. An
+    absent path contributes nothing.
   - The digest reads raw content because `git status` calls a file clean when its content after
     the clean filter matches the index, and so misses a change that a filter strips.
 - HEAD, the index and other refs are not part of the digest, because the reviewer reviews the
-  files. A round records HEAD's commit id separately, as the commit its scope is against.
+  files. Each turn records its scope as paths.
 - A submodule or nested repository is digested the same way, as a tree of its own, since Git
   lists it as one path. A commit inside it changes no content and leaves the digest alone.
 - No `git diff` runs, so no diff or textconv driver shapes the digest.
-- One scan of the checkout produces HEAD's commit id, the content digest and the manifest. A command
-  scans once, and a turn scans twice, before and after the reviewer runs, since those are two
-  observations.
+- The helper reads file names as UTF-8, as the JVM names files. A worktree that holds a name that is
+  not UTF-8 fails with `PATH_NOT_UTF8`, since the helper could not tell whether that file changed.
+- One scan of the worktree produces HEAD's commit id, the content digest and the manifest. A
+  command scans once, and a turn scans twice, before and after the reviewer runs, since those are
+  two observations.
 
-### The snapshot
+### The patches
 
-- The helper writes the tree and its ref before the reviewer runs, so the ref names what the
-  reviewer reviewed.
-  - When the round ends, with a result or with an error, the transcript's tag object replaces the
-    tree on the ref.
-- The scratch index starts as a copy of the entries of the user's index. So the tracked paths are
-  the checkout's, staged additions and removals included, whatever the ignore rules say of them.
-  - `git add -A` then adds untracked files and leaves ignored files out.
-- Each `diff` invocation writes its own scratch index, so overlapping invocations do not disturb
-  each other.
-- The transcript is a tag object rather than a commit:
-  - a tag object on a tree contributes nothing to `git log --all`;
-  - each round gets a distinct object even when two rounds' trees are equal. Git notes, keyed by
-    the tree id, would merge those rounds.
-- The tagger is `ko-review`, since neither the user nor the reviewer wrote the whole message.
+- A turn's `start.patch` holds only the paths whose content changed since the previous turn's
+  start, which the two manifests name. The first turn's patch runs from the commit's bytes to the
+  start.
+  - The commit's bytes are its blobs as stored, which no later attribute or filter setting
+    changes. So a rebuild of a turn writes the same files whenever it runs.
+  - The first patch therefore holds every path whose bytes on disk differ from its blob, as when
+    a checkout converted line endings, and every path that exists on only one side. The helper
+    computes each file's blob id from its bytes, as `git hash-object --no-filters` does, and
+    compares it with the commit's tree.
+- The helper copies each changed path's earlier and current content into a temporary directory,
+  then runs one `git diff --no-index` there.
+  - The earlier content comes from the previous turn's rebuilt start, or from the commit's blob,
+    with `git cat-file blob`.
+  - The current content must match its hash in the turn's manifest, so a file edited after the scan
+    cannot enter the patch.
+  - Untracked files need no index, and the user's index is never read for it or written.
+- The diff and every `git apply` run outside the repository, with no system or global Git
+  configuration (`GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_GLOBAL=/dev/null`) beyond the helper's own
+  settings ("Git as it is called", below).
+  - The diff also takes `--no-ext-diff`, `--no-textconv` and `--no-renames`, and `git apply` takes
+    `--whitespace=nowarn`.
+  - So no diff driver, textconv, attribute or whitespace setting of the user's changes what a patch
+    stores or what a rebuild writes. Outside a repository, `git diff --no-index` reads no
+    `.gitattributes`.
+- The patches leave out two kinds of path, which the manifest still hashes:
+  - a binary file, as Git's content check decides, which appears only as "Binary files … differ".
+    A rebuild finds those paths with `git apply --numstat` and excludes them. A later patch that
+    holds the file whole, as after the file becomes text, brings it back;
+  - a file inside a nested repository or submodule, since the superproject's commit holds only the
+    nested repository's commit id, and the superproject lacks that commit's objects. A file that
+    becomes, or becomes part of, a nested repository enters the patch as deleted, and one that
+    stops being one as added.
+- The patches replace Git refs for these reasons:
+  - refs and objects in the user's `.git` were the helper's only writes to the user's repository;
+  - a linked worktree, whose Git directory is read-only, could hold none;
+  - `delete` had to remove the refs, and objects stayed until a garbage collection;
+  - `--mirror` copied the refs;
+  - the review's storage depended on Git, which another version control system would not have.
+
+### Git as it is called
+
+- Every `git` call takes the helper's own settings, one list in its code, through
+  `GIT_CONFIG_COUNT`. Those settings rank above the repository's configuration, as `git -c` does.
+  - The list fixes the settings that shape the output the helper parses, such as `core.quotePath`.
+  - A call inside the repository still reads the user's configuration for what the list leaves
+    alone, such as `core.excludesFile`, which decides the untracked files that `ls-files` lists.
+- An option that no setting replaces, such as `--no-textconv`, stays on the command line.
+- The `git` calls sit in one Scala file with no ko-review types, as the calls into the C library
+  do ("The helper's language", below). The file can move into a library without the helper.
+
+### The coordinator's record
+
+Each turn's `request.json` records the session that ran its command, from what that session's tool
+exports. A fact that the environment does not give stays absent; the helper guesses nothing.
+
+- Claude Code: `CLAUDE_CODE_SESSION_ID`, the version that `$CLAUDE_CODE_EXECPATH --version` prints,
+  and `CLAUDE_EFFORT`.
+  - `CLAUDE_CODE_EXECPATH` is undocumented, and was measured on the native install alone, where it
+    names `claude`. The helper takes the output as the version only when it names Claude Code, so
+    another program's version, such as Node's under an npm install, is never recorded. A program
+    that does not start leaves the version absent.
+  - Measured with Claude Code 2.1.325: `CLAUDE_EFFORT` followed `/effort low` and `/effort high`
+    within one session.
+- Codex: `CODEX_THREAD_ID` and `CODEX_VERSION`.
+  - Measured with codex-cli 0.169.0: Codex exports neither the model nor the effort, and a switch
+    with `/model` changed no variable but `CODEX_TOOL_CALL_ID`. `codex --version` on the PATH may
+    not be the running Codex, so the helper does not ask it.
+- Neither tool exports its model, so the record has none.
+- Each turn records its own coordinator, since any session can continue a review by its id.
+- The record names the coordinator, not the author: nothing tells the helper who wrote the
+  change. In one review of this repository, Codex coordinated a change that Claude Code wrote.
+
+### The helper's language
+
+- The helper is Scala 3, as the rest of this repository is. Its record classes with circe codecs
+  define the stored format in code that the compiler checks.
+- A JVM's startup costs nothing that matters here: the launcher's `--help` takes 0.27–0.34 s, and a
+  reviewer turn takes minutes.
+- The cost is a build before the plugin runs, which a script did not need. The plugin is meant to
+  move to a repository of its own, which builds its jar the same way.
+- The calls into the C library sit in one object with no ko-review types: the reviewer's process
+  group, `killpg`, Linux's child subreaper and the reaping of adopted orphans. The object can
+  move into a library without the helper.
+  - The JVM cannot set a child's process group between fork and exec. So the group's leader and
+    the reviewer start as `JoinGroup`, a program of that object's, which joins the group and then
+    becomes the command.
+- A native image would remove the JVM and the wrapper, at one build per platform (`TODO.md`).
 
 ### Defaults
 
@@ -417,13 +578,12 @@ leaves that default to the reviewer by passing no option.
 - The skill recommends `high` as the effort when the configuration sets none, ahead of the model's
   own default. That default is `low` for the current Codex models.
   - A configured effort stays first, since the user set it knowing the usage limit it spends.
-  - Measured on 2026-10-13 (reviews `2026-10-13-1001-7dc56e66` and `2026-10-13-1001-526190d9`):
-    Codex `gpt-6.1-sol` reviewed one tree once per level, with the reviewer prompt of 2026-10-13.
-    The tree was round 3 of the 2026-10-09 review, the microphone plan, rebuilt from its snapshot
-    in a clone.
+  - Measured on 2026-10-13: Codex `gpt-6.1-sol` reviewed one tree once per level, with the
+    reviewer prompt of 2026-10-13. The tree was the microphone plan as it stood during its review
+    of 2026-10-09, in a clone.
     - `low`: 6 commands, 3 web searches, 46 s, approved with no finding.
     - `high`: 12 commands, 9 web searches, 210 s, two material findings the plan had not
-      answered (`mic.md`, "The controller and the writer", records both).
+      answered (`doc/mic.md`, "The controller and the writer", records both).
     - Neither level found the PulseAudio option that does not exist, which a review outside the
       sandbox found. The five rounds of 2026-10-09 at `low` ran one to four commands each.
 
@@ -455,7 +615,7 @@ For Codex:
 
 For Claude:
 
-- The defaults are what the reviewer's session reads, not what the author's session reads. The
+- The defaults are what the reviewer's session reads, not what the coordinator's session reads. The
   reviewer's session loads no user, project or local settings file ("Claude Code as it is called",
   below), so a model saved with `/model` selects nothing.
   - Model: `ANTHROPIC_MODEL`, else the managed `model`, else `ANTHROPIC_DEFAULT_MODEL`.
@@ -493,16 +653,16 @@ Further rules of the review:
 - Findings are `F1`, `F2`, …, and suggestions `S1`, `S2`, …. An id stays while its item is
   discussed.
 - A suggestion that the reviewer keeps after the author's dispute is no ground for
-  `USER_DECISION_REQUIRED`, since the author's report shows the suggestion to the user.
-- Every round after the first names two sets of paths:
-  - the paths whose content changed since the round the reviewer last answered, from the rounds'
+  `USER_DECISION_REQUIRED`, since the coordinator's report shows the suggestion to the user.
+- Every turn after the first names two sets of paths:
+  - the paths whose content changed since the turn the reviewer last answered, from the turns'
     manifests;
   - the paths that entered the scope without changing, as when HEAD moves under a file, from the
-    scope that round recorded.
-- That round's prompt says the rest of the tree is as the reviewer read it. So a continued review
+    scope that turn recorded.
+- That turn's prompt says the rest of the tree is as the reviewer read it. So a continued review
   after an approval sends the reviewer to the new work first.
-- The journal records an instruction change in the round it takes effect, and the transcript shows
-  the change there.
+- Each turn records the instructions in force, and the transcript shows a change in the turn it
+  takes effect.
 - Both reviewers also read the repository's own instructions, AGENTS.md or CLAUDE.md, as any
   session in the repository would.
 
@@ -522,7 +682,7 @@ Further rules of the review:
   (openai/codex #24833).
 - `codex app-server` would add JSON-RPC lifecycle handling for no gain over `codex exec`.
 - A persistent review primitive from Codex would replace the helper's Codex transport alone. The
-  content binding, the snapshots and the retries serve Claude reviews the same way.
+  content binding, the turn records and the retries serve Claude reviews the same way.
 - Measured with codex-cli 0.155.1:
   - `exec` and `exec resume` both accept `--json`, `--output-schema` and `--output-last-message`;
   - the resumed turn emits the persisted id and answers from the earlier turn's context;
@@ -534,16 +694,16 @@ Further rules of the review:
   - an `error` event, in its `message`;
   - a `turn.failed` event, in its `error.message`.
 - Measured with codex-cli 0.162.1: `codex exec` run with `CODEX_THREAD_ID` in its environment opens
-  a thread of its own. A Codex author's shell sets that variable.
-  - So a Codex author's Codex reviewer never resumes the author's thread.
-  - The helper records the variable as `authorSessionId` only.
+  a thread of its own. A Codex coordinator's shell sets that variable.
+  - So a Codex coordinator's Codex reviewer never resumes the coordinator's thread.
+  - The helper records the variable as the coordinator's session id only.
 
 ### Claude Code as it is called
 
 The reviewer runs as `claude -p --output-format stream-json --verbose --json-schema <the schema>`,
 with the prompt on stdin, and resumes with `--resume <session id>`. The result is the `result`
-event's `structured_output`. The helper keeps that result in the round's `result.json`, as the
-helper keeps Codex's final message.
+event's `structured_output`. The helper keeps that result in the turn's `outcome.json`, as it keeps
+Codex's final message.
 
 - The helper does not pass `--bare`, because `--bare` accepts only an API key, and the sandbox's
   sign-in is a claude.ai login. So the session runs under the managed settings, the image's
@@ -565,11 +725,11 @@ helper keeps Codex's final message.
     as the turn's failure. The event's `errors` or `result` text become the reviewer's words.
 - `CLAUDE_CODE_EFFORT_LEVEL` overrides `--effort` (code.claude.com/docs/en/env-vars). So the
   helper sets the variable to the chosen effort in the reviewer's environment, on `start` and on
-  every resumed round.
+  every resumed turn.
   - A managed `env` block would replace the variable. So `start` refuses an effort other than the
     one such a block sets, with `REVIEWER_CHOICE_REFUSED`.
 - The reviewer session counts against the usage of this workspace's Claude Code sign-in, as a
-  Claude author does.
+  Claude coordinator does.
 - The reviewer's transcript is written to `~/.claude/projects/` like any session's, where
   `claude --resume` can open it.
 - Measured with Claude Code 2.1.283 in a session of the image, with a claude.ai sign-in:
@@ -584,38 +744,46 @@ helper keeps Codex's final message.
 
 ## Tests
 
-`src/test/python/ko_review_test.py`, which `KoReviewTest` runs on Linux, drives the helper against
-one fake script. The fake is installed as both `codex` and `claude` on `PATH`, and imitates each
-CLI's events.
+The subproject's munit suites run the helper's command line in their own JVM, through `Main.run`
+with a test's `CommandContext`, against a fake reviewer: a test program installed as both `codex`
+and `claude` on `PATH` that imitates each CLI's events. A test that signals the helper, or runs it
+beside another command, starts the helper as a process of its own.
 
+- The suites fork a JVM and run one at a time, for the reasons in `../build.sbt`. So they run in a
+  session container or on a host outside the run-on-host sandbox, which refuses a forked JVM.
 - The tests cover thread continuity and mismatch, every failure class, the digest over each kind
-  of change, the snapshot refs and their absence under a read-only Git directory, the base range,
-  the coverage of an earlier approval and the changed paths each round names, the transcript, the
-  lock, the round limit, escalation, state namespacing, and the deletion of old reviews at `start`.
-- The tests marked `both_reviewers` run against each fake. The rest test the helper's own logic,
-  and run against the fake Codex only.
-- Tests in the test's own process load the helper as a module, for cases that a fake reviewer
-  cannot force:
-  - `stream_events` with a timeout callback paused into the cleanup, with an interrupt raised
-    inside it, and with a failing reader;
-  - `children_of` with a child whose command name is not UTF-8.
+  of change, the base range, the coverage of an earlier approval and the changed paths each turn
+  names, the transcript, the lock, the limit of answered turns, escalation, state namespacing,
+  the deletion of old reviews at `start`, a linked worktree whose main Git directory is read-only,
+  and the coordinator that each turn records.
+- `PatchesTest` rebuilds turns: line-ending conversion, the user's Git configuration, a binary
+  file that changes, symlinks, executable bits and deletions.
+- `ReviewFilesTest` reads the samples of every format version, and fails when the classes change
+  without a new format version and its samples.
+- Tests that call the helper's code directly cover cases that a fake reviewer cannot force: event
+  streaming with a timeout action paused into the cleanup, with an interrupt raised inside it,
+  with a failing reader, and with a turn that fails while the reviewer runs; and a child whose
+  command name is not UTF-8.
 - Claude's own tests cover its command line, the effort variable in its environment, the effort
   that a managed `env` block sets, and the sources of its defaults.
-- `KoReviewTest` also runs `claude plugin validate` on the plugin when `claude` is on `PATH`.
-  Inside the image, `KoReviewTest` checks that the installed copy is readable.
-- With `codex` on `PATH`, `KoReviewTest` has `codex debug prompt-input`, which calls no model, list
-  a copy of the skill. The test fails unless Codex names the skill `ko-review`.
-- Inside the image, `KoReviewTest` checks that Codex's copy equals the plugin's, and that
-  `/usr/local/bin/ko-review` resolves to the helper.
+- `PluginTest` runs `claude plugin validate` on the assembled plugin when `claude` is on `PATH`.
+  With `codex` on `PATH`, it has `codex debug prompt-input`, which calls no model, list a copy of
+  the skill, and fails unless Codex names the skill `ko-review`.
+- Inside the image, the launcher's `KoReviewTest` checks that the installed copy is readable, that
+  Codex's copy equals the plugin's, that `/usr/local/bin/ko-review` resolves to the helper, and
+  that the helper runs with the jars that the image fetched.
 - A regression test for a fix counts only after a run against the helper without the fix shows the
   test failing.
   - The fake reviewer exits on its own once the helper exits. So a test for an orphaned reviewer
     passes without the fix, and only that run shows the gap.
 - A run against a real reviewer spends model quota, so it is done by hand.
-- Measured with codex-cli 0.156.1 in a session of the image: the skill in Claude Code drove a Codex
-  review to an approval on one thread, through fixes, re-reviews and a retry after a usage limit.
-  A second invocation opened a new thread.
-- Measured with Codex 0.157.1 as the author and Claude Code 2.1.284 as the reviewer in the
-  image: `$ko-review` asked for the reviewer, model and effort in replies, then ran a Claude
-  Fable review at high effort to approval. `check-approval` confirmed that the approval covered the
-  working tree.
+- Measured with Claude Code 2.1.325 as the coordinator and codex-cli 0.169.0 as the reviewer in a
+  session of the image (2026-11-15): the skill drove a Codex review of the helper's own rewrite on
+  one thread through four turns to approval, with findings fixed between them. The first three
+  turns ran the assembled helper, and the fourth the image's installed copy.
+- Measured with codex-cli 0.169.0 as the coordinator and Claude Code 2.1.325 as the reviewer in a
+  session of the image (2026-11-15): `$ko-review` asked for the reviewer, model and effort in
+  replies, then ran a Claude Opus 5.5 review at high effort to approval. Claude Code 2.1.325 then
+  coordinated three more turns on the same thread, and each recorded its coordinator.
+  - The first two turns predate the coordinator record. Codex's version comes from that session's
+    banner and its `CODEX_VERSION`.

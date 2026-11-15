@@ -2,14 +2,9 @@ package agentsandbox.launcher
 
 import java.nio.file.{Files, Path}
 import java.util.concurrent.TimeUnit
+import scala.jdk.CollectionConverters.*
 
 class KoReviewTest extends munit.FunSuite:
-
-  // The timeout exceeds the longest wait that a test here gives its process (`run`). munit's 30 s
-  // default would end the test first, without the process's output.
-  override val munitTimeout = scala.concurrent.duration.Duration(6, "min")
-
-  private val plugin = Path.of("container/ko-agent-sandbox/claude-code/plugins/ko-review").toAbsolutePath
 
   private def run(timeoutSeconds: Long, command: String*): (Int, String) = runIn(timeoutSeconds, Map.empty, command*)
 
@@ -27,16 +22,6 @@ class KoReviewTest extends munit.FunSuite:
     finally
       process.destroyForcibly()
       Files.deleteIfExists(output)
-
-  test("ko-review runs a review cycle against a fake codex and a fake claude"):
-    assume(System.getProperty("os.name") == "Linux", "runs the plugin's helper with Python 3")
-    val (status, output) = run(
-      300,
-      "python3",
-      "-I",
-      Path.of("src/test/python/ko_review_test.py").toAbsolutePath.toString,
-    )
-    assertEquals(status, 0, output)
 
   // The plugin's bin/ joins only the PATH of Claude's Bash tool, so a plain shell in the session, where
   // `sbt testFull` runs, cannot check that PATH entry. This test checks what the image sets instead: the
@@ -56,26 +41,16 @@ class KoReviewTest extends munit.FunSuite:
     )
     assertEquals(Path.of("/usr/local/bin/ko-review").toRealPath(), installed.resolve("bin/ko-review").toRealPath())
 
-  private def onPath(program: String): Option[Path] =
-    System.getenv("PATH").split(java.io.File.pathSeparator).map(Path.of(_, program)).find(Files.isExecutable)
-
-  test("the ko-review plugin validates"):
-    val claude = onPath("claude")
-    assume(claude.isDefined, "needs claude on PATH")
-    val (status, output) = run(60, claude.get.toString, "plugin", "validate", plugin.toString)
+  // The image fetches the helper's dependencies at build time (the Containerfile), so a jar missing from lib/ shows
+  // only when the helper runs.
+  test("the image's helper runs with the jars that the image fetched"):
+    assume(Files.isRegularFile(Path.of("/etc/claude-code/managed-settings.json")), "runs inside the sandbox image")
+    val (status, output) = run(20, "/usr/local/bin/ko-review", "digest")
     assertEquals(status, 0, output)
-    assert(output.contains("Validation passed"), output)
-
-  // The test copies the skill, as the image installs it; the Containerfile gives the reason.
-  test("Codex loads a copy of the skill as ko-review"):
-    val codex = onPath("codex")
-    assume(codex.isDefined, "needs codex on PATH")
-    val home = Files.createTempDirectory("ko-review-codex-home")
-    val skill = home.resolve(".agents/skills/ko-review/SKILL.md")
-    Files.createDirectories(skill.getParent)
-    Files.copy(plugin.resolve("skills/ko-review/SKILL.md"), skill)
-    val codexHome = Files.createDirectories(home.resolve(".codex"))
-    val environment = Map("HOME" -> home.toString, "CODEX_HOME" -> codexHome.toString)
-    val (status, output) = runIn(60, environment, codex.get.toString, "debug", "prompt-input")
-    assertEquals(status, 0, output)
-    assert(output.contains("- ko-review: "), output)
+    assert(output.contains("\"contentDigest\""), output)
+    // The fetch is intransitive, so lib/ holds the helper's jar and one jar per listed module, nothing more.
+    val lib = Path.of("/etc/claude-code/plugins/ko-review/lib")
+    val listed = Files.readAllLines(lib.resolve("dependencies.txt")).asScala.toVector.filter(_.nonEmpty)
+      .map(_.split(':') match { case Array(_, name, version) => s"$name-$version.jar" })
+    val jars = Files.list(lib).iterator().asScala.map(_.getFileName.toString).filter(_.endsWith(".jar")).toVector
+    assertEquals(jars.sorted, ("ko-review.jar" +: listed).sorted)

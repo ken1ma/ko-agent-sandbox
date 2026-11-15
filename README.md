@@ -167,8 +167,9 @@ credentials in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#
      the adopted ones that changed the design.
    - The review covers the uncommitted changes by default.
    - Codex reviews under this workspace's Codex sign-in.
-   - Each round's tree and transcript are on a Git ref under `refs/ko-review/` in the repository,
-     for `git diff` between rounds ([doc/ko-review.md](doc/ko-review.md)).
+   - Each turn's files, with a patch that rebuilds the files the reviewer read, stay 30 days in the
+     workspace's persistent volume, for `ko-review diff` between turns
+     ([ko-review/doc/design.md](ko-review/doc/design.md)).
 1. To have a classifier screen Claude's actions, such as sending workspace data out on an injected
    instruction, launch `claude --permission-mode auto`. It adds a check, not a boundary
    ([SECURITY.md](SECURITY.md#not-defended), "Prompt injection").

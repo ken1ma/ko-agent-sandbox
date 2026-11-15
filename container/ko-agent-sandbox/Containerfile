@@ -779,9 +779,12 @@ RUN --mount=type=bind,target=/mnt/context \
     #
     # Image-owned plugins load beside whatever the user installs, and nothing in the persistent volume can drop or
     # replace them. A plugin's bin/ joins the PATH of Claude Code's Bash tool. ko-review calls the Codex CLI and
-    # Claude Code (doc/ko-review.md).
+    # Claude Code (ko-review/doc/design.md).
     # - cp takes each file's mode from the build context, so the modes are set after the copy. Claude Code cannot
     #   read a manifest under a directory without the execute bit (EACCES).
+    # - The launcher's build bundles ko-review as its assembly, with the helper's jar and lib/dependencies.txt but
+    #   without the dependencies' jars, which cs fetches here at the listed versions. --intransitive keeps Coursier
+    #   from resolving the graph again, so lib/ holds the jars that the helper's tests ran with.
     #
     # Codex runs the same skill from its admin scope, /etc/codex/skills, as a copy. Through a symlink, Codex would
     # find the plugin's .claude-plugin/plugin.json above the target and name the skill `ko-review:ko-review`.
@@ -791,6 +794,10 @@ RUN --mount=type=bind,target=/mnt/context \
     find /etc/claude-code/plugins -type d -exec chmod 0755 {} +; \
     find /etc/claude-code/plugins -type f -exec chmod 0644 {} +; \
     chmod 0755 /etc/claude-code/plugins/ko-review/bin/ko-review; \
+    cs fetch --cache /tmp/ko-review-coursier \
+        $(sed 's/^/--intransitive /' /etc/claude-code/plugins/ko-review/lib/dependencies.txt) \
+        | xargs -I '{}' install -m 0644 '{}' /etc/claude-code/plugins/ko-review/lib/; \
+    rm -rf /tmp/ko-review-coursier; \
     install -D -m 0644 /etc/claude-code/plugins/ko-review/skills/ko-review/SKILL.md \
         /etc/codex/skills/ko-review/SKILL.md; \
     ln -s /etc/claude-code/plugins/ko-review/bin/ko-review /usr/local/bin/ko-review; \
