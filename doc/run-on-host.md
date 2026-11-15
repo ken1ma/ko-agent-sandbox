@@ -233,7 +233,15 @@ result you run outside the sandbox.
 - A value forwarded with `--env` never replaces it.
 - `project/KoAgentSandboxHelper.scala` wraps a task or a command in that refusal. Copy the file
   into your build's `project/` directory, and wrap each task in `build.sbt` as the file's header
-  shows. The refusal names `sbt shutdown` as the next step.
+  shows.
+  - The refusal also stops the launch's server, so that your next `sbt` starts a server of your
+    own, and the launch starts another for its next host command. Measured with sbt 2.0.12 on macOS
+    (2026-11-15): the refused `sbt dist` printed the refusal and exited 1, and the next `sbt dist`
+    built in a new server.
+  - Under sbt 1, only `sbt --client` reaches the launch's server: a plain `sbt` runs a JVM of its
+    own, and builds from your caches.
+  - `KoAgentSandboxHelperTest` checks the refusal under sbt 2.0.12 and 1.13.1, in a build of its
+    own, with the refused task beside a slower one.
 - A task whose result you run outside the sandbox, such as a launcher jar, needs the refusal
   because the launch's server builds from the run-on-host caches, which the agent's commands write
   (`SECURITY.md`, "Cache poisoning stops at the workspace").

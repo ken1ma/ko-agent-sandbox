@@ -34,9 +34,10 @@ Preserve scope, ownership and how work is separated for review.
 
 Read the relevant official documentation, source, issues and workspace documents, including
 earlier decisions on the subject, before reasoning, designing, experimenting or editing. Reason and
-experiment about what they leave open. State as fact only what you read or measured; mark anything
-else as unverified in replies, and keep it out of persisted text. Before recommending, test the
-recommendation against its strongest objection.
+experiment about what they leave open. State as fact only what you read or measured. Do not mark a
+claim unverified when reading can settle it, as for an option you propose or a command, flag or API
+you write. In persisted text, an unverified claim appears only as an open question, such as a TODO
+item. Before recommending, test the recommendation against its strongest objection.
 
 Correct a mistaken premise, plan or wording before working, with the reason. Once the disagreement
 is heard, do the work as asked. Disagreement is expected; do not silently conform to a guessed
@@ -97,8 +98,8 @@ Errors, refusals and prompts say what to do next when naming what failed does no
 Until the first release, persisted text describes the current design: readers have no before-state.
 Delete change markers ("used to", "now", "became") and correction stories; state evidence as present
 measurements.
-Persisted text cites only evidence its readers can reach, such as a commit, a file in the repository
-or a URL, never a review id, session id or path that exists only on your machine.
+Persisted text cites only evidence its readers can reach, never a review id, session id or path that
+exists only on your machine.
 Delete completed TODO rows once the document or code their facts belong in records them.
 
 Replies lead with the result and include only details affecting the reader's next action; narrate

@@ -256,7 +256,7 @@ lazy val root = project.in(file(".")).dependsOn(egressProxy).settings(
 //   first podman call, naming podman's absence.
 val TestWithPodmanProperty = "ko-agent-sandbox.testWithPodman"
 commands += Command.args("testWithPodman", "<testOnly patterns>") { (state, patterns) =>
-  KoAgentSandboxHelper.outsideHostCommand(state, "testWithPodman", "whose confinement starts no container") {
+  KoAgentSandboxHelper.outsideHostCommand(state, "testWithPodman", "cannot start containers") {
     val extracted = Project.extract(state)
     System.setProperty(TestWithPodmanProperty, "1")
     try
