@@ -132,13 +132,15 @@ Do not use one-letter names, except for
 # What helps other agents
 
 Record what helps other agents, as a rule for a class of cases, in a project document,
-`container/ko-agent-sandbox/AGENTS-SANDBOX.md` or this file. Both prompt files are in every
-prompt: add a sentence only when most agents reading it act differently because of it, and before
-presenting it, make it as general as it can be and defend every word; a sentence only some of them
-act on belongs in the document those readers open. When a rule was not followed, identify what was
-missing, ambiguous or conflicting, or what prevented following it, and revise it; add a rule only
-when none covers the case.
-Record in `agents-prompt-rationale.md` why each sentence you add or revise earns its place.
+`container/ko-agent-sandbox/AGENTS-SANDBOX.md` or this file.
+
+1. Both prompt files are in every prompt: add a sentence only when most agents reading it act
+   differently because of it.
+    1. A sentence only some of them act on belongs in the document those readers open.
+2. Make each sentence you add or revise as general as it can be, and defend every word.
+3. When a rule was not followed, identify what was missing, ambiguous or conflicting, or what
+   prevented following it, and revise it; add a rule only when none covers the case.
+4. Record in `agents-prompt-rationale.md` why each sentence you add or revise earns its place.
 
 
 # git

@@ -106,10 +106,9 @@ replaces the failing one no longer needs it.
 1. What was missing: the rule listed three kinds of reply, a proposal, an objection and a decision,
    and a reply to the user's proposal fit none of them.
 
-## What helps other agents: "make it as general as it can be"
+## What helps other agents: "as general as it can be"
 
-> add a sentence only when most agents reading it act differently because of it, and before
-> presenting it, make it as general as it can be and defend every word
+> Make each sentence you add or revise as general as it can be, and defend every word.
 
 1. Incident: `ko-agent-sandbox`, `claude-opus-5-5` at high. Twice in one session, the model fixed a
    prompt rule by appending the case at hand, and the user had to ask whether it could be

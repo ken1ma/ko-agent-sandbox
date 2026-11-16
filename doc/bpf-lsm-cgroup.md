@@ -247,21 +247,21 @@ Gained:
 
   | operation                            | direct bind | bpf     | fuse    |
   | ------------------------------------ | ----------- | ------- | ------- |
-  | `ls -lR`, per entry                  | 0.69 ms     | 0.69 ms | 12.7 ms |
-  | `git status`, 4,475 files at depth 7 | 3.8 s       | 3.8 s   | 72 s    |
-  | `sbt` build of this repository       | 87 s        | 84 s    | 604 s   |
+  | `ls -lR`, per entry                  | 0.69ms      | 0.69ms  | 12.7ms  |
+  | `git status`, 4,475 files at depth 7 | 3.8s        | 3.8s    | 72s     |
+  | `sbt` build of this repository       | 87s         | 84s     | 604s    |
 
   - The `sbt` row's direct-bind and bpf figures keep the build output in the workspace, as the
-    fuse figure does. The 43 s of "an sbt build, by where its output goes" had it outside.
+    fuse figure does. The 43s of "an sbt build, by where its output goes" had it outside.
   - "Benchmark on macOS" and "Benchmark on WSL" measure the policy's own cost over the direct bind:
     - `entry-cost.py`'s rounds overlap the bind's in three rows on each machine. On macOS `cp -r`
       runs 1.09 times the bind's and `rm -rf` 1.07 times, above it in each round; on WSL `find`
       and `ls -lR` run 1.08 times, and the program judges neither;
     - the single runs of the walk and the build lie within 5 % of the bind's on macOS, on the
       per-file rows, `find`, `git status` and the build, and within 15 % either way on WSL;
-    - on the depth rows, 200 `lstat` calls of 0.08 to 12 ms each, the policy runs 1.00 to 1.15
+    - on the depth rows, 200 `lstat` calls of 0.08 to 12ms each, the policy runs 1.00 to 1.15
       times the bind;
-    - the program itself takes 10 to 13 µs per judged call on either kernel, and 33 to 83 µs at
+    - the program itself takes 10 to 13µs per judged call on either kernel, and 33 to 83µs at
       the build's depth of 20.
   - The program runs on mutations and opens, never on `lookup` or `getattr`, the operations that
     dominate those columns.

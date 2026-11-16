@@ -237,7 +237,7 @@ Ten probes in `src/probe/` are shell scripts. Nine run on the macOS host, and
 ## Open questions under the `--nesting=none` seccomp profile
 
 - [ ] Rerun ko-review's suites in a `--nesting=none` session on Windows, in a `/mnt/c` workspace.
-  The review-cycle test of the helper's Python version exceeded its 300 s timeout there
+  The review-cycle test of the helper's Python version exceeded its 300s timeout there
   (2026-10-26); should the suites slow there too, find whether the profile or the share's speed
   causes it.
 
@@ -393,11 +393,11 @@ Decided 2026-10-26: the rule stays for every session, and the routes become valu
 The BPF backend proves its attachment at every launch, restart and recreate, in two parts
 (`../ko-agent-fs/bpf/doc/architecture.md`, "Lifecycle", 3):
 
-- the read-back, 25 to 48 ms on WSL;
-- the fixture's proof, 68 operations the kernel judges: 354 to 388 ms on WSL and 35 to 46 ms on
+- the read-back, 25 to 48ms on WSL;
+- the fixture's proof, 68 operations the kernel judges: 354 to 388ms on WSL and 35 to 46ms on
   macOS ("Lifecycle on WSL", "Lifecycle on macOS", in `../ko-agent-fs/bpf/doc/evidence.md`).
 
-The user, 2026-10-26: 0.4 s on Windows matters. Every launch pays the proof until this item is
+The user, 2026-10-26: 0.4s on Windows matters. Every launch pays the proof until this item is
 built.
 
 - [ ] Run the proof on the first launch after a boot, after `--build`, after a rule change and
@@ -423,7 +423,7 @@ built.
 ## The uid/gid mapping warm-up's retirement
 
 - [ ] Remove `ImageBuilds.warmUpUidGidMappingCopies` and its calls once rootless podman stops
-  copying an image for a new uid/gid mapping. On Windows, where the copy took about 100 s,
+  copying an image for a new uid/gid mapping. On Windows, where the copy took about 100s,
   `--update` then prints `warmed … in` under a second.
   - `--update` rebuilds the sandbox image without cache. A `--build` that reuses the cached image
     reuses its copy too, so its short duration shows nothing.
@@ -801,7 +801,7 @@ manager. The launcher execs away on POSIX, so neither side has an obvious place 
 
 - A `caffeinate` shim in the sandbox image, under the macOS name so that agents' trained habit
   transfers. The shim accepts the familiar flags (`-t`, `-w`), execs the wrapped command with its
-  exit status passed through, and refreshes a lease file under a dedicated mount every 15 s while
+  exit status passed through, and refreshes a lease file under a dedicated mount every 15s while
   the command runs.
 - The launcher mounts a launcher-owned lease directory there and starts a host-side watcher.
   - The watcher reads lease **freshness, never content**, so there is nothing to inject into.
@@ -1033,7 +1033,7 @@ Recorded Windows results (Windows Server 2025, 10.0.26100.32522, podman 6.1.0; 2
 ## Deferred — the native-image launcher
 
 A GraalVM (JDK 25) native image, built with `native-image` and a C toolchain, starts in tens of
-milliseconds where `java -jar` takes ~350 ms.
+milliseconds where `java -jar` takes ~350ms.
 
 - The launcher branches on running as an image (`RunOnHostSandbox.isNativeImage`: the supervisor's
   self-invocation, its launch file, the Seatbelt proxy inputs). The launcher stays resident when
@@ -1076,7 +1076,7 @@ The build:
   - No issue in oracle/graal reports Java Sound in an image.
   - Nothing in the launcher uses Java Sound; the microphone relay's Windows relay records through
     `sox_ng` (`mic.md`, "Decisions").
-  - The jar hashes its three bundles in about 30 ms (a fresh JVM in a Linux container,
+  - The jar hashes its three bundles in about 30ms (a fresh JVM in a Linux container,
     2026-09-28), too little to justify an sbt step that precomputes them with the launcher's own
     classes.
 - [ ] Decide the native image together with the published identity: whether the binary is a

@@ -7,7 +7,8 @@
 // The corpus runs as the policy suite runs it, the setting its answers were measured in:
 // - in a container under the attach cgroup, from the self-test image, which compiles the exerciser;
 // - without a seccomp filter: a filter answers EPERM too, so a case that the hook should refuse would pass;
-// - under keep-id, so that the container's process owns the share's files as a session's does.
+// - under the sandbox's uid/gid mapping (AgentSandboxLauncher.UidGidMapping), so that the container's process owns
+//   the share's files as a session's does.
 //
 // What the rows hold to, beside the share rows' standard (SelfTestShare):
 // - the scratch lies under the state root on the machine's share, as the proof fixture does, since the policy

@@ -41,11 +41,11 @@
        under `[experimental]` with the default `dropCache`, which reclaims cached memory immediately; `gradual`
        reclaims it slowly, and `disabled` turns reclamation off
        (https://learn.microsoft.com/en-us/windows/wsl/wsl-config).
-  2. It samples the VM process every 5 s through these phases, and reads the guest's /proc/meminfo at the end of each:
-       baseline  60 s before the build
+  2. It samples the VM process every 5s through these phases, and reads the guest's /proc/meminfo at the end of each:
+       baseline  60s before the build
        build     the command, run on this host so that the sampler sees the machine grow
-       after     600 s once the command has exited
-       pressure  macOS only: 60 s under `memory_pressure -l warn`, then 60 s more as "released"
+       after     600s once the command has exited
+       pressure  macOS only: 60s under `memory_pressure -l warn`, then 60s more as "released"
      The VM process is krunkit on macOS, and vmmemWSL or vmmem on Windows; the probe samples every such process.
   3. It writes the samples to a CSV, prints its path, and summarizes the first, peak and last sample of each phase.
      Keep the CSV with the result.
@@ -63,7 +63,7 @@
     compressed or swapped out, still held.
   - Anything else, a flat resident size included: inconclusive, with the host's free pages and pressure level during
     the pressure phase as the remaining evidence.
-  The probe reports a pressure phase as invalid when memory_pressure exits before its 60 s. The resident size can
+  The probe reports a pressure phase as invalid when memory_pressure exits before its 60s. The resident size can
   exceed the machine's memory (13.4 GiB for a 12 GiB machine after a build, 2026-09-22), so read the columns as
   differences between phases.
 
@@ -320,7 +320,7 @@ def windowsSamples(phase: String): Seq[Sample] =
     phase.set(name)
     Thread.sleep(seconds * 1000L)
 
-  println(s"== baseline: ${options.baselineSeconds} s")
+  println(s"== baseline: ${options.baselineSeconds}s")
   hold("baseline", options.baselineSeconds)
   guest("baseline") = guestMemInfo
   println(s"== build: ${command.mkString(" ")}")
@@ -329,14 +329,14 @@ def windowsSamples(phase: String): Seq[Sample] =
   // The launcher's start prompt would otherwise wait for a user who reads the sampler's output, so the default command
   // passes --session-start=immediate.
   val status = ProcessBuilder(command*).inheritIO().start().waitFor()
-  println(s"command exited $status after ${(System.nanoTime - started) / 1_000_000_000L} s")
+  println(s"command exited $status after ${(System.nanoTime - started) / 1_000_000_000L}s")
   guest("build") = guestMemInfo
-  println(s"== after: ${options.afterSeconds} s")
+  println(s"== after: ${options.afterSeconds}s")
   hold("after", options.afterSeconds)
   guest("after") = guestMemInfo
   var pressureNote = ""
   if host == Host.Mac && options.pressure then
-    println("== pressure: memory_pressure -l warn for 60 s, then 60 s more")
+    println("== pressure: memory_pressure -l warn for 60s, then 60s more")
     phase.set("pressure")
     val pressureLog = samplesDir.resolve("memory_pressure.log")
     val pressure = ProcessBuilder("memory_pressure", "-l", "warn").redirectErrorStream(true)
@@ -349,7 +349,7 @@ def windowsSamples(phase: String): Seq[Sample] =
     try
       if pressure.waitFor(60, java.util.concurrent.TimeUnit.SECONDS) then
         pressureNote =
-          s"pressure phase INVALID: memory_pressure exited with status ${pressure.exitValue} before its 60 s; " +
+          s"pressure phase INVALID: memory_pressure exited with status ${pressure.exitValue} before its 60s; " +
             s"see $pressureLog"
         System.err.println(pressureNote)
       else

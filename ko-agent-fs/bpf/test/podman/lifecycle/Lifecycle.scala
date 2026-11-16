@@ -371,7 +371,7 @@ object Lifecycle:
       private def execWrite(name: String, path: String): Output =
         podman("exec", name, FixtureInContainer, "write", path)
 
-      /** The container's log once it holds LINE_COUNT lines with NEEDLE, or after 20 s. */
+      /** The container's log once it holds LINE_COUNT lines with NEEDLE, or after 20s. */
       private def waitLogs(name: String, needle: String, lineCount: Int): String =
         def logs(record: Boolean): String = host(transcript, Seq("podman", "logs", name), record = record).text
         @tailrec def poll(tries: Int): Unit =
@@ -1029,15 +1029,15 @@ object Lifecycle:
 
       def costs(first: Launched, recreated: Launched): Unit =
         step("the costs of the launch's steps")
-        info(s"install, the verifier over nine programs (tags): ${field("ms", tags.text)} ms")
+        info(s"install, the verifier over nine programs (tags): ${field("ms", tags.text)}ms")
         info(
-          s"step 2 at launch, the controller: load, fill, attach = ${field("load_ms", first.attach)} " +
-            s"${field("fill_ms", first.attach)} ${field("attach_ms", first.attach)} ms; step 2 at a recreate, " +
-            s"attach-pinned: ${field("ms", recreated.attach)} ms after check-pins ${field("ms", recreated.check)} ms",
+          s"step 2 at launch, the controller: load, fill, attach = ${field("load_ms", first.attach)}ms " +
+            s"${field("fill_ms", first.attach)}ms ${field("attach_ms", first.attach)}ms; step 2 at a recreate, " +
+            s"attach-pinned: ${field("ms", recreated.attach)}ms after check-pins ${field("ms", recreated.check)}ms",
         )
         info(
-          s"step 3 at launch: read-back ${field("ms", first.verify)} ms, proof fixture ${field("ms", first.proof)} " +
-            s"ms (${field("ops", first.proof)} operations)",
+          s"step 3 at launch: read-back ${field("ms", first.verify)}ms, proof fixture ${field("ms", first.proof)}ms " +
+            s"(${field("ops", first.proof)} operations)",
         )
 
       /** Asks on stdin whether the user lets the next rows stop the machine. No answer means no. */

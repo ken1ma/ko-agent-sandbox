@@ -516,7 +516,7 @@ object Launcher:
       private def preloadedCheck(): String =
         vm(s"sudo -n $readback check-preloaded $Preloaded --tags $dir/tags.txt ${Hooks9.mkString(" ")}").text.trim
 
-      /** Whether a preloaded set passing its check appears within 30 s. */
+      /** Whether a preloaded set passing its check appears within 30s. */
       private def awaitPreloaded(): Boolean =
         @tailrec def poll(tries: Int): Boolean =
           preloadedCheck().contains("check-preloaded ok=1") || tries < 30 && { Thread.sleep(1000); poll(tries + 1) }
@@ -687,7 +687,7 @@ object Launcher:
             !podman(transcript, Seq("container", "exists", session.container), record = false).ok
           val ended = within(TeardownSeconds)(containerGone() && vm.rootSees(session.pinDir).contains(false))
           val pins = vm.rootSees(session.pinDir).fold("unreadable")(present => if present then "present" else "gone")
-          check(s"within $TeardownSeconds s the launcher's cleanup removed the restarted session: container " +
+          check(s"within ${TeardownSeconds}s the launcher's cleanup removed the restarted session: container " +
             s"${if containerGone() then "gone" else "remains"}, pins $pins", ended)
           end(session)
 

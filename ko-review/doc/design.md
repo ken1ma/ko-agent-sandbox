@@ -548,7 +548,7 @@ exports. A fact that the environment does not give stays absent; the helper gues
 
 - The helper is Scala 3, as the rest of this repository is. Its record classes with circe codecs
   define the stored format in code that the compiler checks.
-- A JVM's startup costs nothing that matters here: the launcher's `--help` takes 0.27–0.34 s, and a
+- A JVM's startup costs nothing that matters here: the launcher's `--help` takes 0.27–0.34s, and a
   reviewer turn takes minutes.
 - The cost is a build before the plugin runs, which a script did not need. The plugin is meant to
   move to a repository of its own, which builds its jar the same way.
@@ -581,8 +581,8 @@ leaves that default to the reviewer by passing no option.
   - Measured on 2026-10-13: Codex `gpt-6.1-sol` reviewed one tree once per level, with the
     reviewer prompt of 2026-10-13. The tree was the microphone plan as it stood during its review
     of 2026-10-09, in a clone.
-    - `low`: 6 commands, 3 web searches, 46 s, approved with no finding.
-    - `high`: 12 commands, 9 web searches, 210 s, two material findings the plan had not
+    - `low`: 6 commands, 3 web searches, 46s, approved with no finding.
+    - `high`: 12 commands, 9 web searches, 210s, two material findings the plan had not
       answered (`doc/mic.md`, "The controller and the writer", records both).
     - Neither level found the PulseAudio option that does not exist, which a review outside the
       sandbox found. The five rounds of 2026-10-09 at `low` ran one to four commands each.

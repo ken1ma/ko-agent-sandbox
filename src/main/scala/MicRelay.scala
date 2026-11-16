@@ -74,8 +74,8 @@ object MicRelay:
   final case class Recorder(label: String, command: Vector[String])
 
   /**
-   * - SoX writes its output in `--buffer`-sized blocks, 8192 bytes by default, which is 256 ms of this
-   *   stream. 640 bytes is one 20 ms period.
+   * - SoX writes its output in `--buffer`-sized blocks, 8192 bytes by default, which is 256ms of this
+   *   stream. 640 bytes is one 20ms period.
    * - `-D` turns dithering off. SoX dithers its 16-bit output by default, which turns a silent input
    *   into samples of plus and minus one, and the probe's silence warning reads exact zeros.
    */
@@ -151,7 +151,7 @@ object MicRelay:
   val PromptNoticeSeconds = 3
 
   /**
-   * The probe's moment, in reads of at most one 20 ms period: about a second. A macOS launch can warn
+   * The probe's moment, in reads of at most one 20ms period: about a second. A macOS launch can warn
    * of exact silence and then dictate, both at ten reads and at fifty (doc/mic.md, "The launch").
    */
   val ProbeReads = 50
@@ -267,7 +267,7 @@ object MicRelay:
    *
    * - Between requests, a pump drains the FIFO to /dev/null.
    * - From a `start`, the pump stops, and the FIFO keeps what the recorder writes, up to its capacity
-   *   (64 KiB, 2 s, on Linux).
+   *   (64 KiB, 2s, on Linux).
    * - At the writer's `ready`, the pump copies the kept bytes into the exec's stdin FIFO, oldest first.
    *
    * The pump copies with dd in batches of 50 reads of at most one period, about a second, and marks

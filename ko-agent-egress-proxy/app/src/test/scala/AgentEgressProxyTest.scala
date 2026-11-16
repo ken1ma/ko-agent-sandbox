@@ -1620,7 +1620,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     // Neither 100 nor refusal: the origin reads the body first, as an HTTP/1.0 server would.
     val (served, originReceived) =
       expectingOrigin(originPeer, "", "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
-    // curl after its 1 s wait: the body goes without a 100, and nothing else was heard.
+    // curl after its 1s wait: the body goes without a 100, and nothing else was heard.
     val sending = Thread.startVirtualThread: () =>
       try
         Thread.sleep(200)
@@ -3447,7 +3447,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
       finally process.destroyForcibly()
     draining.join()
     val said = String(written.get, StandardCharsets.UTF_8)
-    assert(exited, s"the proxy did not exit within 30 s:\n$said")
+    assert(exited, s"the proxy did not exit within 30s:\n$said")
     assertEquals(process.exitValue, 2, said)
     assert(said.contains("not starting"), said)
     assert(said.contains("ruleset digest: "), said)

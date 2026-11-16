@@ -197,7 +197,7 @@ object SelfTestShare:
       try
         val command = probeRunCommand(podman, mountpoint, container)
         val process = ProcessBuilder(command*).redirectErrorStream(true).start()
-        // The hard bound over both 120 s probe waits plus the container's start. The kill ends an
+        // The hard bound over both 120s probe waits plus the container's start. The kill ends an
         // unresponsive probe. The rows already printed remain, and the non-zero exit below adds a failure
         // row only when none of them failed.
         val watchdog = Thread(() =>

@@ -44,7 +44,7 @@
 // - The build is `sbt 'testOnly *SandboxTextWidthTest'` on a clone of this repository made inside the
 //   tree, with its output there, as verification-log.md's "an sbt build, by where its output goes"
 //   ran it. It runs once on the bind and once under the policy, with network for its downloads. It
-//   does not run through the FUSE backend; that log holds its 604 s.
+//   does not run through the FUSE backend; that log holds its 604s.
 // - walk-cost.py runs once per stack.
 //
 // During each run, a sampler in the machine records /proc/stat, /proc/meminfo and the pressure files
@@ -64,8 +64,8 @@
 //   dry run against fake commands.
 //
 // At the figures of verification-log.md, "The cost of a path walk", entry-cost.py's five rows through
-// the FUSE backend take about 54 s a round on the macOS machine and about 8 minutes on the WSL one.
-// walk-cost.py's `git status` takes 72 s on macOS. The other stacks are faster, by the ratios given
+// the FUSE backend take about 54s a round on the macOS machine and about 8 minutes on the WSL one.
+// walk-cost.py's `git status` takes 72s on macOS. The other stacks are faster, by the ratios given
 // there.
 //
 // The platforms differ only in data:
@@ -175,7 +175,7 @@ object Benchmark:
 
   case class Figure(row: String, value: Double, unit: String)
 
-  private val perfLine = raw"^\s*(\S.*?)\s+(\d+) us/entry\s*$$".r
+  private val perfLine = raw"^\s*(\S.*?)\s+(\d+)us/entry\s*$$".r
 
   def parsePerf(text: String): Seq[Figure] =
     text.linesIterator
@@ -183,11 +183,11 @@ object Benchmark:
         case perfLine(row, value) => Figure(row, value.toDouble, "µs/entry")
       .toSeq
 
-  private val walkDepth = raw"^depth (\d+)\s+([\d.]+) ms\s+.*$$".r
-  private val walkDeep = raw"^\s+(absolute|relative after chdir|through directory fd) ([\d.]+) ms$$".r
-  private val walkByPath = raw"^lstat each tracked by path: ([\d.]+) s, ([\d.]+) ms/file$$".r
-  private val walkByFd = raw"^same through directory fds: ([\d.]+) s, ([\d.]+) ms/file \(opening the (\d+) .*$$".r
-  private val walkCommand = raw"^(find \. -type f|git status|git status --untracked-files=no): ([\d.]+) s$$".r
+  private val walkDepth = raw"^depth (\d+)\s+([\d.]+)ms\s+.*$$".r
+  private val walkDeep = raw"^\s+(absolute|relative after chdir|through directory fd) ([\d.]+)ms$$".r
+  private val walkByPath = raw"^lstat each tracked by path: ([\d.]+)s, ([\d.]+)ms/file$$".r
+  private val walkByFd = raw"^same through directory fds: ([\d.]+)s, ([\d.]+)ms/file \(opening the (\d+) .*$$".r
+  private val walkCommand = raw"^(find \. -type f|git status|git status --untracked-files=no): ([\d.]+)s$$".r
 
   def parseWalk(text: String): Seq[Figure] =
     text.linesIterator
@@ -547,9 +547,9 @@ object Benchmark:
           )
         yield
           info(
-            s"step 2: load ${field("load_ms", attach.text)} ms, fill ${field("fill_ms", attach.text)} ms, attach " +
-              s"${field("attach_ms", attach.text)} ms; step 3: read-back ${field("ms", verify.text)} ms, proof " +
-              s"${field("ms", proof.text)} ms (${field("ops", proof.text)} operations)",
+            s"step 2: load ${field("load_ms", attach.text)}ms, fill ${field("fill_ms", attach.text)}ms, attach " +
+              s"${field("attach_ms", attach.text)}ms; step 3: read-back ${field("ms", verify.text)}ms, proof " +
+              s"${field("ms", proof.text)}ms (${field("ops", proof.text)} operations)",
           )
           Some(cgroup)
 
@@ -646,7 +646,7 @@ object Benchmark:
       case Workload.Walk => Command(Seq("python3", "walk-cost.py"))
       case Workload.Build =>
         // The image's global sbt settings send the output outside the mount. Another global base keeps
-        // it in the workspace, as in the 604 s row of the verification log.
+        // it in the workspace, as in the 604s row of the verification log.
         val build = s"cd ${buildDir(stack)} && sbt -Dsbt.global.base=/tmp/sbt-global 'testOnly *SandboxTextWidthTest'"
         Command(Seq("sh", "-c", build), network = true)
 
@@ -692,14 +692,14 @@ object Benchmark:
           figures.exists(_.row.startsWith("lstat of each")) && figures.exists(_.row == "`git status`")
         case Workload.Build => output.text.contains("[success]") && !output.text.contains("[error]")
       check(
-        f"$name: ${workload.name} completed in $wall%.0f s with ${figures.length} rows" +
+        f"$name: ${workload.name} completed in $wall%.0fs with ${figures.length} rows" +
           (if missing.isEmpty then "" else missing.mkString(" (", "; ", ")")),
         output.ok && complete && missing.isEmpty,
       )
       if !output.ok then transcript.indent(output.text.linesIterator.toSeq.takeRight(5).mkString("\n"))
       output.text.linesIterator.filter(_.startsWith("tracked ")).foreach(line => info(s"$name: $line"))
       output.text.linesIterator.filter(_.startsWith("stack under test")).foreach(line => info(s"$name: $line"))
-      figures.foreach(figure => info(f"$name: ${figure.row} ${figure.value}%.2f ${figure.unit}"))
+      figures.foreach(figure => info(f"$name: ${figure.row} ${figure.value}%.2f${figure.unit}"))
       val judged =
         stats.linesIterator.filter(line => line.startsWith("stats hook=") && field("calls", line) != "0").toSeq
       judged.foreach(line => info(s"$name: $line"))

@@ -346,7 +346,7 @@ fn coherency_check(backing: &Path, mountpoint: &Path) -> Result<(), String> {
             }
             if Instant::now() >= stamped {
                 return Err(
-                    "the scratch backing did not move the file's mtime within 5 s of rewriting\n\
+                    "the scratch backing did not move the file's mtime within 5s of rewriting\n\
                      it, so this scratch backing cannot demonstrate the invalidation either way — its\n\
                      timestamps are too coarse. Point the scratch tree at a filesystem with\n\
                      sub-second mtimes (doc/architecture.md, \"Coherency\")"
@@ -368,7 +368,7 @@ fn coherency_check(backing: &Path, mountpoint: &Path) -> Result<(), String> {
                 let by_read = if read_path == NEW { "fresh" } else { "stale" };
                 let by_mmap = if seen == NEW { "fresh" } else { "stale" };
                 return Err(format!(
-                    "a host write stayed invisible for 5 s: read() {by_read}, mmap {by_mmap}\n\
+                    "a host write stayed invisible for 5s: read() {by_read}, mmap {by_mmap}\n\
                      Its mtime did move on the backing, so AUTO_INVAL_DATA was negotiated and is\n\
                      not invalidating; this kernel cannot serve the workspace coherently\n\
                      (doc/architecture.md, \"Coherency\"; the launcher's --self-test share rows\n\

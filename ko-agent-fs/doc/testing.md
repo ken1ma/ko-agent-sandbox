@@ -59,8 +59,8 @@ each answer with the expected one (`../../src/main/scala/BpfSelfTest.scala`):
   the corpus and shows the skipped row.
 - The whole `--self-test` took, on 2026-11-09 with its images already built, the corpus rows
   included:
-  - 16 s on macOS (kernel 7.2.7-200.fc44, virtiofs);
-  - 53 s on Windows (WSL2 kernel 6.18.54.1, 9p), in a run whose failed suite left out the share
+  - 16s on macOS (kernel 7.2.7-200.fc44, virtiofs);
+  - 53s on Windows (WSL2 kernel 6.18.54.1, 9p), in a run whose failed suite left out the share
     rows.
 - The corpus rows passed on both machines on 2026-11-09, 0 mismatches. The skipped cases are the
   policy suite's on each share: the `fifo` group's where the share refuses the host FIFO, and on

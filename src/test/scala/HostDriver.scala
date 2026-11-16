@@ -136,7 +136,7 @@ object HostDriver:
         val output = String(Files.readAllBytes(file), UTF_8)
         Files.delete(file)
         if finished then (process.exitValue, output)
-        else (-1, s"$output\n(${command.mkString(" ")} killed after $seconds s)")
+        else (-1, s"$output\n(${command.mkString(" ")} killed after ${seconds}s)")
       case _ =>
         val output = String(process.getInputStream.readAllBytes(), UTF_8)
         (process.waitFor(), output)

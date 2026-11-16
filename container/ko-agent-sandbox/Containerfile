@@ -347,7 +347,7 @@ RUN set -euxo pipefail; \
 # The image
 # ---------------------------------------------------------------------------
 #
-# Each step that changes the filesystem commits a layer. Each commit took 10 to 13 s however little the step changed,
+# Each step that changes the filesystem commits a layer. Each commit took 10 to 13s however little the step changed,
 # measured on a podman 6.1.2 machine on macOS whose image store uses a mount program: the store's
 # overlay/.has-mount-program holds `true`, and `podman info` reports `Native Overlay Diff: false`. The image
 # therefore installs in four RUNs, in the order of how often their inputs change: Python, the Debian packages, the

@@ -1528,7 +1528,7 @@ What a session is left with, measured from inside a session:
     $ getent hosts egress-proxy          # from /etc/hosts, no resolver involved
     10.89.0.2       egress-proxy
     $ getent hosts $SECRET.attacker.example
-    (no answer, 2 ms)
+    (no answer, 2ms)
 
 `SessionBoundaryTest` checks failed direct network access, failed external name resolution, the
 absent default route underlying both, and which names the network's resolver answers.

@@ -195,8 +195,8 @@ default egress profile.
     `/commit:<commit>/server-linux-arm64/stable`.
   - Both answer with a redirect to `vscode.download.prss.microsoft.com`, so the feature "VS Code
     CLI and server download" needs `read` rules for both hosts.
-  - The server archive is 210 MB. The host is ready 51 s after start when it downloads the server,
-    and 14 s after start when the server is cached.
+  - The server archive is 210 MB. The host is ready 51s after start when it downloads the server,
+    and 14s after start when the server is cached.
   - The image installs the CLI (Containerfile, "VS Code CLI"). The server is downloaded at first
     start, through the proxy's default rules (`defaults/host`, "VS Code").
 - Writes, all discarded with the session:
@@ -309,7 +309,7 @@ container's `/home/nonroot`. Sessions on a Local folder sent the hostile host no
     the host and the full path, with Deny, Allow and the highlighted Always Allow. After the user
     chose Allow, the request returned `{}`.
   - On the next connection to the same address in the same window, the same request returned `{}`
-    within 4 ms with no banner, and a read then returned the file's bytes.
+    within 4ms with no banner, and a read then returned the file's bytes.
   - The source says that Allow lasts "for the lifetime of the connection"; what that covers is
     unverified.
 - `createSession` for Copilot reached the host, which answered `AuthRequired`. No `authenticate` and
@@ -331,11 +331,11 @@ container's `/home/nonroot`. Sessions on a Local folder sent the hostile host no
 - Signed out, no token crossed on the three token routes exercised: resources advertised at
   connect, the `auth/required` notification, and `AuthRequired` on `createSession`.
 - With `--enable-smoke-test-driver` and `chat.agentHost.unsafeTestToken` set, VS Code pushed that
-  token within 0.5 s of each `initialize`, to both advertised resources, including the one marked
+  token within 0.5s of each `initialize`, to both advertised resources, including the one marked
   optional. VS Code pushed before any session existed and without a prompt.
   - The push held on four connections. On two of them, VS Code first sent `reconnect`, which the
     hostile host refuses, then a fresh `initialize`.
-  - VS Code pushed for a new resource 3 ms after the host added the resource to its agent list
+  - VS Code pushed for a new resource 3ms after the host added the resource to its agent list
     (`root/agentsChanged`).
   - That push is the driver's test-token path. That VS Code forwards a signed-in session's token the
     same way is read from source (`agentHostAuth.ts`), not measured.

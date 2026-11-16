@@ -270,7 +270,7 @@ the FUSE backend judges each as a name in the link's directory, not as a path:
 On Windows, the name rule, coherency and performance rows are measured (`verification-log.md`):
 
 - fold tables are per volume, so the name-rule run verifies the volume it ran on;
-- `ls -lR` costs ~100 ms per entry ("Performance", below).
+- `ls -lR` costs ~100ms per entry ("Performance", below).
 
 
 ## Test infrastructure
@@ -304,11 +304,11 @@ The margin over the plain bind mount is **~6–18×**:
 
 The cost grows with the number of syscalls. Extrapolated linearly to a 100k-file tree:
 
-- a readdir walk: ~40 s (tolerable);
-- a walk with a stat: ~2.3 min;
-- a stat per entry, as `ls -lR` does: ~21 min. That is the `sbt`/`metals` stat storm, this
+- a readdir walk: ~40s (tolerable);
+- a walk with a stat: ~2.3min;
+- a stat per entry, as `ls -lR` does: ~21min. That is the `sbt`/`metals` stat storm, this
   project's own stated target workload.
-- The Windows figures for the same tree are ~7 min, ~24 min and ~2.8 h.
+- The Windows figures for the same tree are ~7min, ~24min and ~2.8h.
 - The main term is the LOOKUPs per syscall. Entry TTL 0 makes every path component of every
   syscall a new round trip, which no batching further down can spread.
 
@@ -319,19 +319,19 @@ user meets it.
 - [ ] **Run it on Linux.** There, no virtiofs is under the FUSE backend, and the ratio should
   differ in kind, not degree. That number is unknown today, and the FUSE backend is mandatory on
   Linux.
-- [ ] **Profile git's untracked walk.** It is 32.7 s of the real tree's 71.5 s `git status`
-  (`verification-log.md`, "a real tree"): 4.3 ms per entry, where `find` pays 1.95 ms over the
+- [ ] **Profile git's untracked walk.** It is 32.7s of the real tree's 71.5s `git status`
+  (`verification-log.md`, "a real tree"): 4.3ms per entry, where `find` pays 1.95ms over the
   same entries. What git asks per directory that `find` does not is unmeasured.
 - [ ] **Profile a javac build whose output is outside the mount.**
-  - A 202-class build then takes 41 s under gradle and 47 s under Maven, against 4.5 s and 1.9 s
+  - A 202-class build then takes 41s under gradle and 47s under Maven, against 4.5s and 1.9s
     outside the mount altogether (`verification-log.md`, "a gradle build", "a Maven build").
-  - That is 36 s and 45 s with some 210 input files as all the mount holds afterwards: some 0.2 s
+  - That is 36s and 45s with some 210 input files as all the mount holds afterwards: some 0.2s
     per source file, where a path operation at that depth costs milliseconds.
   - Which operations the build sends, on the inputs or on files it creates and removes during the
     build, is unmeasured.
-- [ ] **Profile where the millisecond goes.** ~0.6 ms of a depth-1 `lstat`'s 0.64 ms is the FUSE
+- [ ] **Profile where the millisecond goes.** ~0.6ms of a depth-1 `lstat`'s 0.64ms is the FUSE
   hop from container to daemon plus the daemon's own work per operation, not yet split between the
-  two. The guest resolves a component in ~0.06 ms.
+  two. The guest resolves a component in ~0.06ms.
   - The candidates:
     - the path inode model's full-path `openat2` per operation;
     - opening and closing an fd per operation;
@@ -349,7 +349,7 @@ user meets it.
       and `policy_name`'s two, of `.git` and `.ko-agent-sandbox`;
     - a `getattr` costs k + 1: the walk and the identity `fstat`, which is also the reply.
   - An `lstat` adds up to 31 at depth 4, and 116 at depth 9. At one virtiofs request each and the
-    ~56 µs of a guest lookup, the 31 are 1.7 ms of the 2.73 ms measured at depth 4
+    ~56µs of a guest lookup, the 31 are 1.7ms of the 2.73ms measured at depth 4
     (`verification-log.md`, "cost per operation and per component"). How many requests the guest
     kernel sends for them is unmeasured.
   - The design:
@@ -450,7 +450,7 @@ explicit, opt-in and off by default:
 A per-workspace TTL for the kernel's cache of *directory names and attributes*, default 0.
 
 - It was chosen over an always-on value because the break-even point moves with the host. A
-  component costs ~0.9 ms over virtiofs and far less on native Linux, so the right T is measured
+  component costs ~0.9ms over virtiofs and far less on native Linux, so the right T is measured
   per machine, not designed.
 
 What it caches, and why exactly that:
@@ -488,7 +488,7 @@ Expected gain:
 - [ ] Daemon: `--cache-ttl <ms>`. In `lookup` and `getattr`, a directory replies `(T, T)`, anything
   else `(0, T)`. A pure `ttls(mode, ttl)` with a test over every mode and option value: every mode
   that is not a directory gets attribute TTL 0.
-- [ ] Rig: the coherency suite at T = 0 and T = 5 s. A host append, delete and create are visible
+- [ ] Rig: the coherency suite at T = 0 and T = 5s. A host append, delete and create are visible
   at once under both. `--self-test` stays at 0, which is what "every mount is the same mount"
   (`fs.rs`, `mount_config`) is there to prove.
 - [ ] Launcher: `--fuse-ttl=<ms>`, printed at every start beside the workspace line.
@@ -496,7 +496,7 @@ Expected gain:
     joins that key, recorded beside `source-id`.
   - A launch asking for a different value while sessions are live *refuses*, naming the live value
     and the sessions. It never silently gives a looser or stricter mount than asked.
-- [ ] The sweep: 0 / 10 / 100 / 1000 ms against `git status` on the real tree, recorded in
+- [ ] The sweep: 0 / 10 / 100 / 1000ms against `git status` on the real tree, recorded in
   `verification-log.md`. Only then a persisted value.
 - [ ] `.ko-agent-sandbox/fuse.conf` (`ttl-ms = N`, `#` comments), overridden by the flag, allowed by
   the unknown-filename rule (doc/egress-proxy.md, "The rule file").

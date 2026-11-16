@@ -12,10 +12,10 @@ podman 6.1.4 on libkrun (2026-11-09), every row passes and none is skipped:
 
 | Check | Rows | Time |
 |---|---|---|
-| `SeatbeltCheck.scala` | 346 | 24 s |
-| `BuildsCheck.scala` | 40 | 55 s |
-| `CommandLifecycleCheck.scala` | 6 | 42 s |
-| `ChannelCheck.scala` | 45 | 6 min |
+| `SeatbeltCheck.scala` | 346 | 24s  |
+| `BuildsCheck.scala` | 40 | 55s  |
+| `CommandLifecycleCheck.scala` | 6 | 42s  |
+| `ChannelCheck.scala` | 45 | 6min  |
 
 - Each time runs from the machine block to the totals, the setup's emitting included. Scala CLI's
   compile of the driver comes before it.
@@ -75,16 +75,16 @@ does, with a handshake per request:
 
 | program | resolved | result |
 |---|---|---|
-| sbt 2.0.9 | `spark-sql` 3.5.1, `update`, empty Coursier cache | 1960 files, 240 MB, 36 s |
-| mill 1.0.6, JVM launcher | the same, `app.resolvedMvnDeps`, its own runtime included | 4040 files, 336 MB, 55 s |
-| Gradle 9.7.1 | `src/test/run-on-host/fixtures/gradle`, `test`, the distribution present | 32 files, 6 s |
-| Maven 3.9.16 | `src/test/run-on-host/fixtures/mvn`, `test`, the distribution's download included | 418 files, 14 MB, 37 s |
+| sbt 2.0.9 | `spark-sql` 3.5.1, `update`, empty Coursier cache | 1960 files, 240 MB, 36s  |
+| mill 1.0.6, JVM launcher | the same, `app.resolvedMvnDeps`, its own runtime included | 4040 files, 336 MB, 55s  |
+| Gradle 9.7.1 | `src/test/run-on-host/fixtures/gradle`, `test`, the distribution present | 32 files, 6s  |
+| Maven 3.9.16 | `src/test/run-on-host/fixtures/mvn`, `test`, the distribution's download included | 418 files, 14 MB, 37s  |
 
 ## Mill without a daemon
 
 Measured on Mill 1.3.0 with the fixture through a launch's runner, under the client profile with
-the runner's daemon unused (2026-10-19): the first `__.compile` took 71 s, then `__.test` 4.0 s,
-and a `__.compile` with nothing to compile 5.8 s. A warm daemon's times are unmeasured.
+the runner's daemon unused (2026-10-19): the first `__.compile` took 71s, then `__.test` 4.0s,
+and a `__.compile` with nothing to compile 5.8s. A warm daemon's times are unmeasured.
 
 ## Gradle releases
 

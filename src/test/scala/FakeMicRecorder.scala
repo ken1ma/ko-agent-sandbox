@@ -1,9 +1,9 @@
 // The recorders that MicRelayTest gives the relays, one mode per scenario.
 //
-// A real recorder is one process: `rec` delivers 1280- and 640-byte pieces alternating every 30 ms, which averages
-// 640 bytes per 20 ms (doc/mic.md, "macOS, measured"). So the fake is one process that writes every period the clock
+// A real recorder is one process: `rec` delivers 1280- and 640-byte pieces alternating every 30ms, which averages
+// 640 bytes per 20ms (doc/mic.md, "macOS, measured"). So the fake is one process that writes every period the clock
 // has made due. A shell loop that starts processes per period falls behind under load: during a full `testWithPodman`
-// run on 2026-11-04, the POSIX relay's supervisor ended such a loop as a recorder that delivered no audio for 5 s.
+// run on 2026-11-04, the POSIX relay's supervisor ended such a loop as a recorder that delivered no audio for 5s.
 //
 // Every mode counts its starts in `<host>/starts-<mode>`.
 

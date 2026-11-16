@@ -652,7 +652,7 @@ object KoAgentBpf:
          |cat "$$sess/resolved\"""".stripMargin,
     )
 
-  /** How long PlacementWatcher waits for the container to be initialized, in its 0.2 s polls. */
+  /** How long PlacementWatcher waits for the container to be initialized, in its 0.2s polls. */
   val PlacementPolls = 300
 
   /**

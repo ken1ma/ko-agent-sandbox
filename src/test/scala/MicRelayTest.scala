@@ -315,7 +315,7 @@ class MicRelayTest extends munit.FunSuite:
     assertEquals(harness.beforeReady(1), Some(0L), "audio reached the exec before its ready")
     val first = indices(harness.capture(1))
     assert(consecutive(first), s"a gap or repeat: ${first.take(80)}${harness.diagnostics}")
-    // The 0.6 s before `ready` are 30 periods, and the capture starts at the request, not after those periods.
+    // The 0.6s before `ready` are 30 periods, and the capture starts at the request, not after those periods.
     assert(
       (first.head - requestedAt + Periods) % Periods <= 8,
       s"requested at $requestedAt, began at ${first.head}${harness.diagnostics}",

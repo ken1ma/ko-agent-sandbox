@@ -73,7 +73,7 @@ commit 654586d (`bpf/probe/phase1/`, `bpf/probe/phase2/`).
     open must fail with `EPERM`, and the recorded cgroup must lie below the attach cgroup.
   - The attach cgroup's `cgroup.events` reads `populated 1` with a container below it and no task
     of its own, and `populated 0` after the container stops ("Lifecycle", 7).
-  - Whether the manager removes the empty slice within 60 s.
+  - Whether the manager removes the empty slice within 60s.
   - The order: macOS first, then WSL.
   - The driver was `bpf/probe/phase1/phase1.sh`, `phase1.ps1` on Windows, run on the host. Its
     transcript is this suite's record. Its programs are C with libbpf, not the classifier's Rust,
@@ -300,7 +300,7 @@ commit 654586d (`bpf/probe/phase1/`, `bpf/probe/phase2/`).
   - the controller's refusals: two in the machine, one given an object path and one asked for a
     cgroup outside the invoking user's slice; and a third, a mount under the bind source, which it
     lists in the VM before the attach ("The policy");
-  - the launch cost of steps 2 and 3 on both machines, the verifier's 0.5 s and 0.9 s for the nine
+  - the launch cost of steps 2 and 3 on both machines, the verifier's 0.5s and 0.9s for the nine
     programs among it ("Policy on macOS", "Policy on WSL"), and a restart's cost with the pinned
     programs ("Lifecycle", 5). The proof at every launch and the preloaded set rest on those
     figures ("Lifecycle", 3 and the preloaded set).
@@ -364,7 +364,7 @@ commit 654586d (`bpf/probe/phase1/`, `bpf/probe/phase2/`).
       mechanism").
   - `entry-cost.py` runs in interleaved rounds, three by default. The `sbt` build of "an sbt
     build, by where its output goes" runs once on the bind and once under the policy, on a clone
-    of this repository made inside the tree, with its output there; the FUSE backend's 604 s
+    of this repository made inside the tree, with its output there; the FUSE backend's 604s
     stands from that log. `walk-cost.py` runs once per stack.
   - A sampler in the machine reads `/proc/stat`, `/proc/meminfo` and the pressure files each
     second during each run. The program's counters are read after each run under the policy, so
@@ -554,8 +554,8 @@ raw lines.
 | row                      | measured                                                              |
 | ------------------------ | --------------------------------------------------------------------- |
 | share                    | `/Users` virtiofs, `rw,relatime,context=system_u:object_r:nfs_t:s0`   |
-| verifier, per program    | 10,880 to 11,382 insns, at most 4 states per insn, 118 to 131 ms      |
-| verifier, all eleven     | 159 ms in one load: the time is the load's, not the programs'         |
+| verifier, per program    | 10,880 to 11,382 insns, at most 4 states per insn, 118 to 131ms       |
+| verifier, all eleven     | 159ms in one load: the time is the load's, not the programs'          |
 | jited `file_open`, arm64 | 1,808 bytes holding two `ldaddal`, one per fetch-add                  |
 | walk, under the slice    | 1,379 calls, 1,379 settled, 0 retries, depth 19 at most               |
 | slice shape              | the marker refused for writing with `EPERM`, readable, its sibling   |
@@ -566,7 +566,7 @@ raw lines.
 |                          | of a host-made hard link; a directory's likewise, after its own      |
 |                          | rename too, and read by the program on `opendir` as statx reads it   |
 | replacement              | after the host's `rm` and create at the same name, the guest answered |
-|                          | `ENOENT` to statx for about 3 s, for the file and for the directory, |
+|                          | `ENOENT` to statx for about 3s, for the file and for the directory,  |
 |                          | then gave the new inode; a container's open of the file failed the   |
 |                          | same way, and the program then read the file's new inode as statx did |
 | slots                    | `file_open` on two slices takes one hook; ten distinct hooks attach,  |
@@ -574,8 +574,8 @@ raw lines.
 | populated                | with a container below it the slice holds no task of its own and     |
 |                          | `cgroup.events` reads `populated 1`, still 1 after the hold unit     |
 |                          | stopped, 0 after the container stopped                               |
-| empty slice              | present with its link 60 s after the hold unit and the container     |
-|                          | stopped; a stop of the slice unit removed it within 1 ms, and the    |
+| empty slice              | present with its link 60s after the hold unit and the container      |
+|                          | stopped; a stop of the slice unit removed it within 1ms, and the     |
 |                          | link's cgroup id read 0                                              |
 | scope shape              | after `podman init`, `libpod-<id>.scope/container` exists under the  |
 |                          | user manager's `user.slice` holding one process, `crun`; attached    |
@@ -597,8 +597,8 @@ The rows below name what differs from macOS; every other row passed as there.
 | ------------------------ | --------------------------------------------------------------------- |
 | mounts                   | no securityfs and no bpffs until the suite mounted them               |
 | share                    | `/mnt/c` 9p, `aname=drvfs`, `cache=0x5`, `access=client`              |
-| verifier, per program    | 16,168 to 16,670 insns, at most 4 states per insn, 95 to 112 ms       |
-| verifier, all eleven     | 165 ms in one load                                                    |
+| verifier, per program    | 16,168 to 16,670 insns, at most 4 states per insn, 95 to 112ms        |
+| verifier, all eleven     | 165ms in one load                                                     |
 | jited `file_open`, x86   | 1,362 bytes holding two `lock xadd`, one per fetch-add                |
 | walk                     | 245 calls, 245 settled, 0 retries, depth 14 at most                   |
 | identity                 | the program's `(s_dev, i_ino)` equals statx's, type `9p`, with NTFS's |
@@ -609,7 +609,7 @@ The rows below name what differs from macOS; every other row passed as there.
 | attach cgroup            | a directory under `user@1000.service/app.slice`, made by the user,    |
 |                          | taken by podman as an absolute `--cgroup-parent`; `populated 1` with  |
 |                          | a container below and no task of its own, 0 after its stop; present  |
-|                          | 60 s after the container stopped; `rmdir` removed it and the link    |
+|                          | 60s after the container stopped; `rmdir` removed it and the link     |
 |                          | read cgroup id 0                                                      |
 | container's own cgroup   | after `podman init`, `app.slice/<id>` holding `crun`; attached        |
 |                          | there, the started command is refused                                 |
@@ -638,14 +638,14 @@ lines.
 | row                      | measured                                                              |
 | ------------------------ | --------------------------------------------------------------------- |
 | verifier, inventory      | 33 programs, 16 to 596 insns each, at most 4 states per insn, 9 to    |
-|                          | 16 ms each, 35 ms for all 33 in one load                              |
+|                          | 16ms each, 35ms for all 33 in one load                                |
 | verifier, representative | the walk, the fold and the rule match are one global function         |
 |                          | (`judge_position`, `__noinline`, scalar arguments) that each          |
 |                          | program's load verifies once, 19,213 insns and 192 bytes of stack,    |
 |                          | the second walk of `inode_link` and `inode_rename` included; the      |
 |                          | hooks' own bodies are 477 to 913 insns and 56 to 88 bytes of stack;   |
 |                          | 19,690 to 20,126 insns per program, at most 12 states per insn, 147   |
-|                          | to 154 ms each, 316 ms for all eight; jited 19,952 to 22,896 bytes    |
+|                          | to 154ms each, 316ms for all eight; jited 19,952 to 22,896 bytes      |
 | convergence              | a loop converges only when every value it carries between iterations  |
 |                          | is read back from the map at each iteration: a counter kept in a      |
 |                          | register and used as an index unrolled the fold's loop 204 iterations |
@@ -693,13 +693,13 @@ lines.
 |                          | any hook, so the case stands where no `.git` is                      |
 | git                      | status, add, commit, a branch, log and gc in a clone of this          |
 |                          | repository under the policy; `git config` and `git init` refused      |
-| walk cost, syscall       | 2,000 opens for writing: depth 11, 0.81 ms under the policy against   |
-|                          | 0.78 ms bare; depth 32, 1.97 against 1.91; depth 63, 3.82 against     |
+| walk cost, syscall       | 2,000 opens for writing: depth 11, 0.81ms under the policy against    |
+|                          | 0.78ms bare; depth 32, 1.97 against 1.91; depth 63, 3.82 against      |
 |                          | 3.53 (virtiofs's own cost is the rest)                                |
 | walk cost, in program    | means over the calls that walked: `file_open` over 6,059 walks at     |
-|                          | depths 11, 32 and 63, 174 µs mean, 2.0 ms at most; `inode_unlink` at  |
-|                          | depth 5 or less, 24 µs; `inode_setattr` at depth 4 or less, 23 µs;    |
-|                          | `inode_link`, two walks, 41 µs; `inode_rename`, two walks, 39 µs      |
+|                          | depths 11, 32 and 63, 174µs mean, 2.0ms at most; `inode_unlink` at    |
+|                          | depth 5 or less, 24µs; `inode_setattr` at depth 4 or less, 23µs;      |
+|                          | `inode_link`, two walks, 41µs; `inode_rename`, two walks, 39µs        |
 | walks                    | 7,374 walks settled, 0 retries, 0 gave up, depth 64 at most           |
 | host-side mount          | an APFS image `hdiutil` attached at a directory inside the tree, the  |
 |                          | recorded root, before the attach and after it: a superblock of its    |
@@ -728,10 +728,10 @@ as there.
 | row                      | measured                                                              |
 | ------------------------ | --------------------------------------------------------------------- |
 | verifier, inventory      | 33 programs, 16 to 596 insns each, at most 4 states per insn, 12 to   |
-|                          | 29 ms each, 29 ms for all 33 in one load                              |
+|                          | 29ms each, 29ms for all 33 in one load                                |
 | verifier, representative | 6.18 verifies the global function in 228,755 insns, twelve times      |
 |                          | 7.2's count, at most 44 states per insn; 229,232 to 229,689 insns per |
-|                          | program, the stack as on macOS, 500 to 1,141 ms each, 3,421 ms for    |
+|                          | program, the stack as on macOS, 500 to 1,141ms each, 3,421ms for      |
 |                          | all eight; jited x86 15,451 to 17,739 bytes, `file_open` holding two  |
 |                          | `lock xadd`                                                           |
 | global function          | with the walk inlined into each hook, 6.18 needed 638,813 to 793,033  |
@@ -758,14 +758,14 @@ as there.
 |                          | 0, no AVC logged                                                      |
 | corpus                   | 51 cases: 0 mismatches; the two FIFO cases are the share's            |
 |                          | `EOPNOTSUPP`                                                          |
-| walk cost, syscall       | 2,000 opens for writing: depth 11, 9.5 ms under the policy against    |
-|                          | 10.8 ms bare; depth 32, 25.5 against 27.5; depth 63, 56.2 against     |
+| walk cost, syscall       | 2,000 opens for writing: depth 11, 9.5ms under the policy against     |
+|                          | 10.8ms bare; depth 32, 25.5 against 27.5; depth 63, 56.2 against      |
 |                          | 55.1: the policy's share lies within the run's spread, and 9p's own   |
 |                          | cost is about fourteen times virtiofs's                               |
 | walk cost, in program    | means over the calls that walked: `file_open` over 6,059 walks at     |
-|                          | depths 11, 32 and 63, 89 µs mean, 0.92 ms at most; `inode_unlink` and |
-|                          | `inode_setattr` 15 µs; `inode_create` 16 µs; `inode_link` 23 µs and   |
-|                          | `inode_rename` 24 µs, two walks each                                  |
+|                          | depths 11, 32 and 63, 89µs mean, 0.92ms at most; `inode_unlink` and   |
+|                          | `inode_setattr` 15µs; `inode_create` 16µs; `inode_link` 23µs and      |
+|                          | `inode_rename` 24µs, two walks each                                   |
 | walks                    | 6,272 walks settled, 0 retries, 0 gave up, depth 64 at most           |
 | host-side mount          | a second mount point of the `C:` volume (`mountvol`) at a directory   |
 |                          | inside the tree, the recorded root, before the attach and after it:   |
@@ -799,8 +799,8 @@ kernel 7.2.7-200.fc44, podman 6.1.4, crun 1.30, clang 19.1.7.
 | row                      | measured                                                              |
 | ------------------------ | --------------------------------------------------------------------- |
 | preemption               | `full (lazy)`, 10 CPUs                                                |
-| verifier, per program    | 43,363 to 46,114 insns, at most 25 states per insn, 67 to 81 ms each, |
-|                          | 496 ms for all nine; the walk and position 38,615 insns, each level   |
+| verifier, per program    | 43,363 to 46,114 insns, at most 25 states per insn, 67 to 81ms each,  |
+|                          | 496ms for all nine; the walk and position 38,615 insns, each level    |
 |                          | of the walk 248 and of its snapshot 39, the rule match 2,524, the     |
 |                          | alias activation 689 and the symlink judgment 2,778, each a global    |
 |                          | function verified once; stack 352 to 384 of 512 bytes. The run of     |
@@ -837,7 +837,7 @@ kernel 7.2.7-200.fc44, podman 6.1.4, crun 1.30, clang 19.1.7.
 | race, global sequence    | the first run, validating the walk by `rename_lock`: 167 walks        |
 |                          | overlapped a rename and 35 of 11,891 gave up after four retries       |
 | storm                    | 16 processes, 35,428 decisions, 0 wrong, 0 denied for want of a slot, |
-|                          | no nesting on any CPU; walk means 16 to 26 µs, 125 µs at most         |
+|                          | no nesting on any CPU; walk means 16 to 26µs, 125µs at most           |
 | slots exhausted          | with four marked taken a write on the share is refused and counted    |
 |                          | once as reentry; with three it runs in the fourth; freed, in the      |
 |                          | first                                                                 |
@@ -849,15 +849,15 @@ kernel 7.2.7-200.fc44, podman 6.1.4, crun 1.30, clang 19.1.7.
 | second share             | a directory under `/private/tmp`, virtiofs, bound into the container: |
 |                          | a write inside gets `EPERM`, a directory is made ("Directories")      |
 | walk cost, in program    | `file_open` over the 10,000 opens for writing of the pairs below, all |
-|                          | walked to depth 10: 51.7 µs mean, 136 µs at most; the storm's walks   |
-|                          | at depth 3 average 16 to 26 µs and the race's at depth 5, 29 µs       |
+|                          | walked to depth 10: 51.7µs mean, 136µs at most; the storm's walks     |
+|                          | at depth 3 average 16 to 26µs and the race's at depth 5, 29µs         |
 | walk cost, syscall       | five pairs of 2,000 opens at depth 10, a container under the policy   |
 |                          | and one bare, the policy's first in the odd pairs, policy minus bare: |
-|                          | the open for writing +83, +41, +68, +96 and +99 µs, median +83,       |
-|                          | against the program's own 52 µs; the open for reading, which the hook |
+|                          | the open for writing +83, +41, +68, +96 and +99µs, median +83,        |
+|                          | against the program's own 52µs; the open for reading, which the hook  |
 |                          | leaves before any walk, +6 to +32, median +12; `lstat`, which no hook |
-|                          | sees, −45 to +36, median +12; the bare write open at 680 to 736 µs. A |
-|                          | run of 2026-10-24 with the bare open at 949 to 1,791 µs spread the    |
+|                          | sees, −45 to +36, median +12; the bare write open at 680 to 736µs. A  |
+|                          | run of 2026-10-24 with the bare open at 949 to 1,791µs spread the     |
 |                          | write open's difference from −640 to +443 and `lstat`'s to +1,224, so |
 |                          | the syscall figure holds on a quiet share only, and the program's     |
 |                          | timer is the one to read                                              |
@@ -905,10 +905,10 @@ on WSL", kernel 6.18.54.1, podman 6.1.4 under the cgroupfs manager, crun 1.28, c
 |                          | 55,145 of them, 1.4 times the count on 7.2.7; each level of the walk  |
 |                          | 248 and of its snapshot 39, the rule match 1,955, the alias           |
 |                          | activation 689 and the symlink judgment 4,450; stack 352 to 384       |
-|                          | bytes; at most 29 states per insn; 106 to 166 ms each, 866 ms for all |
+|                          | bytes; at most 29 states per insn; 106 to 166ms each, 866ms for all   |
 |                          | nine. The runs of 2026-10-24 counted the walk and position at 109,037 |
 |                          | insns, 2.7 times 7.2.7's: 107,929 before the scratch locks'           |
-|                          | admission, 919,220 with the loop bodies inlined (24.7 s for all       |
+|                          | admission, 919,220 with the loop bodies inlined (24.7s for all        |
 |                          | nine), 121,408 before the review's three changes                      |
 | barrier                  | the jited `file_open`, 24,528 bytes, holds three `lock xadd`, the     |
 |                          | scan matching the instruction under any `REX` prefix                  |
@@ -934,16 +934,16 @@ on WSL", kernel 6.18.54.1, podman 6.1.4 under the cgroupfs manager, crun 1.28, c
 |                          | times; 1 walk read a torn name and was made again (2 on 2026-11-01, 1 |
 |                          | on 2026-10-27; 2, 1, 4, 1, 0, 2 and 4 in the runs of 2026-10-24, in   |
 |                          | one of which the outer renamer's first failed move answered `EACCES`) |
-| storm                    | 16 processes, 9,996 decisions in the 5 s a 9p operation's 10 ms       |
-|                          | allows, 0 wrong, 0 reentry; walk means 27 to 45 µs, 2.0 ms at most    |
+| storm                    | 16 processes, 9,996 decisions in the 5s a 9p operation's 10ms         |
+|                          | allows, 0 wrong, 0 reentry; walk means 27 to 45µs, 2.0ms at most      |
 | short name, real volume  | NTFS serves `.vscode` as `VSCODE~1`; under the flag a write through   |
 |                          | it is refused and the host sees no file in `.vscode`                  |
 | walk cost, in program    | `file_open` over the pairs' 10,000 opens for writing at depth 10:     |
-|                          | 35.4 µs mean, 2.28 ms at most                                         |
+|                          | 35.4µs mean, 2.28ms at most                                           |
 | walk cost, syscall       | five pairs as on macOS, policy minus bare: the open for writing −107, |
-|                          | +250, −32, +141 and −321 µs, median −32; the open for reading −301 to |
+|                          | +250, −32, +141 and −321µs, median −32; the open for reading −301 to  |
 |                          | +417, median −120; `lstat` −288 to +302, median +153; the bare write  |
-|                          | open 9.92 to 10.56 ms (the runs of 2026-10-24: medians −202 and −564  |
+|                          | open 9.92 to 10.56ms (the runs of 2026-10-24: medians −202 and −564   |
 |                          | µs for the write open), so 9p's jitter within a pair exceeds the      |
 |                          | walk's cost in every run and the program's timer alone gives it       |
 | container start          | with `file_receive` attached, the runtime passes 10 descriptors, all  |
@@ -992,23 +992,23 @@ macOS", kernel 7.2.7-200.fc44, podman 6.1.4, crun 1.30, clang 19.1.7.
 | row                      | measured                                                              |
 | ------------------------ | --------------------------------------------------------------------- |
 | install                  | the read-back loads the nine programs once and records their tags and |
-|                          | the read-only data's 758 bytes: 492 ms                                |
+|                          | the read-only data's 758 bytes: 492ms                                 |
 | step 2 at launch         | over the twenty-four attaches that loaded, the controller's load took |
-|                          | 359 to 481 ms, filling and freezing the maps 0.1 to 0.2 ms, the       |
-|                          | attaches 0.3 to 0.5 ms for seven or eight hooks, 1.5 ms for nine. The |
+|                          | 359 to 481ms, filling and freezing the maps 0.1 to 0.2ms, the         |
+|                          | attaches 0.3 to 0.5ms for seven or eight hooks, 1.5ms for nine. The   |
 |                          | first launch's link listing holds sixteen links of two other cgroups, |
 |                          | made before the launch's eight. On 2026-11-01 the first twelve        |
-|                          | attaches, through the reconcile's first session, took 7.5 to 9.4 ms;  |
+|                          | attaches, through the reconcile's first session, took 7.5 to 9.4ms;   |
 |                          | the ten after, each made while the reconcile's earlier sessions       |
-|                          | stayed attached, took 0.3 to 0.5 ms                                   |
-| step 2 at a recreate     | the pinned programs checked in 14 ms and attached to the new cgroup   |
-|                          | in 0.3 ms, nothing loaded; the old links read cgroup_id 0 after their |
+|                          | stayed attached, took 0.3 to 0.5ms                                    |
+| step 2 at a recreate     | the pinned programs checked in 14ms and attached to the new cgroup    |
+|                          | in 0.3ms, nothing loaded; the old links read cgroup_id 0 after their  |
 |                          | cgroup went, the programs stayed pinned                               |
-| step 3                   | the read-back 13 to 16 ms: eight programs, nine maps (the eight of    |
+| step 3                   | the read-back 13 to 16ms: eight programs, nine maps (the eight of     |
 |                          | the policy and the string literals' read-only map, its bytes the      |
 |                          | installed object's), five roots, 56 rules, the four record maps       |
 |                          | frozen; the proof's 68 operations (69 under `unix-socket`, 67 under   |
-|                          | the launcher's defaults alone) 35 to 46 ms, 0 mismatches, in a scope  |
+|                          | the launcher's defaults alone) 35 to 46ms, 0 mismatches, in a scope   |
 |                          | under the slice                                                       |
 | the record maps          | root's write of each map's first entry back unchanged, through the    |
 |                          | pinned program's map ids: `EPERM` from `roots`, `rules`, `aliases`    |
@@ -1066,7 +1066,7 @@ macOS", kernel 7.2.7-200.fc44, podman 6.1.4, crun 1.30, clang 19.1.7.
 | before the pins' removal | one a link pin fewer: their links read cgroup_id 0, and the next      |
 |                          | reconcile removes both with their pins, `links=8 progs=8` and         |
 |                          | `links=7 progs=8`, each `cgroup=gone`                                 |
-| machine restart          | `podman machine stop` 2 s, `start` 12 s; the pin root is gone with    |
+| machine restart          | `podman machine stop` 2s, `start` 12s; the pin root is gone with      |
 |                          | bpffs, the attach cgroups are gone, the two containers stay exited    |
 |                          | and the reconcile keeps both, since their containers name them        |
 | bpffs                    | holds symlinks and renames of pin directories                         |
@@ -1097,14 +1097,14 @@ Measured on 2026-11-09 with `../test/podman/lifecycle/Lifecycle.scala` on the Wi
 
 | row                      | measured                                                              |
 | ------------------------ | --------------------------------------------------------------------- |
-| install                  | the tags and the read-only data recorded in 919 ms                    |
-| step 2 at launch         | over the twenty-four attaches that loaded, the load 0.69 to 1.30 s,   |
-|                          | filling and freezing 0.1 to 1.2 ms, the attaches 12.7 to 19.0 ms in   |
-|                          | the first twelve and 0.2 to 1.1 ms in the other twelve; the first     |
+| install                  | the tags and the read-only data recorded in 919ms                     |
+| step 2 at launch         | over the twenty-four attaches that loaded, the load 0.69 to 1.30s,    |
+|                          | filling and freezing 0.1 to 1.2ms, the attaches 12.7 to 19.0ms in     |
+|                          | the first twelve and 0.2 to 1.1ms in the other twelve; the first      |
 |                          | launch's query lists its own eight links alone                        |
-| step 2 at a recreate     | the pins checked in 43 ms and attached in 16 ms                       |
-| step 3                   | the read-back 25 to 48 ms; the proof's 68 operations (69 under        |
-|                          | `unix-socket`, 67 under the launcher's defaults alone) 354 to 388 ms  |
+| step 2 at a recreate     | the pins checked in 43ms and attached in 16ms                         |
+| step 3                   | the read-back 25 to 48ms; the proof's 68 operations (69 under         |
+|                          | `unix-socket`, 67 under the launcher's defaults alone) 354 to 388ms   |
 |                          | on 9p, 0 mismatches; its `mkfifo` and `bind` answer `EPERM`, the      |
 |                          | policy's, since 9p answers both after the hooks                       |
 | the proof's cgroup       | a process of the ssh session cannot join the leaf below the attach    |
@@ -1117,7 +1117,7 @@ Measured on 2026-11-09 with `../test/podman/lifecycle/Lifecycle.scala` on the Wi
 |                          | among them. A launcher reaching the machine over ssh takes that step  |
 | sockets and mounts       | `rename` of the socket's directory into the volume (ext4) and into    |
 |                          | the workspace (9p) answers `EXDEV`                                    |
-| machine restart          | `podman machine stop` 2 s, `start` 10 s; the rows as on macOS         |
+| machine restart          | `podman machine stop` 2s, `start` 10s; the rows as on macOS           |
 
 
 ### Benchmark on macOS
@@ -1143,8 +1143,8 @@ macOS", kernel 7.2.7-200.fc44, podman 6.1.4, crun 1.30, clang 19.1.7.
 
 | row                      | measured                                                              |
 | ------------------------ | --------------------------------------------------------------------- |
-| the launch               | load 419 ms, fill 0.1 ms, attach 0.4 ms, read-back 13.4 ms, the       |
-|                          | proof's 67 operations 33.7 ms, 0 mismatches; a hook file in           |
+| the launch               | load 419ms, fill 0.1ms, attach 0.4ms, read-back 13.4ms, the           |
+|                          | proof's 67 operations 33.7ms, 0 mismatches; a hook file in            |
 |                          | `.git/hooks` made on the bind, refused under the policy and through   |
 |                          | the FUSE backend                                                      |
 | the bare bind, µs an     | before the launch, with no session's pin in bpffs (other attachments  |
@@ -1161,53 +1161,53 @@ macOS", kernel 7.2.7-200.fc44, podman 6.1.4, crun 1.30, clang 19.1.7.
 |                          | 1,136), 1,203 (1,085 to 1,267), 7,606; `rm -rf`: 302 (297 to 310),    |
 |                          | 325 (314 to 341), 2,070. Policy over bind 0.98 to 1.01 times over     |
 |                          | overlapping ranges in three rows; `cp -r` 1.09 times, the policy      |
-|                          | above the bind in each round by 131, 133 and 35 µs; `rm -rf` 1.07     |
+|                          | above the bind in each round by 131, 133 and 35µs; `rm -rf` 1.07      |
 |                          | times over disjoint ranges, the policy above the bind by 31, 17 and   |
-|                          | 20 µs; fuse over bind 5.7 to 17.3 times, as "The cost of a path walk" |
+|                          | 20µs; fuse over bind 5.7 to 17.3 times, as "The cost of a path walk"  |
 |                          | measured in 2026-09                                                   |
 | the program's share of   | 3,600 allowed calls each of `file_open`, `inode_create` and           |
 | an `entry-cost.py` round | `inode_unlink` (the corpus's 1,800 files made, copied and removed     |
 |                          | twice over), 134, 32 and 36 more answered at the superblock check,    |
 |                          | every walk 4 deep and none retried or without a slot; one create      |
 |                          | refused a round, the hook file by which `entry-cost.py` labels the    |
-|                          | stack; 12.2 to 12.9 µs mean from entry to decision, 0.17 ms at most:  |
-|                          | the three hooks' 10,801 judged calls take 133 to 138 ms of a round's  |
-|                          | 8 s. In each round `cp -r`'s excess over the bind, 275, 279 and 74 ms |
-|                          | over 2,101 entries, exceeds the 44 to 46 ms that the program's timer  |
+|                          | stack; 12.2 to 12.9µs mean from entry to decision, 0.17ms at most:    |
+|                          | the three hooks' 10,801 judged calls take 133 to 138ms of a round's   |
+|                          | 8s. In each round `cp -r`'s excess over the bind, 275, 279 and 74ms   |
+|                          | over 2,101 entries, exceeds the 44 to 46ms that the program's timer   |
 |                          | gives all of the round's `inode_create` calls; in the first two       |
-|                          | rounds it exceeds the 137 and 138 ms of all three hooks. `rm -rf`'s   |
-|                          | excess, 65, 36 and 42 ms, exceeds the 46 ms of the round's            |
+|                          | rounds it exceeds the 137 and 138ms of all three hooks. `rm -rf`'s    |
+|                          | excess, 65, 36 and 42ms, exceeds the 46ms of the round's              |
 |                          | `inode_unlink` calls in the first round alone                         |
 | the build                | `sbt 'testOnly *SandboxTextWidthTest'`, output in the workspace: bind |
-|                          | 85 s wall, sbt's own 55 s; policy 81 s, 52 s; 10 of 10 tests under    |
+|                          | 85s wall, sbt's own 55s; policy 81s, 52s; 10 of 10 tests under        |
 |                          | both. The policy judged 1,865 opens, 1,481 creates, 214 renames (428  |
 |                          | walks, source and destination), 110 unlinks and 669 attribute         |
-|                          | changes, walks up to 20 deep, 33 to 39 µs mean a call and 77 for a    |
-|                          | rename, 0.12 ms at most; it refused 5 symlinks at most 7 deep, 25 µs  |
+|                          | changes, walks up to 20 deep, 33 to 39µs mean a call and 77 for a     |
+|                          | rename, 0.12ms at most; it refused 5 symlinks at most 7 deep, 25µs    |
 |                          | mean each, the absolute targets "The policy" refuses as the FUSE      |
 |                          | backend refuses sbt's links into its cache, under which sbt writes    |
 |                          | copies ("sbt over dangling cache links"); the machine 20 and 21 %     |
 |                          | busy mean, 47 and 50 % max, memory used rising to 3.1 GB under both,  |
 |                          | from 1.0 and 1.1                                                      |
-| `walk-cost.py`, bind /   | `lstat` by path: depth 1 0.08 / 0.09 / 0.56 ms, depth 7 0.31 / 0.33 / |
-| policy / fuse            | 4.98 ms, depth 15 0.62 / 0.65 / 19.0 ms; every tracked file by path   |
-|                          | 0.32 / 0.33 / 4.97 ms a file, through a directory fd 0.09 / 0.09 /    |
-|                          | 1.28 ms; `find . -type f` 1.9 / 1.8 / 13.0 s; `git status` 3.6 / 3.5  |
-|                          | / 63.1 s, `--untracked-files=no` 0.7 / 0.8 / 35.9 s. The depth rows,  |
-|                          | 200 `lstat` each of 0.08 to 0.65 ms, put the policy 1.00 to 1.13      |
-|                          | times the bind, 0 to 0.06 ms above it, the per-file rows 1.03 and     |
+| `walk-cost.py`, bind /   | `lstat` by path: depth 1 0.08 / 0.09 / 0.56ms, depth 7 0.31 / 0.33 /  |
+| policy / fuse            | 4.98ms, depth 15 0.62 / 0.65 / 19.0ms; every tracked file by path     |
+|                          | 0.32 / 0.33 / 4.97ms a file, through a directory fd 0.09 / 0.09 /     |
+|                          | 1.28ms; `find . -type f` 1.9 / 1.8 / 13.0s; `git status` 3.6 / 3.5    |
+|                          | / 63.1s, `--untracked-files=no` 0.7 / 0.8 / 35.9s. The depth rows,    |
+|                          | 200 `lstat` each of 0.08 to 0.65ms, put the policy 1.00 to 1.13       |
+|                          | times the bind, 0 to 0.06ms above it, the per-file rows 1.03 and      |
 |                          | 1.00; the policy judged 4 opens, 4 creates and 4 unlinks in the whole |
-|                          | run, git's lock at depth 2, 15 to 19 µs each; the fuse stack's        |
-|                          | figures lie 17 and 12 % below "a real tree" of 2026-09-19 (5.97 ms a  |
-|                          | file, 71.5 s)                                                         |
+|                          | run, git's lock at depth 2, 15 to 19µs each; the fuse stack's         |
+|                          | figures lie 17 and 12 % below "a real tree" of 2026-09-19 (5.97ms a   |
+|                          | file, 71.5s)                                                          |
 | the machine during the   | `/proc/stat` over the run, ten CPUs: bind 8 % busy mean, 15 % max     |
-| stat storm               | over 29 s; policy 7 %, 17 % over 23 s; fuse 6 %, 29 % over 451 s;     |
+| stat storm               | over 29s; policy 7 %, 17 % over 23s; fuse 6 %, 29 % over 451s;        |
 |                          | iowait under 0.5 %; memory used 1.0 to 1.2 GB of 11.9 GB under bind   |
 |                          | and policy, 1.0 to 1.8 GB under fuse; memory pressure `some avg10`    |
 |                          | 0.00 throughout, io at most 0.18                                      |
-| the machine during       | the bare round 14 % busy mean, 29 % max over 9 s; bind and policy 5   |
-| `entry-cost.py`          | to 6 % mean, 6 to 9 % max over 7 to 8 s a round; fuse 6 to 7 % mean,  |
-|                          | 23 % max over 67 to 73 s a round                                      |
+| the machine during       | the bare round 14 % busy mean, 29 % max over 9s; bind and policy 5    |
+| `entry-cost.py`          | to 6 % mean, 6 to 9 % max over 7 to 8s a round; fuse 6 to 7 % mean,   |
+|                          | 23 % max over 67 to 73s a round                                       |
 | the probe's own label    | `entry-cost.py` reports `plain bind mount`, `BPF backend` and         |
 |                          | `FUSE backend`: it tells the policy from the bind by a hook file in   |
 |                          | `.git/hooks`, which the policy refuses by name and allows the         |
@@ -1232,15 +1232,15 @@ Windows machine of "Policy on WSL", kernel 6.18.54.1, podman 6.1.4 under the cgr
   macOS" measures.
 - The tree is sbt/sbt at `0fc33066`, 4,537 tracked files; the corpus and the build are as on
   macOS. The machine has four CPUs and 7.8 GB, and the tree is on the 9p share.
-- Every one of the 26 rows passes in one run. Its workloads took 2 h 25 min, the fuse stack's
-  `walk-cost.py` 81 min of it.
+- Every one of the 26 rows passes in one run. Its workloads took 2h 25min, the fuse stack's
+  `walk-cost.py` 81min of it.
 - Before the launch, bpffs held only this suite's pin root, so the bare round is the shim's control.
 - The rows below name what differs from macOS; the stacks and the rounds are the same.
 
 | row                      | measured                                                              |
 | ------------------------ | --------------------------------------------------------------------- |
-| the launch               | load 916 ms, fill 0.2 ms, attach 17.0 ms, read-back 68.5 ms, the      |
-|                          | proof's 67 operations 328 ms on 9p, 0 mismatches; the attach cgroup a |
+| the launch               | load 916ms, fill 0.2ms, attach 17.0ms, read-back 68.5ms, the          |
+|                          | proof's 67 operations 328ms on 9p, 0 mismatches; the attach cgroup a  |
 |                          | directory under `app.slice`                                           |
 | the bare bind, µs an     | before the launch, no link of any session attached: `find` 712,       |
 | entry                    | `find -printf` 1,625, `ls -lR` 3,199, `cp -r` 14,760, `rm -rf` 1,817; |
@@ -1255,42 +1255,42 @@ Windows machine of "Policy on WSL", kernel 6.18.54.1, podman 6.1.4 under the cgr
 |                          | 15,033), 78,313; `rm -rf`: 2,010 (1,939 to 2,072), 2,015 (1,957 to    |
 |                          | 2,106), 20,475. Policy over bind 1.00 to 1.07 times over overlapping  |
 |                          | ranges in three rows; `find` 1.08 times over disjoint ranges, the     |
-|                          | policy above the bind in each round by 65, 66 and 26 µs, and `ls -lR` |
-|                          | 1.08 times, by 444, 290 and 37 µs. The program judges neither         |
+|                          | policy above the bind in each round by 65, 66 and 26µs, and `ls -lR`  |
+|                          | 1.08 times, by 444, 290 and 37µs. The program judges neither          |
 |                          | command: it leaves an open for reading before any walk, and no hook   |
 |                          | sees `lookup` or `getattr`. Fuse over bind 5.5 to 33.0 times          |
 | the program's share of a | the same 3,600 judged calls a hook, 7, 10 and 0 answered at the       |
 | `entry-cost.py` round    | superblock check, every walk 4 deep, the suite's own hook file        |
-|                          | refused once a round; 10.5 to 13.4 µs mean from entry to decision,    |
-|                          | 1.02 ms at most once: 132 to 135 ms of a round's 79 to 82 s. The      |
-|                          | excess of `cp -r` over the bind, 1.5 and 1.7 s in two rounds over     |
-|                          | 2,101 entries, exceeds the 47 to 48 ms that the program's timer gives |
+|                          | refused once a round; 10.5 to 13.4µs mean from entry to decision,     |
+|                          | 1.02ms at most once: 132 to 135ms of a round's 79 to 82s. The         |
+|                          | excess of `cp -r` over the bind, 1.5 and 1.7s in two rounds over      |
+|                          | 2,101 entries, exceeds the 47 to 48ms that the program's timer gives  |
 |                          | all of the round's `inode_create` calls; in the third the policy ran  |
-|                          | 6 µs an entry below the bind                                          |
-| the build                | bind 352 s wall, sbt's own 285 s; policy 303 s, 237 s; 10 of 10 tests |
+|                          | 6µs an entry below the bind                                           |
+| the build                | bind 352s wall, sbt's own 285s; policy 303s, 237s; 10 of 10 tests     |
 |                          | under both. The policy judged 1,929 opens, 1,976 creates, 218 renames |
 |                          | (436 walks), 113 unlinks and 953 attribute changes, walks up to 20    |
-|                          | deep, 35 to 83 µs mean a call and 78 for a rename, 2.3 ms at most; it |
+|                          | deep, 35 to 83µs mean a call and 78 for a rename, 2.3ms at most; it   |
 |                          | refused 4 symlinks at most 7 deep; the machine 37 and 39 % busy mean, |
 |                          | 94 and 92 % max, memory used rising from 0.6 to 2.6 GB under both     |
-| `walk-cost.py`, bind /   | `lstat` by path: depth 1 1.05 / 1.17 / 4.59 ms, depth 7 5.31 / 6.03 / |
-| policy / fuse            | 52.8 ms, depth 15 11.7 / 12.1 / 199.2 ms; every tracked file by path  |
-|                          | 5.46 / 6.14 / 54.8 ms a file, through a directory fd 1.03 / 1.12 /    |
-|                          | 16.5 ms; `find . -type f` 15.1 / 17.3 / 172.5 s; `git status` 22.0 /  |
-|                          | 22.8 / 711 s, `--untracked-files=no` 10.7 / 10.6 / 409 s. Policy over |
+| `walk-cost.py`, bind /   | `lstat` by path: depth 1 1.05 / 1.17 / 4.59ms, depth 7 5.31 / 6.03 /  |
+| policy / fuse            | 52.8ms, depth 15 11.7 / 12.1 / 199.2ms; every tracked file by path    |
+|                          | 5.46 / 6.14 / 54.8ms a file, through a directory fd 1.03 / 1.12 /     |
+|                          | 16.5ms; `find . -type f` 15.1 / 17.3 / 172.5s; `git status` 22.0 /    |
+|                          | 22.8 / 711s, `--untracked-files=no` 10.7 / 10.6 / 409s. Policy over   |
 |                          | bind 1.03 to 1.15 times on the depth rows, 1.12 and 1.09 per file,    |
 |                          | 0.99 to 1.15 on the commands, in one run each; the policy judged 4    |
-|                          | opens, 4 creates and 4 unlinks, 15 to 16 µs each; the bare 9p bind    |
+|                          | opens, 4 creates and 4 unlinks, 15 to 16µs each; the bare 9p bind     |
 |                          | costs 6 to 19 times the macOS virtiofs bind, and the FUSE backend 4.4 |
 |                          | to 38 times the bind on top                                           |
-| the machine during the   | four CPUs: bind 14 % busy mean, 35 % max over 356 s; policy 16 %, 35  |
-| stat storm               | % over 267 s; fuse 14 %, 58 % over 4,795 s; iowait at most 5, 4 and   |
+| the machine during the   | four CPUs: bind 14 % busy mean, 35 % max over 356s; policy 16 %, 35   |
+| stat storm               | % over 267s; fuse 14 %, 58 % over 4,795s; iowait at most 5, 4 and     |
 |                          | 49 %; memory used 0.54 to 0.74 GB of 7.8 GB under each, memory        |
 |                          | pressure `some avg10` 0.00 throughout; io pressure at most 1.9, 1.1   |
 |                          | and 13.1                                                              |
-| the machine during       | bind and policy 13 to 14 % busy mean, 15 to 17 % max over 74 to 83 s  |
-| `entry-cost.py`          | a round, the bare round 80 s; fuse 14 % mean, 55 to 60 % max over 610 |
-|                          | to 667 s a round, with iowait peaks of 19 to 53 %; memory pressure    |
+| the machine during       | bind and policy 13 to 14 % busy mean, 15 to 17 % max over 74 to 83s   |
+| `entry-cost.py`          | a round, the bare round 80s; fuse 14 % mean, 55 to 60 % max over 610  |
+|                          | to 667s a round, with iowait peaks of 19 to 53 %; memory pressure     |
 |                          | 0.00 throughout                                                       |
 
 
@@ -1313,8 +1313,8 @@ and its `--build`.
 | `io_uring_setup`         | answers `ENOSYS` to the session's first process and to a              |
 |                          | `podman exec` process                                                 |
 | the preloaded set        | the six launches whose steps the suite read each took one; the four   |
-|                          | whose steps it prints attached in 0.0 to 0.2 ms, read back in 13.1 to |
-|                          | 13.4 ms and tested in 32.7 to 37.5 ms. The read-back finds the taken  |
+|                          | whose steps it prints attached in 0.0 to 0.2ms, read back in 13.1 to  |
+|                          | 13.4ms and tested in 32.7 to 37.5ms. The read-back finds the taken    |
 |                          | set's records the launch's, 4 roots and 55 rules, and the four record |
 |                          | maps frozen, and the next set prepared, passing its check, unfrozen.  |
 |                          | A live session's records read back the same before and after another  |
@@ -1332,7 +1332,7 @@ and its `--build`.
 |                          | the pins, the record and the cgroup                                   |
 | `unix-socket` session    | a `podman exec` process starts under `file_receive`, and its write to |
 |                          | `.git/config` is refused; at `podman restart` the launcher's cleanup  |
-|                          | removes the container and then the pins, within 30 s. The lifecycle   |
+|                          | removes the container and then the pins, within 30s. The lifecycle    |
 |                          | suite measures a restarted session's first process and `podman exec`  |
 | the linked worktree      | the main checkout's session binds a socket in its tree, and a         |
 |                          | host-made `.git/objects/s` links to it as `../../sock`: the main      |
@@ -1382,8 +1382,8 @@ crun 1.28, through the launcher's jar and its `--build`.
 | row                      | measured                                                              |
 | ------------------------ | --------------------------------------------------------------------- |
 | the preloaded set        | the six launches whose steps the suite read each took one; the four   |
-|                          | whose steps it prints attached in 0.1 to 0.2 ms, read back in 26.0 to |
-|                          | 31.9 ms and tested in 238 to 367 ms on 9p                             |
+|                          | whose steps it prints attached in 0.1 to 0.2ms, read back in 26.0 to  |
+|                          | 31.9ms and tested in 238 to 367ms on 9p                               |
 | the proof's cgroup       | on every launch the launcher's own proof joined the leaf below the    |
 |                          | attach cgroup from a transient scope of the user manager, as          |
 |                          | "Lifecycle on WSL" measured of the suite's; a scope that cannot be    |
@@ -1401,8 +1401,8 @@ crun 1.28, through the launcher's jar and its `--build`.
 | in a session             | measured on 2026-10-27 in a `live,bpf,unix-socket` session, the rows  |
 |                          | of macOS's; the share's `ENOTSUP` answers every bind on it, so the    |
 |                          | share rows measure the share, not the policy. A launch took the       |
-|                          | preloaded set, attached in 0.1 ms, read back in 20.3 ms, proved in    |
-|                          | 269.2 ms                                                              |
+|                          | preloaded set, attached in 0.1ms, read back in 20.3ms, proved in      |
+|                          | 269.2ms                                                               |
 | the kernel's memory      | 1,515 to 1,516 KiB a set (`memory.current` 0 bytes before, 12,414,976 |
 |                          | at eight), and 4,096 after their removal                              |
 

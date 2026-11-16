@@ -685,7 +685,7 @@ backend. The controller then runs at every launch, restart and recreate, since e
 new cgroup and only a privileged caller can attach: one `sudo -n` per launch, in the machine or on
 the host.
 
-The verifier checks a sandbox's nine programs within 0.5 s on the macOS machine and 1.3 s on the
+The verifier checks a sandbox's nine programs within 0.5s on the macOS machine and 1.3s on the
 WSL one ("Lifecycle on macOS", "Lifecycle on WSL"). A launch waits for that only when no preloaded
 set is ready at its attach:
 
@@ -724,10 +724,10 @@ session:
    - A link whose cgroup is removed is detached without an error (`cgroup.c`,
      `bpf_cgroup_link_release`, "auto-detached by dying cgroup"). So what removes the slice decides
      whether the hold unit is needed:
-     - systemd left the empty slice and the link in place for the 60 s the one-hook suite watched,
+     - systemd left the empty slice and the link in place for the 60s the one-hook suite watched,
        after the hold unit and a container below had stopped;
-     - a stop of the slice unit removed it within 1 ms and detached the link ("One hook on macOS");
-     - whether systemd ever removes the empty slice by itself is unmeasured beyond those 60 s. So
+     - a stop of the slice unit removed it within 1ms and detached the link ("One hook on macOS");
+     - whether systemd ever removes the empty slice by itself is unmeasured beyond those 60s. So
        the hold unit stays until a longer watch says otherwise, and teardown stops the slice unit.
    - Rejected: the container's own cgroup, a scope under systemd and a directory under cgroupfs,
      attached between `podman init`, which performs every step short of starting the container
@@ -808,7 +808,7 @@ session:
      that, and `--self-test` runs it on the user's kernel (`BpfSelfTest.scala`).
    - The proof runs at every launch, by the user's decision of 2026-10-26. The controller keeps the
      two parts separable for the skip rule `../../../doc/TODO.md` plans ("The proof fixture skipped
-     on an unchanged launch"), since every launch pays the proof's 354 to 388 ms on WSL
+     on an unchanged launch"), since every launch pays the proof's 354 to 388ms on WSL
      ("Lifecycle on WSL").
 4. Create and start the container. Its scope, or its directory under cgroupfs, lands below the
    proven cgroup.
@@ -828,9 +828,9 @@ session:
      a pid in the `created` state (`runtime.md`, "State").
    - Measured on 2026-10-27: after `init` the status reads `initialized`, and `State.Pid` names
      `crun`, whose `/proc/<pid>/cgroup` names `<parent>/libpod-<id>.scope/container` on macOS and
-     `<parent>/libpod-<id>` on WSL. Read over `podman machine ssh` it took 0.25 s and 1.0 s, and a
+     `<parent>/libpod-<id>` on WSL. Read over `podman machine ssh` it took 0.25s and 1.0s, and a
      launch makes no other machine round trip between create and start. Through the watcher, with
-     `init` run right after the create, the start waited 57 ms on macOS and 55 ms on WSL.
+     `init` run right after the create, the start waited 57ms on macOS and 55ms on WSL.
    - A pid reused after the container's process ended reads another process's cgroup. That cgroup
      is below the attach cgroup only if that process were there, where nothing but the container
      runs. So reuse can only refuse the launch, and the pid needs no start-time check.

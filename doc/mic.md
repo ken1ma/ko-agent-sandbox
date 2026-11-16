@@ -14,7 +14,7 @@ What to read next, and what works:
   when the microphone is open (`../SECURITY.md`, "Mic").
 - Measured on macOS on 2026-10-13 and 2026-10-14:
   - Claude Code dictates through `/voice` in hold and tap mode. In tap mode, Claude Code sends the
-    prompt itself, and stops a silent recording after about 15 s with "No speech detected".
+    prompt itself, and stops a silent recording after about 15s with "No speech detected".
   - agy dictates through its `/voice`.
 - Codex's `/voice` cannot connect ("Codex").
 - The open checks are in one section (`TODO.md`, "The host microphone for voice dictation").
@@ -49,7 +49,7 @@ What to read next, and what works:
     the launcher hands over to the agent and no JVM stays for the session.
   - On Windows, the relay is threads of the resident launcher.
   - On Windows, the program is `sox_ng`, the maintained SoX, through its `waveaudio` driver. Its
-    first period arrives about 125 ms after the start, and later periods every 20 to 30 ms
+    first period arrives about 125ms after the start, and later periods every 20 to 30ms
     ("Windows, measured").
   - The relay does not use Java Sound (`javax.sound.sampled`), in the launcher thread on Windows
     or as a session job on macOS:
@@ -58,12 +58,12 @@ What to read next, and what works:
     - Java Sound's measurements show nothing that a program on `PATH` lacks.
   - The relay does not use WSLg's PulseAudio server, which the podman machine on the WSL provider
     mounts. That server needs a helper container beside the socket, serves no Hyper-V machine,
-    hangs 30 s when Windows has no capture device, and delivers audio at twice its level
+    hangs 30s when Windows has no capture device, and delivers audio at twice its level
     ("Windows, measured").
 - **The host recorder runs for the whole session; the relay forwards only while a process in the
   sandbox records.**
   - A recorder started per dictation loses its own start on top of the relay's round trip: 660 to
-    810 ms of each dictation on macOS ("Latency").
+    810ms of each dictation on macOS ("Latency").
   - A running recorder loses nothing of its own. The relay keeps what arrives during the round
     trip and forwards it first.
   - The cost is a microphone open all session, with macOS's indicator lit; SECURITY.md says so.
@@ -91,7 +91,7 @@ What to read next, and what works:
   - PulseAudio's `module-pipe-source` posts each chunk it reads.
   - PipeWire's `module-pipe-tunnel` keeps a ring, and sets the ring's read index 8192 frames behind
     the write index at every resync. The module resyncs at every underrun, and every recording
-    starts in an underrun. So a dictation at 16000 Hz begins 512 ms late, hard-coded, and fills
+    starts in an underrun. So a dictation at 16000 Hz begins 512ms late, hard-coded, and fills
     with silence while the FIFO is dry. The relay cannot recover a delay inside the module.
   - PipeWire is a core daemon, `pipewire-pulse` for the protocol, and a session manager or a
     hand-written routing policy to link streams to the source. The sandbox's device-free graph
@@ -158,7 +158,7 @@ order (`checkRecordingAvailability`, `checkVoiceDependencies`, read from the ima
   requires a non-empty `/proc/asound/cards` not reading "no soundcards". The sandbox has no such
   file.
 - `arecord --version` exits 0, and `arecord -f S16_LE -r 16000 -c 1 -t raw /dev/null` exits 0 or
-  is still running 150 ms later: `arecord` is the recorder.
+  is still running 150ms later: `arecord` is the recorder.
 - Else `sox --version` and `rec --version` both exit 0: SoX `rec` is the recorder.
 - Else: without SoX, "Voice mode requires SoX for audio recording. Install it with: sudo apt-get
   install sox"; with it, "Voice mode requires a microphone, but SoX could not open an audio
@@ -246,12 +246,12 @@ Read from the image's binaries on 2026-10-09.
     unmeasured.
     - Sharing the device is not the cause. One launch beside another `--audio=mic` session warned,
       and the next launch did not. A `rec` run from the shell beside that session delivered sound
-      in its first piece, at 137 to 141 ms, in three runs.
+      in its first piece, at 137 to 141ms, in three runs.
     - Each launch's `mic.log` says how far into the recorder's audio its first sound came,
-      or that none came in its first 30 s.
+      or that none came in its first 30s.
 - On Windows, the recorder decides, and two diagnostics explain the decision.
   - In a session without a capture endpoint, and under each permission value that stops the
-    recorder, the recorder fails within about 350 ms with a message that names neither cause
+    recorder, the recorder fails within about 350ms with a message that names neither cause
     ("Windows, measured").
   - A recorder that fails ends the launch with the diagnostics' reading. A launch whose recorder
     records proceeds.
@@ -317,12 +317,12 @@ The script's modules:
     clock and the null sink's. The growth lasts one forwarding. Measured with PulseAudio 17.0 on
     2026-10-14:
     - A feed 0.1 % faster than its rate for an hour, beyond a real clock's difference: the source
-      stayed `RUNNING`, the buffer grew with the excess from 0.20 s to 3.78 s, and the daemon's
+      stayed `RUNNING`, the buffer grew with the excess from 0.20s to 3.78s, and the daemon's
       memory grew by 240 kB.
     - A stream opened at that hour's end received a marker within a millisecond and every sample
       of it, as one at the start did.
-    - With the feed stopped, after three minutes 1 % fast, the buffer fell from 2.09 s to under a
-      millisecond within 15 s.
+    - With the feed stopped, after three minutes 1 % fast, the buffer fell from 2.09s to under a
+      millisecond within 15s.
 - `module-native-protocol-unix` on its default socket, `native` in `pulse-runtime`, which
   `PULSE_SERVER` names, with no cookie.
   - A client makes a cookie file where it finds none: `~/.config/pulse/cookie` by default,
@@ -379,7 +379,7 @@ controller acts on every stream event, and when its timer is due, five seconds a
 - Demand and no supply: the controller writes `start` to the channel's `req` FIFO.
   - The controller opens the FIFO for writing, non-blocking. A FIFO that the relay has not made
     yet (`ENOENT`) or is not reading (`ENXIO`) means the relay is unavailable. The controller then
-    retries every 0.2 s while demand persists.
+    retries every 0.2s while demand persists.
     - The relay reads `req` through one exec per request, so between two execs nobody reads the
       FIFO.
     - A retry at the next five-second tick would cost the dictation's first seconds.
@@ -472,7 +472,7 @@ lasts the recording.
     pipe kept during the round trip. So the audio of the round trip reaches the agent too. The job
     reads the next request only when the exec and the copy have ended, since the recording's end
     arrives as the exec's end, not as a line.
-  - The recorder FIFO's capacity bounds what a slow exec keeps. The capacity is 64 KiB, 2 s of this
+  - The recorder FIFO's capacity bounds what a slow exec keeps. The capacity is 64 KiB, 2s of this
     stream, by default on Linux, and pipe(7) says applications must not rely on that value. The
     capacity on macOS is unmeasured. A full pipe blocks the recorder's write until the exec's bound
     ends the request as a logged failure.
@@ -530,18 +530,18 @@ A client's stream opens at the key press, and the relay keeps the audio from the
 agent never hears what is said between the key press and the request, a span that holds the
 controller's event and one FIFO write.
 
-- The round trip, one `podman exec` of 100 to 120 ms on the Mac's podman machine, delays the first
+- The round trip, one `podman exec` of 100 to 120ms on the Mac's podman machine, delays the first
   bytes and loses none ("macOS, measured").
 - The daemon and SoX add their own buffers.
 - The source itself is already running, so no resume is paid.
-- A recorder started per dictation would pay its own start first: 550 to 700 ms on macOS, and
-  125 ms on Windows.
-  - On macOS, about 450 ms of that start is the device setup after the process start, and every
+- A recorder started per dictation would pay its own start first: 550 to 700ms on macOS, and
+  125ms on Windows.
+  - On macOS, about 450ms of that start is the device setup after the process start, and every
     start pays it.
-  - With the round trip, a per-dictation relay would lose about 660 to 810 ms of each dictation on
+  - With the round trip, a per-dictation relay would lose about 660 to 810ms of each dictation on
     macOS.
 - Measured on macOS on 2026-10-14: `rec` in the sandbox recorded room audio through the relay, and
-  its first bytes arrived after 386 ms.
+  its first bytes arrived after 386ms.
 
 At the key's release, the CLI sends `rec` `SIGTERM` and, in the same step, closes its stream to the
 transcription server. The CLI drops chunks that arrive after that (`[voice_stream] Dropping audio
@@ -549,8 +549,8 @@ chunk after CloseStream`), so nothing after the key reaches the transcript.
 
 - What is lost of the last word is the audio in flight between the host's microphone and the CLI at
   that moment: the recorder's period, the exec, the daemon and the CLI's `rec`. The relay's part is
-  kept short (a 20 ms period, no buffering).
-- The CLI's `rec` delivers 4096-byte pieces, 128 ms, against the daemon, so up to 128 ms can be in
+  kept short (a 20ms period, no buffering).
+- The CLI's `rec` delivers 4096-byte pieces, 128ms, against the daemon, so up to 128ms can be in
   its output at `SIGTERM`. Nothing the sandbox sets shortens the pieces, so the launcher sets no
   `SOX_OPTS`:
   - the CLI's own `--buffer 1024` overrides `SOX_OPTS`, which supplies SoX's defaults (sox(1));
@@ -571,14 +571,14 @@ A 440 Hz tone at 0.3 of full scale, played into the cable, stood for speech. So 
 include the cable's buffer and are not a microphone's.
 
 - `sox_ng -q --buffer 640 -d -t raw -r 16000 -e signed -b 16 -c 1 -` records the default recording
-  device at the tone's exact level (RMS 0.211, 128000 bytes for 4 s). Its process start takes
-  17 ms. The first 640-byte period reaches the pipe about 125 ms after the start, and the next
-  periods follow every 20 to 30 ms, in exact 640-byte pieces.
-  - Without `--buffer`, SoX writes its output in 8192-byte blocks, 256 ms of this stream, and the
-    first block comes about 490 ms after the start. `--buffer 1280` gives 1280-byte pieces at
-    40 ms. The option sizes the output write, not the driver's period.
+  device at the tone's exact level (RMS 0.211, 128000 bytes for 4s). Its process start takes
+  17ms. The first 640-byte period reaches the pipe about 125ms after the start, and the next
+  periods follow every 20 to 30ms, in exact 640-byte pieces.
+  - Without `--buffer`, SoX writes its output in 8192-byte blocks, 256ms of this stream, and the
+    first block comes about 490ms after the start. `--buffer 1280` gives 1280-byte pieces at
+    40ms. The option sizes the output write, not the driver's period.
   - Under each permission value at `Deny` ("The launch"), and with the per-user `microphone` value
-    absent, sox_ng exits after about 330 ms with
+    absent, sox_ng exits after about 330ms with
     `sox_ng FAIL formats: can't open input 'default': waveInOpen failed with code 1` and the
     system's text for that code. The text names neither the microphone nor the permission.
   - With `NonPackaged` absent, or the machine-wide value absent, sox_ng records normally. On this
@@ -592,13 +592,13 @@ include the cable's buffer and are not a microphone's.
     the audio API still counted the endpoint active and sox_ng recorded the tone at full level. So
     the PnP status is not the audio API's state.
   - In the Remote Desktop session that hides every endpoint (below), sox_ng fails after about
-    350 ms with
+    350ms with
     `sox_ng FAIL formats: can't open input 'default': sample format negotiation failed with code 2`
     and the system's text for a file not found. So a session with no capture endpoint fails fast,
     where the silent run above did not.
   - `EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE)`, called from PowerShell through `Add-Type`
     COM interop, counts 1 in a session that sees the cable, and 0 in the Remote Desktop session
-    that hides the cable. `Add-Type` compiles the script in 150 ms, and a count takes 7 ms. The
+    that hides the cable. `Add-Type` compiles the script in 150ms, and a count takes 7ms. The
     count and the recorder agreed in every run where both were measured.
 - The podman machine has no ALSA capture device (`/dev/snd` holds `timer`). WSLg mounts its
   PulseAudio server into the machine at `/mnt/wslg/PulseServer`, with `RDPSource` (s16le, mono,
@@ -606,16 +606,16 @@ include the cable's buffer and are not a microphone's.
   `/mnt/wslg` mounted reaches the server with no cookie.
   - `parecord --raw --format=s16le --rate=16000 --channels=1 --latency-msec=20` on that server
     delivers Windows's default capture device, resampled by WSLg's server, at twice the tone's
-    level (RMS 0.42). The first 20 ms period arrived 47, 57 and 68 ms after the start, with the
+    level (RMS 0.42). The first 20ms period arrived 47, 57 and 68ms after the start, with the
     source idle and the container already running.
   - With no capture device on Windows, the source stays suspended, and a stream on it fails after
-    30 s with "Connection failure: Timeout".
+    30s with "Connection failure: Timeout".
 - Java Sound:
   - lists each capture endpoint as a DirectSound mixer;
-  - grants the 16000 Hz, 16-bit mono line directly, and grants the requested 640-byte (20 ms)
+  - grants the 16000 Hz, 16-bit mono line directly, and grants the requested 640-byte (20ms)
     buffer;
   - returns one period per `read`, and delivered the tone at its level;
-  - returned a blocked `read` after 506 ms when another thread called `close()`.
+  - returned a blocked `read` after 506ms when another thread called `close()`.
   - With "Microphone access" off, the mixers are still listed, and `open` fails with
     `LineUnavailableException: line with format ... not supported`, which names the format, not the
     cause.
@@ -637,30 +637,30 @@ Measured on 2026-10-11 on an Apple silicon Mac (Homebrew's `arm64_tahoe` bottles
   application.
 - With the permission denied, in a newly installed terminal whose prompt was answered "Don't
   Allow", `rec` neither fails nor hangs:
-  - `rec` ran until killed at 20 s, and wrote 428036 bytes with a peak of 1 LSB, SoX's dither on
+  - `rec` ran until killed at 20s, and wrote 428036 bytes with a peak of 1 LSB, SoX's dither on
     zeros.
-  - `rec`'s first bytes came about 6.6 s after the start, once the prompt was answered.
-  - With dither off (`-D`) at the device's 48000 Hz, 3 s of recording were 144000 samples, all
+  - `rec`'s first bytes came about 6.6s after the start, once the prompt was answered.
+  - With dither off (`-D`) at the device's 48000 Hz, 3s of recording were 144000 samples, all
     exactly 0, where the dithered output had left none at 0.
 - The device runs at 48000 Hz and refuses 16000, so SoX resamples. SoX prints
   `rec WARN formats: can't set sample rate 16000; using 48000` on stderr even under `-q`, and the
-  output is 16000 Hz (128106 bytes for 4.003 s). The relay treats stderr as a log, not as a
+  output is 16000 Hz (128106 bytes for 4.003s). The relay treats stderr as a log, not as a
   failure. Speech arrived at RMS 0.0089, peak 0.068.
 - Timing, from the process start to the first bytes on the pipe, then between pieces:
-  - `rec --version` alone takes 100 ms.
-  - 48000 Hz with `--buffer 1920`, one 20 ms period: first bytes at 540 to 570 ms, then exactly
-    every 20 ms.
-  - 16000 Hz with `--buffer 640`: 560 to 710 ms, then 1280- and 640-byte pieces alternating every
-    30 ms.
-  - 16000 Hz with `--buffer 1280`: 720 ms.
-  - 16000 Hz with the default 8192: 1000 ms, then every 256 ms.
-  - So about 450 ms lies between the process start and the first period. Runs back to back all
-    paid the 450 ms, so it is not a hardware wake-up.
-    - In unmeasured proportion, the 450 ms goes to SoX's CoreAudio driver and to macOS's
+  - `rec --version` alone takes 100ms.
+  - 48000 Hz with `--buffer 1920`, one 20ms period: first bytes at 540 to 570ms, then exactly
+    every 20ms.
+  - 16000 Hz with `--buffer 640`: 560 to 710ms, then 1280- and 640-byte pieces alternating every
+    30ms.
+  - 16000 Hz with `--buffer 1280`: 720ms.
+  - 16000 Hz with the default 8192: 1000ms, then every 256ms.
+  - So about 450ms lies between the process start and the first period. Runs back to back all
+    paid the 450ms, so it is not a hardware wake-up.
+    - In unmeasured proportion, the 450ms goes to SoX's CoreAudio driver and to macOS's
       microphone permission check for the new process. The driver queries the device and tries to
       set its format, creates the I/O proc, starts the device and fills the first buffer.
-    - The resampler adds up to 150 ms, and the output buffer adds the rest.
-- `podman exec <sandbox> true` on the podman machine takes 100 to 120 ms, which is the relay's round
+    - The resampler adds up to 150ms, and the output buffer adds the rest.
+- `podman exec <sandbox> true` on the podman machine takes 100 to 120ms, which is the relay's round
   trip before the writer starts.
 
 ## Excluded

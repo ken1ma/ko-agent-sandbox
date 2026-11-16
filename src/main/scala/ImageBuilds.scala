@@ -138,7 +138,7 @@ object ImageBuilds:
    * - Rootless podman on native overlayfs cannot shift ownership at mount time. The first container under a new
    *   uid/gid mapping therefore copies the image's top layer with its files re-owned, and the image keeps that copy
    *   until the image itself is removed (containers/storage, store.go, `imageTopLayerForMapping`).
-   * - The copy of the sandbox image took 105 s in a launch on a Windows machine.
+   * - The copy of the sandbox image took 105s in a launch on a Windows machine.
    * - The printed duration shows when podman stops copying (doc/TODO.md, "The uid/gid mapping warm-up's retirement").
    * - A failure only warns, because the launch then makes the copy itself.
    * - The container has no name, so the warm-up reserves none. A build killed before the removal leaves the container,

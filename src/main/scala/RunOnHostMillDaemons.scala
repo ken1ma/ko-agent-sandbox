@@ -52,7 +52,7 @@ object RunOnHostMillDaemons:
 
   /** The bound on observing the daemon listen on the port after the starter's exit.
     *
-    *   - The bound equals the launcher's connect retry (`MillServerLauncher.serverInitWaitMillis`, 10 s). Within that
+    *   - The bound equals the launcher's connect retry (`MillServerLauncher.serverInitWaitMillis`, 10s). Within that
     *     time, a daemon listens and `socketPort` is written. A port still unverifiable after this long therefore
     *     means that the daemon is not listening.
     *   - The bound matters for a starter that exited on its own. The runner ends a starter only after that very

@@ -83,5 +83,5 @@ the plugin outside the image.
 
 - The cost is one binary per platform: Linux on aarch64 and x86_64, and macOS. Build them once CI
   can build and test each platform, not by hand.
-- Startup is no reason: a JVM starts the launcher's `--help` in 0.27–0.34 s, and a reviewer turn
+- Startup is no reason: a JVM starts the launcher's `--help` in 0.27–0.34s, and a reviewer turn
   takes minutes.

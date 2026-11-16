@@ -728,9 +728,9 @@ object Policy:
         pair
       info(
         s"walk cost at the clone's deepest file, depth ${fixture.deepestDepth}, policy minus bare over $WalkPairs " +
-          s"pairs, the medians: open_rdwr=${median(pairs.map(_.rdwr))} open_rdonly=${median(pairs.map(_.rdonly))} " +
-          s"lstat=${median(pairs.map(_.lstat))} ns; bare open_rdwr ${pairs.map(_.bareRdwr).min} to " +
-          s"${pairs.map(_.bareRdwr).max} ns; failed=${pairs.map(_.failed).sum}",
+          s"pairs, the medians: open_rdwr=${median(pairs.map(_.rdwr))}ns " +
+          s"open_rdonly=${median(pairs.map(_.rdonly))}ns lstat=${median(pairs.map(_.lstat))}ns; bare open_rdwr " +
+          s"${pairs.map(_.bareRdwr).min}ns to ${pairs.map(_.bareRdwr).max}ns; failed=${pairs.map(_.failed).sum}",
       )
       info(s"in program over the pairs: ${lines(statsOf(pinA).text, "^stats hook=file_open ".r).mkString(" ")}")
       val jited = vm(s"sudo -n $Inspect jited $pinA /tmp/file_open.jited").text.trim

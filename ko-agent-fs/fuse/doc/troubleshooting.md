@@ -149,7 +149,7 @@ Compare your timings with `verification-log.md`, "The cost of a path walk":
   word. `pulumi up` and `pulumi preview` run one each, to record whether the tree is dirty.
 - git stats every tracked file by its full path, and each path component costs one round trip. So
   the cost is tracked files × depth.
-- Measured: about 9 ms per file at depth 7, nearly as much again for the untracked walk, and 72 s
+- Measured: about 9ms per file at depth 7, nearly as much again for the untracked walk, and 72s
   for 4,200 files.
 
 What shortens it, set on the host, since a session cannot write `.git/config`:
@@ -163,7 +163,7 @@ What shortens it, set on the host, since a session cannot write `.git/config`:
 A build in the session that writes its output into the workspace pays that cost for each file it
 writes, and a compiler writes deep:
 
-- This repository's sbt compile takes 604 s into `target/out`, and 28 s into a directory outside
+- This repository's sbt compile takes 604s into `target/out`, and 28s into a directory outside
   the mount (`verification-log.md`, "an sbt build").
 - The image moves what an sbt 2 build derives from `rootOutputDirectory` to `~/.cache/sbt-out`. By
   default, a jar that `sbt package` builds in a session is therefore there, not under `target/`,
@@ -199,16 +199,16 @@ For gradle, the image sets nothing either. An init script can move every project
 - The image does not ship it, because a gradle build, and the scripts around one, often name
   `build/` literally: `file("build/libs/…")`, a Containerfile's `COPY build/libs`. Those break when
   the directory moves. Check the workspace for such paths before you use it.
-- It also saves less than sbt's setting. A generated 202-class build takes 75 s with `build/` in the
-  mount, 44 s with it moved, and 4.5 s wholly outside the mount. So moving the persistent output
+- It also saves less than sbt's setting. A generated 202-class build takes 75s with `build/` in the
+  mount, 44s with it moved, and 4.5s wholly outside the mount. So moving the persistent output
   out of the mount leaves most of the extra build time (`verification-log.md`, "a gradle build").
-- `--project-cache-dir` for the project's `.gradle/` saves 3 s more.
+- `--project-cache-dir` for the project's `.gradle/` saves 3s more.
 
 For Maven, the image supplies nothing that moves `target/` from outside the project:
 
 - `-Dproject.build.directory=…` is ignored. A core extension could do it, but none is written.
-- `<build><directory>` in the project's own POM works. It takes the same generated build from 85 s
-  to 47 s, against 1.9 s wholly outside the mount (`verification-log.md`, "a Maven build").
+- `<build><directory>` in the project's own POM works. It takes the same generated build from 85s
+  to 47s, against 1.9s wholly outside the mount (`verification-log.md`, "a Maven build").
 - Where the POM must not change, build a copy of the project under `~`, or run Maven on the host
   with `--run-on-host`.
 

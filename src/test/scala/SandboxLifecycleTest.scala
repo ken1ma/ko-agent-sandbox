@@ -172,7 +172,7 @@ class SandboxLifecycleTest extends munit.FunSuite:
       podman.toString, "sandbox", "proxy", "net-a", "net-b", "none", "", "off", ClipboardRelay.HostBackend(),
     )
     val process = ProcessBuilder(command*).redirectErrorStream(true).redirectOutput(dir.resolve("out").toFile).start()
-    assert(process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS), "the reaper did not exit within 30 s")
+    assert(process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS), "the reaper did not exit within 30s")
     val lines = java.nio.file.Files.readAllLines(calls).toArray.toVector.map(_.toString)
     val waited = lines.indexOf("wait sandbox")
     val sandboxRemoved = lines.indexOf("rm --force --time 2 sandbox")
@@ -270,7 +270,7 @@ class SandboxLifecycleTest extends munit.FunSuite:
       while process.isAlive && System.nanoTime() < deadline do
         process.descendants().forEach(handle => owned.getOrElseUpdate(handle.pid, handle))
         Thread.sleep(20)
-      assert(!process.isAlive, "the reaper did not exit within 30 s")
+      assert(!process.isAlive, "the reaper did not exit within 30s")
       assertEquals(process.exitValue(), 0, java.nio.file.Files.readString(output))
       // dash's kill takes no `--`; a group kill that failed to send would pass every assertion below.
       assert(!java.nio.file.Files.exists(dir.resolve("children.unsent")), "the group TERM was never sent")

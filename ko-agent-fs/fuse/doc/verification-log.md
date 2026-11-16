@@ -106,7 +106,7 @@ the podman machine, `stat -c '%d:%i'` at `/mnt/c/<workspace>` prints:
 - one for `.ko-agent-sandbox` and `KO-AGE~1`;
 - one for `.git/config` and `GIT~1/config`.
 
-1000 `stat` processes over `.git` and `.ko-agent-sandbox` took 6.7 s where both exist, and 2.6 s
+1000 `stat` processes over `.git` and `.ko-agent-sandbox` took 6.7s where both exist, and 2.6s
 in a directory with neither.
 
 Inside a FUSE backend session over that workspace (`../../policy/doc/security-research.md`, "Windows
@@ -157,8 +157,8 @@ A coherency probe ran by hand, on the same machine and stack as the name-rule ru
 `--self-test`'s share rows (the launcher's `SelfTestShare.scala`).
 
 - A write on the host became visible to a fresh `read()` inside the FUSE backend session within the
-  10 ms polling window.
-- A page **mapped before the write** showed the new bytes 0 ms after `read()` did:
+  10ms polling window.
+- A page **mapped before the write** showed the new bytes 0ms after `read()` did:
   `AUTO_INVAL_DATA` invalidated the cached page as designed.
 - The direction from sandbox to host holds on the same stack, and the rig suite tests it at the
   FUSE backend's own layer.
@@ -182,8 +182,8 @@ The virtiofs premise, as observed on the same machine:
 the launcher writing as the host over a scratch lower in the workspace:
 
 - the guard's refusal held through the whole stack;
-- the host write was visible to `read()` 1 ms after it was written;
-- the established mmap showed it 0 ms behind `read()`.
+- the host write was visible to `read()` 1ms after it was written;
+- the established mmap showed it 0ms behind `read()`.
 
 Every later rerun follows this procedure.
 
@@ -192,10 +192,10 @@ Every later rerun follows this procedure.
 Polled from inside the machine (`podman machine ssh`), below the FUSE mount, while the host wrote to
 the share:
 
-- A file's creation, its deletion, and an append each became visible within 30 ms, the resolution
+- A file's creation, its deletion, and an append each became visible within 30ms, the resolution
   of the host's timestamp. For the append, the file's size was polled continuously, so the guest's
   attributes were hot.
-- Resolving one more path component in the guest costs ~56 µs (2,000 `[ -e ]` of a depth-8 path
+- Resolving one more path component in the guest costs ~56µs (2,000 `[ -e ]` of a depth-8 path
   against a depth-2 one). That is a hypervisor round trip. A hit in the dentry cache would take
   microseconds.
 - So the guest kernel caches neither virtiofs names nor attributes for any time that matters.
@@ -244,8 +244,8 @@ NTFS 8.3 short names" has the creation, and the short names of an existing `.git
 passed:
 
 - the guard's refusal held through the whole stack;
-- the host write was visible to `read()` 6 ms and 7 ms after it was written;
-- the established mmap showed it 0 ms behind `read()`.
+- the host write was visible to `read()` 6ms and 7ms after it was written;
+- the established mmap showed it 0ms behind `read()`.
 
 
 ## The cost of a path walk
@@ -261,12 +261,12 @@ file by absolute path, by the file's depth under the mount:
 
 One file at depth 11, three ways:
 
-- by absolute path: 10.81 ms;
-- by the same name relative to a `chdir` into its directory: 2.04 ms;
-- through a directory fd: 1.95 ms.
+- by absolute path: 10.81ms;
+- by the same name relative to a `chdir` into its directory: 2.04ms;
+- through a directory fd: 1.95ms.
 
 The kernel walks one component in the last two. So the difference is the kernel asking the daemon
-again for each component. The ~1.9 ms left is one FUSE operation, including the daemon's own
+again for each component. The ~1.9ms left is one FUSE operation, including the daemon's own
 resolution of the full path.
 
 ### Measured: the FUSE backend's ratio over a bind mount (macOS 26.4.1, podman 6.1.1; 2026-09-19)
@@ -277,11 +277,11 @@ against the same corpus over a plain bind mount of the same directory
 
 | operation                       | plain   | FUSE backend | ratio |
 | ------------------------------- | ------- | ------------ | ----- |
-| `find` (readdir only)           | 73 µs   | 419 µs       | 5.7×  |
-| `find -printf` (readdir + stat) | 147 µs  | 1361 µs      | 9.3×  |
-| `rm -rf`                        | 288 µs  | 2356 µs      | 8.2×  |
-| `cp -r` (create + write)        | 1143 µs | 8819 µs      | 7.7×  |
-| `ls -lR` (stat + xattr probes)  | 707 µs  | 12712 µs     | 18.0× |
+| `find` (readdir only)           | 73µs    | 419µs        | 5.7×  |
+| `find -printf` (readdir + stat) | 147µs   | 1361µs       | 9.3×  |
+| `rm -rf`                        | 288µs   | 2356µs       | 8.2×  |
+| `cp -r` (create + write)        | 1143µs  | 8819µs       | 7.7×  |
+| `ls -lR` (stat + xattr probes)  | 707µs   | 12712µs      | 18.0× |
 
 The identity checks (`fs.rs`, `policy_name` and `open_ino`) are in these figures.
 
@@ -296,7 +296,7 @@ The identity checks (`fs.rs`, `policy_name` and `open_ino`) are in these figures
 per entry. `ls -lR` needs about 4–8 round trips, since each path-based syscall resolves every
 component again.
 
-The plain bind mount is fast because the hypervisor answers a guest lookup in ~56 µs, and the
+The plain bind mount is fast because the hypervisor answers a guest lookup in ~56µs, and the
 guest caches nothing ("the virtiofs layer itself", above). So the ratio measures this layer's cost
 alone.
 
@@ -308,11 +308,11 @@ over a plain bind mount of the same directory (the command in `../../bench/plain
 
 | operation                       | plain    | FUSE backend | ratio |
 | ------------------------------- | -------- | ------------ | ----- |
-| `find` (readdir only)           | 674 µs   | 3989 µs      | 5.9×  |
-| `find -printf` (readdir + stat) | 1720 µs  | 14454 µs     | 8.4×  |
-| `rm -rf`                        | 1949 µs  | 23145 µs     | 11.9× |
-| `cp -r` (create + write)        | 14694 µs | 78822 µs     | 5.4×  |
-| `ls -lR` (stat + xattr probes)  | 3382 µs  | 102428 µs    | 30.3× |
+| `find` (readdir only)           | 674µs    | 3989µs       | 5.9×  |
+| `find -printf` (readdir + stat) | 1720µs   | 14454µs      | 8.4×  |
+| `rm -rf`                        | 1949µs   | 23145µs      | 11.9× |
+| `cp -r` (create + write)        | 14694µs  | 78822µs      | 5.4×  |
+| `ls -lR` (stat + xattr probes)  | 3382µs   | 102428µs     | 30.3× |
 
 - The share itself is 5–13× slower than the macOS machine's virtiofs, and the FUSE backend
   multiplies that: each of its round trips ends in lookups on that share.
@@ -328,28 +328,28 @@ clone of sbt/sbt: 4,249 tracked files at mean depth 7.0 among 7,524 entries, war
 
 | operation                              | per file      | total                                   |
 | -------------------------------------- | ------------- | --------------------------------------- |
-| `git status`                           | 16.8 ms       | 71.5 s (38.8 s, `--untracked-files=no`) |
-| `lstat` of each tracked file, by path  | 5.97 ms       | 25.4 s                                  |
-| the same files through a directory fd  | 1.56 ms       | 6.6 s                                   |
-| `find . -type f`                       | 1.95 ms/entry | 14.7 s                                  |
+| `git status`                           | 16.8ms        | 71.5s (38.8s, `--untracked-files=no`)   |
+| `lstat` of each tracked file, by path  | 5.97ms        | 25.4s                                   |
+| the same files through a directory fd  | 1.56ms        | 6.6s                                    |
+| `find . -type f`                       | 1.95ms/entry  | 14.7s                                   |
 
-- A depth-1 `lstat` costs 0.64 ms, of which the guest's own resolution is ~0.06 ms.
-- Each further component adds one more LOOKUP round trip: ~0.9 ms up to depth 9 (the depth table
-  above), and ~1.6 ms beyond it. In this tree, an `lstat` costs 8.38 ms at depth 9 and 18.04 ms at
+- A depth-1 `lstat` costs 0.64ms, of which the guest's own resolution is ~0.06ms.
+- Each further component adds one more LOOKUP round trip: ~0.9ms up to depth 9 (the depth table
+  above), and ~1.6ms beyond it. In this tree, an `lstat` costs 8.38ms at depth 9 and 18.04ms at
   depth 15.
 - The two `lstat` rows are two workloads, and the 3.8× between them is the whole cost of the path
   walk:
   - git stats every tracked file by its full path from the root, and pays for the depth;
   - `find` and the other `fts` walkers hold directory fds, and pay for depth 1.
-- Claude Code runs `git status` at startup. On the host, the same command takes 0.13 s.
-- The walk over untracked files is 32.7 s of the `git status` total: 4.3 ms per entry, where `find`
-  pays 1.95 ms over the same entries.
+- Claude Code runs `git status` at startup. On the host, the same command takes 0.13s.
+- The walk over untracked files is 32.7s of the `git status` total: 4.3ms per entry, where `find`
+  pays 1.95ms over the same entries.
 
 `find . -type f` over the same tree at each layer:
 
-- macOS: 0.19 s (0.025 ms per entry);
-- the guest over virtiofs: 1.65 s (0.22 ms);
-- the container through the FUSE backend: 14.7 s (1.95 ms). The FUSE backend is 89 % of the
+- macOS: 0.19s (0.025ms per entry);
+- the guest over virtiofs: 1.65s (0.22ms);
+- the container through the FUSE backend: 14.7s (1.95ms). The FUSE backend is 89 % of the
   total.
 
 ### Measured: an sbt build, by where its output goes (macOS 26.4.1, podman 6.1.1; 2026-09-20)
@@ -359,12 +359,12 @@ sbt 2.0.8 compiling 35 main and 41 test sources from nothing, then running one s
 
 | where sbt runs, and its `rootOutputDirectory`            | from nothing | rerun |
 | -------------------------------------------------------- | ------------ | ----- |
-| the host                                                 | 12 s         | 0 s   |
-| the container, `target/out` through the FUSE backend     | 604 s        | —     |
-| the container, `~/.cache/sbt-out` outside the FUSE mount | 28 s         | 21 s  |
+| the host                                                 | 12s          | 0s    |
+| the container, `target/out` through the FUSE backend     | 604s         | —     |
+| the container, `~/.cache/sbt-out` outside the FUSE mount | 28s          | 21s   |
 
-- The 604 s run also downloaded its dependencies. The same run with the output outside the FUSE
-  mount took 43 s with those downloads, and 28 s without them.
+- The 604s run also downloaded its dependencies. The same run with the output outside the FUSE
+  mount took 43s with those downloads, and 28s without them.
 - The image sets the third row's directory
   (`container/ko-agent-sandbox/config/sbt/2/ko-sandbox-output.sbt`).
 - The host rows compile and do not test: that host has no `wcwidth`, so the suite skips its 10
@@ -375,24 +375,24 @@ Two measurements from inside a session explain why the output dominates:
 - Throughput does not rise with client threads. `lstat` at depth 4 serves 328, 363 and 372
   operations a second from 1, 4 and 8 threads. So a parallel compiler shares one request stream
   (`fs.rs`, `mount_config`).
-- A class file sits at depth 9, about 8 ms per path operation in the depth table above.
+- A class file sits at depth 9, about 8ms per path operation in the depth table above.
 
-A rerun of the third row under `-Dsbt.task.timings=true`, with nothing to compile, took 23.7 s.
-sbt reports two evaluations of the task graph for one `testOnly`, of 6.8 s and 16.7 s, and each
+A rerun of the third row under `-Dsbt.task.timings=true`, with nothing to compile, took 23.7s.
+sbt reports two evaluations of the task graph for one `testOnly`, of 6.8s and 16.7s, and each
 repeats the first two rows:
 
 | what                                                              | total   |
 | ----------------------------------------------------------------- | ------- |
-| `managedResources`: `build.sbt` copies 64 files out of the mount  | 9.9 s   |
-| listing, stamping and hashing sources and resources in the mount  | ~5.5 s  |
-| the suite, which starts a Python script about 30 times            | 8.4 s   |
+| `managedResources`: `build.sbt` copies 64 files out of the mount  | 9.9s    |
+| listing, stamping and hashing sources and resources in the mount  | ~5.5s   |
+| the suite, which starts a Python script about 30 times            | 8.4s    |
 
-- The copy costs 77 ms a file.
-- One run of the script costs 261 ms from the mount, and 177 ms from a copy outside it. So the
+- The copy costs 77ms a file.
+- One run of the script costs 261ms from the mount, and 177ms from a copy outside it. So the
   FUSE backend's share of the suite is about a third, and Python's start is the rest.
-- About 18 s of the 23.7 s is operations in the mount.
+- About 18s of the 23.7s is operations in the mount.
 - The copy and the script runs issue their operations one after another, so threads in the daemon
-  would not shorten their 12 s. A shorter path per operation would (`TODO.md`, "Performance").
+  would not shorten their 12s. A shorter path per operation would (`TODO.md`, "Performance").
 
 ### Measured: a gradle build, by where its output goes (macOS 26.4.1, podman 6.1.1; 2026-09-20)
 
@@ -405,18 +405,18 @@ A generated build in a session, under gradle 9.7.1 and Java 25:
 
 | the build's files | `build/` | the project's `.gradle/` | time |
 |---|---|---|---|
-| in the mount | in the mount | in the mount | 75 s |
-| in the mount | `~/.cache`, by an init script | in the mount | 44 s |
-| in the mount | `~/.cache`, by an init script | `~/.cache`, by `--project-cache-dir` | 41 s |
-| under `~` | under `~` | under `~` | 4.5 s |
+| in the mount | in the mount | in the mount | 75s  |
+| in the mount | `~/.cache`, by an init script | in the mount | 44s  |
+| in the mount | `~/.cache`, by an init script | `~/.cache`, by `--project-cache-dir` | 41s  |
+| under `~` | under `~` | under `~` | 4.5s  |
 
 - The init script sets `layout.buildDirectory` in `allprojects`, keyed by each project's absolute
   path, and reaches `buildSrc` and the included build. None of the four projects keeps a `build/`
   in the mount.
-- Moving the output takes 31 s off.
+- Moving the output takes 31s off.
 - After the run that also uses `--project-cache-dir`, the mount holds only the 202 sources and 7
   build scripts. No `.gradle/` directory remains, including under `buildSrc` or the included build.
-- That run still takes 36 s more than the build outside the mount. So for gradle, most of the extra
+- That run still takes 36s more than the build outside the mount. So for gradle, most of the extra
   build time remains after the persistent output moves outside the mount. For sbt, moving the output
   outside the mount removed most of the extra build time.
 - What gradle spends its remaining time on is not measured: operations on the inputs, or files
@@ -430,16 +430,16 @@ already in `~/.m2`.
 
 | the build's files | `target/` | time |
 |---|---|---|
-| in the mount | in the mount | 85 s |
-| in the mount | in the mount, with `-Dproject.build.directory=<a path under ~/.cache>` | 81 s |
-| in the mount | `~/.cache`, by `<build><directory>` in the parent POM | 47 s |
-| under `~` | under `~` | 1.9 s |
+| in the mount | in the mount | 85s  |
+| in the mount | in the mount, with `-Dproject.build.directory=<a path under ~/.cache>` | 81s  |
+| in the mount | `~/.cache`, by `<build><directory>` in the parent POM | 47s  |
+| under `~` | under `~` | 1.9s  |
 
 - Maven ignores the property: each module keeps its `target/` in the workspace, and nothing appears
   at the path given.
 - The POM's `<directory>`, keyed by `${project.artifactId}`, moves both modules' output, and no
   `target/` remains in the mount.
-- That run still takes 45 s more than the build outside the mount. As with gradle, most of the
+- That run still takes 45s more than the build outside the mount. As with gradle, most of the
   extra build time remains after the persistent output moves outside the mount.
 - What the remaining time is spent on is not measured.
 

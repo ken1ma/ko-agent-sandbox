@@ -188,7 +188,7 @@ class ClipboardRelayTest extends munit.FunSuite:
     val started = System.nanoTime()
     val (rc, _) = call
     val seconds = (System.nanoTime() - started) / 1e9
-    assert(seconds < 5, s"the shim returned after $seconds s, on a timeout rather than an answer")
+    assert(seconds < 5, s"the shim returned after ${seconds}s, on a timeout rather than an answer")
     rc
 
   test("bidirectional sets the host clipboard from every copy spelling"):

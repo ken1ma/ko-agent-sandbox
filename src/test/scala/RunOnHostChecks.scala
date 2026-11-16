@@ -192,7 +192,7 @@ object RunOnHostChecks:
    * A Unix-domain listener that counts the connections it accepts and the bytes each sends, for a row that must show
    * that nothing spoke to a planted socket.
    *
-   *   - Each connection is read for up to 5 s without blocking: a Unix-domain channel has no Socket to set a read
+   *   - Each connection is read for up to 5s without blocking: a Unix-domain channel has no Socket to set a read
    *     timeout on (SocketChannel.socket throws UnsupportedOperationException for it).
    *   - Any failure but the close at the end is kept, so that it fails the row instead of reading as "no bytes".
    *   - `acceptDelayMillis` holds each accept back, for a test of `observed`.
@@ -233,7 +233,7 @@ object RunOnHostChecks:
     acceptor.setDaemon(true)
     acceptor.start()
 
-    /** Whether at least `expected` connections arrived, each read to its end, within 10 s. */
+    /** Whether at least `expected` connections arrived, each read to its end, within 10s. */
     def observed(expected: Int): Boolean =
       within(10, intervalMillis = 100)(accepted.get >= expected && finished.get == accepted.get)
 
@@ -531,12 +531,12 @@ object RunOnHostChecks:
 
     /** A timeout fails the row: a command that the profile wrongly allows can hang, and a hang proves no denial. */
     def reportDenied(label: String, outcome: ProfileOutcome): Unit =
-      if outcome.timedOut then fail(label, "timed out after 120 s")
+      if outcome.timedOut then fail(label, "timed out after 120s")
       else if outcome.ok then fail(label, "allowed")
       else pass(label, s"denied: ${outcome.firstError}")
 
     def reportAllowed(label: String, outcome: ProfileOutcome): Unit =
-      check(label, outcome.ok && !outcome.timedOut, if outcome.timedOut then "timed out after 120 s"
+      check(label, outcome.ok && !outcome.timedOut, if outcome.timedOut then "timed out after 120s"
         else outcome.firstError)
 
     /** Whether the path exists. A path that a negative row names must exist on the host, or "denied" and "absent"
@@ -601,7 +601,7 @@ object RunOnHostChecks:
      * command's proxy and, for sbt, its server, runs the program under the generated profile, ends what it started,
      * and preserves the exit code. Its output, the supervisor's own lines included, goes to `<name>.log`.
      *
-     *   - A hang is a FAIL, not a stalled run: the command gets TERM after `timeoutSeconds`, and KILL 30 s later.
+     *   - A hang is a FAIL, not a stalled run: the command gets TERM after `timeoutSeconds`, and KILL 30s later.
      */
     def supervisor(name: String, program: Program, workspace: Path, arguments: Seq[String],
         timeoutSeconds: Int = 900): Output =
@@ -612,7 +612,7 @@ object RunOnHostChecks:
         started.process.destroy()
         if !started.process.waitFor(30, TimeUnit.SECONDS) then started.process.destroyForcibly().waitFor()
       Output(if finished then started.process.exitValue else -1,
-        started.output + (if finished then "" else s"\n(killed after $timeoutSeconds s)"))
+        started.output + (if finished then "" else s"\n(killed after ${timeoutSeconds}s)"))
 
     /** The command sessions under the supervisor's root. The runners' sessions (`r<digits>`), the build and
       * retirement locks and the root's own entries are not commands (RunOnHostSession's layout). */

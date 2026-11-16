@@ -794,7 +794,7 @@ object AgentEgressProxy:
       *
       * - The Expect went to the origin whole (toOriginBytes drops only this hop's headers). So a client that holds
       *   its body back for a 100 that the origin never sends is where it would be against that origin directly: the
-      *   client sends on its own timer, which is 1 s for curl.
+      *   client sends on its own timer, which is 1s for curl.
       * - A 101 to a request without an Upgrade is refused before it is forwarded: what follows a 101 is no longer
       *   HTTP.
       * - A 101 to a granted handshake ends the HTTP exchange once its `Sec-WebSocket-Accept` matches the key. An

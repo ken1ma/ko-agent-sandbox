@@ -43,7 +43,7 @@ for depth in sorted(by_depth):
     os.lstat(path)
     start = time.perf_counter()
     for _ in range(200): os.lstat(path)
-    print("depth %d  %.2f ms  %s" % (depth, (time.perf_counter()-start)*1000/200, by_depth[depth]))
+    print("depth %d  %.2fms  %s" % (depth, (time.perf_counter()-start)*1000/200, by_depth[depth]))
 
 # deepest file three ways
 deep = max(tracked, key=lambda p: p.count("/"))
@@ -53,17 +53,17 @@ def per(fn):
     for _ in range(200): fn()
     return (time.perf_counter()-start)*1000/200
 print("deepest depth", deep.count("/")+1)
-print("  absolute %.2f ms" % per(lambda: os.lstat(absolute)))
-os.chdir(directory); print("  relative after chdir %.2f ms" % per(lambda: os.lstat(name))); os.chdir(root)
+print("  absolute %.2fms" % per(lambda: os.lstat(absolute)))
+os.chdir(directory); print("  relative after chdir %.2fms" % per(lambda: os.lstat(name))); os.chdir(root)
 fd = os.open(directory, os.O_RDONLY|os.O_DIRECTORY)
-print("  through directory fd %.2f ms" % per(lambda: os.lstat(name, dir_fd=fd))); os.close(fd)
+print("  through directory fd %.2fms" % per(lambda: os.lstat(name, dir_fd=fd))); os.close(fd)
 
 # every tracked file: by path, then through a directory fd
 for p in tracked: os.lstat(p)
 start = time.perf_counter()
 for p in tracked: os.lstat(os.path.join(root, p))
 total = time.perf_counter()-start
-print("lstat each tracked by path: %.1f s, %.2f ms/file" % (total, total*1000/len(tracked)))
+print("lstat each tracked by path: %.1fs, %.2fms/file" % (total, total*1000/len(tracked)))
 groups = {}
 for p in tracked:
     d, n = os.path.split(p); groups.setdefault(d or ".", []).append(n)
@@ -79,7 +79,7 @@ for d, names in groups.items():
     for n in names: os.lstat(n, dir_fd=fd)
     held += time.perf_counter() - start
     os.close(fd)
-print("same through directory fds: %.1f s, %.2f ms/file (opening the %d directories by path: %.1f s)"
+print("same through directory fds: %.1fs, %.2fms/file (opening the %d directories by path: %.1fs)"
       % (held, held*1000/len(tracked), len(groups), opening))
 
 for label, command in [("find . -type f", ["find",".","-type","f"]),
@@ -93,4 +93,4 @@ for label, command in [("find . -type f", ["find",".","-type","f"]),
         elapsed = time.perf_counter() - start
         if done.returncode != 0:
             sys.exit("abort: %s failed: %s" % (label, done.stderr.decode(errors="replace").strip()))
-    print("%s: %.1f s" % (label, elapsed))
+    print("%s: %.1fs" % (label, elapsed))

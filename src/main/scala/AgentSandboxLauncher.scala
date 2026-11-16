@@ -1940,7 +1940,7 @@ object AgentSandboxLauncher:
     // The launch refuses a mount path at which the image has an entry, or which the sandbox user cannot reach, before
     // the FUSE backend's preparation, the networks and the TLS state, so a refusal writes nothing (mountPathRefusal has
     // the cases).
-    //   - The probe is a run of the image, 0.2 s on a macOS podman machine (2026-09-18). The probe's `absent` is
+    //   - The probe is a run of the image, 0.2s on a macOS podman machine (2026-09-18). The probe's `absent` is
     //     therefore cached per image Id, and written once the workspace's cache directory exists below.
     //   - On a cache miss, the probe runs beside the sandbox image's version lock and the proxy image's inspect. The
     //     probe's refusals come between theirs.
