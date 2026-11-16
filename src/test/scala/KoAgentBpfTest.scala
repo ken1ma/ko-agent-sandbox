@@ -47,7 +47,7 @@ class KoAgentBpfTest extends munit.FunSuite:
       "tags object=policy.bpf.o programs=9 kernel=x out=y ms=500.1\npreloaded pindir=p programs=9 load_ms=410"
     assertEquals(
       installedLine(installed),
-      "BPF backend installed: 9 programs verified; a program set for the next launch loaded in 410 ms",
+      "BPF backend installed: 9 programs verified; a program set for the next launch loaded in 410ms",
     )
 
   /** The retired unit's text as a839d14 and ee8793c wrote it, with the home as `@HOME@`. RetiredUnitSha256
@@ -326,7 +326,7 @@ class KoAgentBpfTest extends munit.FunSuite:
     assert(launched.preloaded)
     assertEquals(
       stepsLogLine(launched),
-      "attached 8 hooks in 0.9 ms from the program set verified ahead; read back in 14.2 ms; tested in 40.3 ms",
+      "attached 8 hooks in 0.9ms from the program set verified ahead; read back in 14.2ms; tested in 40.3ms",
     )
     assertEquals(stepReached(output), "done")
     assertEquals(stepReached("step=checks\nstep=records\nerror"), "records")

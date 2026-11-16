@@ -164,9 +164,9 @@ object MicRelay:
    */
   val FirstSoundPrefix = "the recorder's first sound came after"
   val FirstSoundBoundBytes: Long = 30 * 32_000
-  val NoSoundLine = s"the recorder delivered no sound in its first ${FirstSoundBoundBytes / 32_000} s of audio"
+  val NoSoundLine = s"the recorder delivered no sound in its first ${FirstSoundBoundBytes / 32_000}s of audio"
 
-  def firstSoundLine(offset: Long): String = s"$FirstSoundPrefix ${offset / 32} ms of its audio"
+  def firstSoundLine(offset: Long): String = s"$FirstSoundPrefix ${offset / 32}ms of its audio"
 
   enum ProbeOutcome:
     /** The recorder kept for the session; `silent` when its first moment was all zero samples. */
@@ -367,7 +367,7 @@ object MicRelay:
       |      sleep 1
       |      [ -e "$$mic_dir/watching" ] || continue
       |      if [ -e "$$mic_dir/flowing" ]; then rm -f "$$mic_dir/flowing"; idle=0; else idle=$$((idle + 1)); fi
-      |      if [ "$$idle" -ge 5 ]; then reason="delivered no audio for 5 s"; mic_end "$$recorder"; break; fi
+      |      if [ "$$idle" -ge 5 ]; then reason="delivered no audio for 5s"; mic_end "$$recorder"; break; fi
       |    done
       |    wait "$$recorder"
       |    status=$$?
@@ -395,7 +395,7 @@ object MicRelay:
       |      end_tree "$$mic_reader"
       |      wait "$$mic_reader" 2>/dev/null
       |      if [ -e "$$mic_dir/recorder.ended" ]; then mic_reason=$$(cat "$$mic_dir/recorder.ended")
-      |      else mic_reason="delivered no audio within $$((mic_bound / 10)) s"; fi
+      |      else mic_reason="delivered no audio within $$((mic_bound / 10))s"; fi
       |      echo "failed $$mic_label: $$mic_reason" >> "$$mic_status"
       |      return 1
       |    fi
@@ -442,7 +442,7 @@ object MicRelay:
       |  case "$$1" in
       |    "sound "*)
       |      rm -f "$$mic_dir/listening"
-      |      mic_say "$FirstSoundPrefix $$((($${1#sound }) / 32)) ms of its audio" ;;
+      |      mic_say "$FirstSoundPrefix $$((($${1#sound }) / 32))ms of its audio" ;;
       |    "silence "*)
       |      [ "$${1#silence }" = "$$(cat "$$mic_dir/listening" 2>/dev/null)" ] && return 1
       |      if [ "$${1#silence }" -ge $FirstSoundBoundBytes ]; then
@@ -485,7 +485,7 @@ object MicRelay:
       |    esac
       |    # Ended before `ready`: a stale start, whose stream had closed.
       |    kill -0 "$$mic_exec" 2>/dev/null || break
-      |    if [ "$$mic_i" -ge 200 ]; then mic_say "the writer did not answer within 10 s"; break; fi
+      |    if [ "$$mic_i" -ge 200 ]; then mic_say "the writer did not answer within 10s"; break; fi
       |    sleep 0.05
       |    mic_i=$$((mic_i + 1))
       |  done
@@ -700,7 +700,7 @@ object MicRelay:
               val stderrSuffix = Option(pump.lastStderrLine()).filter(_.nonEmpty).fold("")(line => s" ($line)")
               val reason =
                 if ended then s"exited with status ${pump.process.exitValue()}$stderrSuffix"
-                else s"delivered no audio within $boundSeconds s$stderrSuffix"
+                else s"delivered no audio within ${boundSeconds}s$stderrSuffix"
               reasons :+= s"${recorder.label}: $reason"
     kept.toRight(reasons)
 
@@ -771,7 +771,7 @@ object MicRelay:
           val silentFor = (System.nanoTime() - current.lastBytes) / 1_000_000_000L
           val reason =
             if !current.process.isAlive then Some(s"exited with status ${current.process.exitValue()}")
-            else Option.when(silentFor >= stallSeconds)(s"delivered no audio for $stallSeconds s")
+            else Option.when(silentFor >= stallSeconds)(s"delivered no audio for ${stallSeconds}s")
           reason.foreach: why =>
             current.process.destroyForcibly()
             pump = None
@@ -802,7 +802,7 @@ object MicRelay:
                   started.waitFor()
                 case Some(other) if other.nonEmpty => say(log, "the writer answered other than ready")
                 case Some(_)                       => ()
-                case None                          => say(log, "the writer did not answer within 10 s")
+                case None                          => say(log, "the writer did not answer within 10s")
             finally
               current.idle()
               exec = None

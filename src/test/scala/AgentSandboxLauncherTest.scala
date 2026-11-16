@@ -1304,6 +1304,13 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
           assert(value.contains('='), s"--build-arg $value in ${command.mkString(" ")}")
         case _ => ()
 
+  test("the uid/gid mapping warm-up creates a container under the launch's mapping and never starts it"):
+    // podman keeps the re-owned copy per uid/gid mapping, so a warm-up under another one would warm nothing.
+    val create = warmUpCreateCommand("podman", SandboxImage)
+    assertEquals(create.take(2), Vector("podman", "create"))
+    assertEquals(create.filter(_.startsWith("--userns")), Vector(UidGidMapping))
+    assertEquals(create.last, SandboxImage)
+
   test("a build argument reaches only the references declared before it"):
     // podman expands an ARG that no earlier declaration named to the empty string. Refusing is the
     // half of that trade that cannot build a broken reference.

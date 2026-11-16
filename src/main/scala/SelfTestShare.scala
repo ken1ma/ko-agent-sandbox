@@ -64,7 +64,7 @@ object SelfTestShare:
   def probeRunCommand(podman: String, mountpoint: String, container: String): Vector[String] =
     Vector(
       podman, "run", "--rm", "-i", "--name", container, "--network=none", "--entrypoint=",
-      s"--userns=keep-id:uid=${AgentSandboxLauncher.ContainerUid},gid=${AgentSandboxLauncher.ContainerGid}",
+      AgentSandboxLauncher.UidGidMapping,
       s"--user=${AgentSandboxLauncher.ContainerUid}:${AgentSandboxLauncher.ContainerGid}",
       s"--volume=$mountpoint:$ProbeMount:rw",
       LauncherImages.SandboxImage, "python3", "-",
@@ -238,11 +238,11 @@ object SelfTestShare:
                 process.destroyForcibly(); ()
             case ProbeEvent.ReadSeen(ok) =>
               val millis = (System.nanoTime() - writeAt) / 1000000
-              val detail = if ok then s"$millis ms after the write" else "not within 120 s"
+              val detail = if ok then s"${millis}ms after the write" else "not within 120s"
               row(ok, "a host write becomes visible to read()", detail)
             case ProbeEvent.MmapSeen(Some(lag)) =>
               val marginal = if lag > 2000 then " (MARGINAL: git mmaps .git/index and packfiles)" else ""
-              row(true, "the write reaches an established mmap", s"$lag ms behind read()$marginal")
+              row(true, "the write reaches an established mmap", s"${lag}ms behind read()$marginal")
             case ProbeEvent.MmapSeen(None) =>
               row(false, "the write reaches an established mmap", "AUTO_INVAL_DATA is not invalidating")
             case ProbeEvent.Aborted(reason) =>

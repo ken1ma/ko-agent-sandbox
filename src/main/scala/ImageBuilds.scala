@@ -107,6 +107,7 @@ object ImageBuilds:
         bpfBuildFailure.toLeft(()).flatMap(_ => KoAgentBpf.installKoAgentBpf(podman, os, bpfBackendSourceId)),
       ).flatMap(_.left.toOption)
       installKoAgentFs(podman, os, fsSourceId)
+      warmUpUidGidMappingCopies(podman, Seq(SandboxImage, ProxyImage))
       val (candidates, staleTags) = includeStaleSelfTestCleanup(
         podman,
         journal,
@@ -131,6 +132,40 @@ object ImageBuilds:
         case Os.Linux => ()
       bpfFailure.foreach(reason => fail(KoAgentBpf.buildFailedError(reason, os)))
     sys.exit(0)
+
+  /**
+   * Makes podman's copy of each image re-owned for UidGidMapping now, so that the image's first launch does not.
+   * - Rootless podman on native overlayfs cannot shift ownership at mount time. The first container under a new
+   *   uid/gid mapping therefore copies the image's top layer with its files re-owned, and the image keeps that copy
+   *   until the image itself is removed (containers/storage, store.go, `imageTopLayerForMapping`).
+   * - The copy of the sandbox image took 105 s in a launch on a Windows machine.
+   * - The printed duration shows when podman stops copying (doc/TODO.md, "The uid/gid mapping warm-up's retirement").
+   * - A failure only warns, because the launch then makes the copy itself.
+   * - The container has no name, so the warm-up reserves none. A build killed before the removal leaves the container,
+   *   and the next build's image cleanup names it as what keeps the superseded image (removeSupersededImages).
+   */
+  def warmUpUidGidMappingCopies(podman: String, images: Seq[String]): Unit =
+    images.foreach: image =>
+      val create = warmUpCreateCommand(podman, image)
+      echoCommand(create)
+      val started = System.nanoTime
+      val created = run(create*)
+      val seconds = (System.nanoTime - started) / 1e9
+      if !created.ok then
+        warn(
+          s"could not warm $image for the sandbox's uid/gid mapping; its first launch does it instead\n${created.err}",
+        )
+      else
+        val container = created.text.trim
+        val removed = run(podman, "rm", container)
+        System.err.println(f"warmed $image for the sandbox's uid/gid mapping in $seconds%.1fs")
+        if !removed.ok then warn(s"could not remove the warm-up container $container\n${removed.err}")
+
+  /** The warm-up's create, which needs only the image and the uid/gid mapping. The container never starts. */
+  def warmUpCreateCommand(podman: String, image: String): Vector[String] =
+    Vector(
+      podman, "create", "--pull=never", "--network=none", UidGidMapping, image,
+    )
 
   /**
    * Refuses the build where the machine cannot build the BPF backend, saying why. A probe that does not answer fails
@@ -230,6 +265,7 @@ object ImageBuilds:
       // The profile is derived again here, so a podman upgrade between two --build runs reaches the
       // sessions' profile.
       SeccompProfile.install(podman, os, SandboxImage)
+      warmUpUidGidMappingCopies(podman, Seq(SandboxImage))
       val (candidates, staleTags) = includeStaleSelfTestCleanup(
         podman,
         journal,

@@ -294,7 +294,7 @@ object KoAgentBpf:
     val tags = lines.find(_.startsWith("tags ")).map(line => field("programs", line).getOrElse("?")).getOrElse("?")
     val preloaded =
       lines.find(_.startsWith("preloaded ")).map(line => field("load_ms", line).getOrElse("?")).getOrElse("?")
-    s"BPF backend installed: $tags programs verified; a program set for the next launch loaded in $preloaded ms"
+    s"BPF backend installed: $tags programs verified; a program set for the next launch loaded in ${preloaded}ms"
 
   /** Installs the freshly built backend into the machine and preloads a program set. Linux has no machine
     * and has only the FUSE backend (doc/TODO.md, "The BPF backend's later versions"), so no caller calls this method
@@ -779,7 +779,7 @@ object KoAgentBpf:
     val verify = field("ms", launched.verifyLine).getOrElse("?")
     val proof = field("ms", launched.proofLine).getOrElse("?")
     val how = if launched.preloaded then "the program set verified ahead" else "programs verified now"
-    s"attached $hooksAttached hooks in $load ms from $how; read back in $verify ms; tested in $proof ms"
+    s"attached $hooksAttached hooks in ${load}ms from $how; read back in ${verify}ms; tested in ${proof}ms"
 
   /** The run's log of the backend's steps, which `log dir` names. A failed write loses only the line. */
   def appendLog(file: Path, line: String): Unit =

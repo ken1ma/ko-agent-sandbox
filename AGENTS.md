@@ -1,9 +1,9 @@
 # Top priorities
 
 Be concise and easy to reason about: the reader's attention is the scarcest budget, but don't
-under-report.
+under-report. Add only what you would still defend if the user asked whether it earns its place.
 
-For every reported or discovered problem:
+For every reported or discovered problem, however small:
 
 1. Before editing, state in one sentence what must hold and what it applies to.
 2. Trace the cause from the reported location, then examine every place that creates or uses the
@@ -33,7 +33,8 @@ Preserve scope, ownership and how work is separated for review.
   what you change, not what you read, run or report.
 
 Read the relevant official documentation, source, issues and workspace documents, including
-earlier decisions on the subject, before reasoning, designing, experimenting or editing. Reason and
+earlier decisions on the subject, before reasoning, designing, experimenting or editing.
+Existing usage shows what is consistent, not what was decided. Reason and
 experiment about what they leave open. State as fact only what you read or measured. Do not mark a
 claim unverified when reading can settle it, as for an option you propose or a command, flag or API
 you write. In persisted text, an unverified claim appears only as an open question, such as a TODO
@@ -55,13 +56,13 @@ does belong, even if documented upstream: a reader who does not expect it never 
 Use names to say what methods, parameters and values are before adding comments. Replace
 comments that only do this with better names.
 
-Use concrete subject–verb–object wording. Use abstractions or metaphors (such as "invariant",
-"venue", "prose", the verb "mint") only when concrete wording loses meaning or precision; name
-what they stand for in the same sentence. Report existing names and wording that fail this, and
-rewrite rather than imitate it in the passage you edit. Describe what a tool or service does with
-the verb its own documentation uses. Read each sentence alone: compared nouns must be the same
-kind, and `only` or `every` must match behavior. Rewrite the sentence rather than mechanically
-replacing words.
+Use concrete subject–verb–object wording. Use a term that leaves the reader to guess what it
+stands for (such as "invariant", "venue", "prose", the verb "mint") only when concrete wording
+loses meaning or precision; name what it stands for in the same sentence. Report existing names
+and wording that fail this, and rewrite rather than imitate it in the passage you edit. Describe
+what a tool or service does with the verb its own documentation uses. Read each sentence alone:
+compared nouns must be the same kind, and `only` or `every` must match behavior. Rewrite the
+sentence rather than mechanically replacing words.
 
 Write for an experienced developer reading at speed. Terse means fewer claims, not fewer words per
 claim: keep articles and verbs, and give each sentence one main clause.
@@ -103,8 +104,8 @@ exists only on your machine.
 Delete completed TODO rows once the document or code their facts belong in records them.
 
 Replies lead with the result and include only details affecting the reader's next action; narrate
-the process only when necessary, and report a check only when it fails. Open a proposal,
-objection or decision with how far you agree.
+the process only when necessary, and report a check only when it fails. Open a reply that takes a
+stance with how far you agree.
 
 Do not assume the writer speaks English natively. Report unnatural English and suggest a
 correction; do not explain the grammar unless asked.
@@ -132,10 +133,12 @@ Do not use one-letter names, except for
 
 Record what helps other agents, as a rule for a class of cases, in a project document,
 `container/ko-agent-sandbox/AGENTS-SANDBOX.md` or this file. Both prompt files are in every
-prompt: add a sentence only when most agents reading it act differently because of it, and defend
-every word when presenting it; a sentence only some of them act on belongs in the document those
-readers open. When a rule was not followed, identify what was missing, ambiguous or conflicting,
-or what prevented following it, and revise it; add a rule only when none covers the case.
+prompt: add a sentence only when most agents reading it act differently because of it, and before
+presenting it, make it as general as it can be and defend every word; a sentence only some of them
+act on belongs in the document those readers open. When a rule was not followed, identify what was
+missing, ambiguous or conflicting, or what prevented following it, and revise it; add a rule only
+when none covers the case.
+Record in `agents-prompt-rationale.md` why each sentence you add or revise earns its place.
 
 
 # git

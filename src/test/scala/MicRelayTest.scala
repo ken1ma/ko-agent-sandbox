@@ -268,7 +268,7 @@ class MicRelayTest extends munit.FunSuite:
         lines.filter(_.startsWith("failed ")),
         Vector(
           "failed failing: exited with status 2 (rec FAIL formats: can't open input)",
-          "failed mute: delivered no audio within 3 s",
+          "failed mute: delivered no audio within 3s",
         ),
       )
     assert(!lines.contains("silent"))
@@ -359,7 +359,7 @@ class MicRelayTest extends munit.FunSuite:
     "stalling",
   ): harness =>
     assertEquals(harness.awaitStatus().last, "recording stalling")
-    awaitTrue("the stall in the log", seconds = 15)(harness.logText.contains("delivered no audio for 5 s"))
+    awaitTrue("the stall in the log", seconds = 15)(harness.logText.contains("delivered no audio for 5s"))
     harness.request()
     awaitTrue("a second start")(harness.count("starts-stalling") == 2)
     awaitTrue("the restarted recorder's audio")(harness.capture(1).length >= PeriodBytes * 10)
@@ -390,8 +390,8 @@ class MicRelayTest extends munit.FunSuite:
     // The POSIX relay's recorder blocks on its full FIFO, and the recorder's supervisor ends it. The
     // Windows relay keeps the audio in memory and gives up at the bound.
     val failure = harness.relay match
-      case Relay.Posix   => "delivered no audio for 5 s"
-      case Relay.Windows => "the writer did not answer within 10 s"
+      case Relay.Posix   => "delivered no audio for 5s"
+      case Relay.Windows => "the writer did not answer within 10s"
     awaitTrue(s"`$failure` in the log", seconds = 20)(harness.logText.contains(failure))
     assertEquals(harness.capture(1).length, 0, "audio reached a writer that never answered")
     Files.writeString(harness.host.resolve("ready-delay"), "0")
@@ -408,7 +408,7 @@ class MicRelayTest extends munit.FunSuite:
     awaitTrue("forwarded audio")(harness.capture(1).length >= PeriodBytes * 10)
     val writer = Files.readString(harness.host.resolve("writer.pid")).trim
     ProcessBuilder("kill", "-STOP", writer).start().waitFor()
-    awaitTrue("the stall in the log", seconds = 20)(harness.logText.contains("delivered no audio for 5 s"))
+    awaitTrue("the stall in the log", seconds = 20)(harness.logText.contains("delivered no audio for 5s"))
     // The writer reads again, and a TERM that the stopped writer holds pending ends it now.
     ProcessBuilder("kill", "-CONT", writer).start().waitFor()
     harness.request()
@@ -490,7 +490,7 @@ class MicRelayTest extends munit.FunSuite:
       val refusal = MicRelay.recorders(os, empty.toString).left.getOrElse(fail(s"$os found a recorder"))
       assert(refusal.contains(name), refusal)
       val message = MicRelay.failureMessage(
-        Vector("first: exited with status 1 (its last word)", "second: delivered no audio within 10 s"),
+        Vector("first: exited with status 1 (its last word)", "second: delivered no audio within 10s"),
         os,
         Vector("a diagnosis"),
       )

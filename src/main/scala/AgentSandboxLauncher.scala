@@ -129,6 +129,11 @@ object AgentSandboxLauncher:
   val ContainerUid = 65532
   val ContainerGid = 65532
 
+  /** podman keeps an image's re-owned copy per uid/gid mapping, and the build makes the sandbox's and the proxy's copy
+    * for this one (ImageBuilds.warmUpUidGidMappingCopies): a container of those images under another uid/gid mapping
+    * copies the image again. */
+  val UidGidMapping = s"--userns=keep-id:uid=$ContainerUid,gid=$ContainerGid"
+
   // The launcher reissues a certificate a month before expiry, so no session starts on a certificate that expires
   // mid-run.
   val ReissueMarginSeconds = 2592000L
@@ -2391,7 +2396,7 @@ object AgentSandboxLauncher:
           memoryArguments(Some(ProxyMemoryLimit), None, None) ++ Vector(
             "--pids-limit=512",
             "--http-proxy=false",
-            s"--userns=keep-id:uid=$ContainerUid,gid=$ContainerGid",
+            UidGidMapping,
           ) ++ rulesetEnvArgs(egressProfile, provider, ruleFiles) ++ upstreamProxyArgs(env)
           ++ proxyCredentialArgs(sessionCredentials)
           ++ proxyTls ++ proxyLogArgs(hostLogFile, selinuxEnforcing) ++ Vector(proxyImageId)*
@@ -2653,7 +2658,7 @@ object AgentSandboxLauncher:
 
       // Map the invoking rootless podman user to our fixed non-root user, so files created in the workspace remain
       // owned by the host user.
-      s"--userns=keep-id:uid=$ContainerUid,gid=$ContainerGid",
+      UidGidMapping,
       s"--user=$ContainerUid:$ContainerGid",
 
       "--cap-drop=ALL",
@@ -2926,7 +2931,7 @@ object AgentSandboxLauncher:
           KoAgentBpf.appendLog(
             backendLogFile,
             s"the container lies below the attach cgroup, confirmed after " +
-              s"${(System.nanoTime() - waiting) / 1_000_000} ms of waiting",
+              s"${(System.nanoTime() - waiting) / 1_000_000}ms of waiting",
           )
         case Left(reason) =>
           fail(s"error: $reason; the container has not started. Launch with --workspace=live,fuse meanwhile")

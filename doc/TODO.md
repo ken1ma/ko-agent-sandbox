@@ -420,6 +420,17 @@ built.
   and its call in `installKoAgentBpf`, and its test in `KoAgentBpfTest`. No release ever installed
   the unit.
 
+## The uid/gid mapping warm-up's retirement
+
+- [ ] Remove `ImageBuilds.warmUpUidGidMappingCopies` and its calls once rootless podman stops
+  copying an image for a new uid/gid mapping. On Windows, where the copy took about 100 s,
+  `--update` then prints `warmed … in` under a second.
+  - `--update` rebuilds the sandbox image without cache. A `--build` that reuses the cached image
+    reuses its copy too, so its short duration shows nothing.
+  - Podman's maintainers call the copy expected: the kernel allows ID-mapped mounts to root alone,
+    and they know of no plan to change that.
+    https://github.com/podman-container-tools/podman/issues/26479
+
 ## The ordinary suites on a Windows host
 
 `sbt testWithPodman` typed in PowerShell runs `testFull` in the Windows JVM, and the ordinary

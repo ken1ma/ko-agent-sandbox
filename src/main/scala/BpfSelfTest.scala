@@ -82,7 +82,7 @@ object BpfSelfTest:
   ): Vector[String] =
     Vector(
       podman, "run", "--rm", "--pull=never", "--network=none", "--entrypoint=",
-      s"--userns=keep-id:uid=${AgentSandboxLauncher.ContainerUid},gid=${AgentSandboxLauncher.ContainerGid}",
+      AgentSandboxLauncher.UidGidMapping,
       s"--user=${AgentSandboxLauncher.ContainerUid}:${AgentSandboxLauncher.ContainerGid}",
       "--security-opt", "seccomp=unconfined", s"--volume=$scratch:$machineScratch",
     ) ++ parent.map(at => s"--cgroup-parent=$at") ++ (LauncherImages.SelfTestImage +: arguments)
