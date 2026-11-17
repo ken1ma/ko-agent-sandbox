@@ -78,7 +78,7 @@ object SeatbeltProfile:
    *
    *   - An unfiltered `mach-lookup` reaches every service of the host, and a service may act for its caller outside
    *     the profile.
-   *   - src/probe/run-on-host-profile-iterate.sh `mach-proxy` and `mach` measured the list. Without this name, the
+   *   - src/probe/RunOnHostProfileIterate.scala `mach-proxy` and `mach` measured the list. Without this name, the
    *     serving proxy dies of a segmentation fault, while `java -version` and `sbt about` run with no name at all.
    *   - A command gets the name unmeasured (seatbelt.md, "Mach services", has the reason).
    */
@@ -244,7 +244,7 @@ object SeatbeltProfile:
         lines += MachLookup
         lines += Devices
         lines += ""
-        lines += ";; System paths: measured by src/probe/run-on-host-profile-iterate.sh, never guessed."
+        lines += ";; System paths: measured by src/probe/RunOnHostProfileIterate.scala, never guessed."
         inputs.systemPaths.reads.foreach(path => lines += s"(allow file-read* ${subpath(path)})")
         inputs.systemPaths.executes.foreach: path =>
           lines += s"(allow process-exec* file-read* ${subpath(path)})"
@@ -373,7 +373,7 @@ object SeatbeltProfile:
         lines += ";; The root link the resolver's socket path goes through."
         lines += s"(allow file-read-metadata file-test-existence ${literal(ResolverSocketLink)})"
         lines += ""
-        // The JVM needs sysctl-read, and mach-lookup (MachServices). src/probe/run-on-host-profile-iterate.sh measured
+        // The JVM needs sysctl-read, and mach-lookup (MachServices). src/probe/RunOnHostProfileIterate.scala measured
         // this with ops on the JDK, then with the proxy itself and each family added in turn. No process-fork, because
         // the proxy forks nothing.
         lines += ";; A process at all."

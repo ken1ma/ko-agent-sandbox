@@ -8,7 +8,7 @@ Apple does not document SBPL for third-party use. `sandbox-exec` compiles SBPL t
 entry points, and the published write-ups are reverse-engineered and date from 2011. Two sources
 are authoritative here:
 
-- measurement (`src/probe/seatbelt-semantics.sh`, `src/probe/run-on-host-profile-iterate.sh`);
+- measurement (`src/probe/seatbelt-semantics.sh`, `src/probe/RunOnHostProfileIterate.scala`);
 - Apple's own shipped profiles under `/System/Library/Sandbox/Profiles/`, which are current and
   written against the implementation. `system.sb` is the one worth reading first.
 
@@ -80,13 +80,13 @@ for its caller outside the profile.
 - The one name is `com.apple.system.opendirectoryd.libinfo`, the service that the system's
   resolver library asks. Without it the serving proxy dies of a segmentation fault; with it alone
   the proxy serves a fetch. `java -version` and `sbt about` run with no name granted
-  (`src/probe/run-on-host-profile-iterate.sh mach`, `mach-proxy`, macOS 26.4.1).
+  (`src/probe/RunOnHostProfileIterate.scala mach`, `mach-proxy`, macOS 26.4.1 and 27.2).
 - A command gets the same name, unmeasured. Which call of the proxy's JVM needs the name is not
   known, a build's JVM may make the same call, and the failure is a crash, not an error a build
   could report.
 - `open` started nothing from under the command profile while `mach-lookup` was unfiltered
-  (`mach-route`). `open -a` found no application, and no application claimed a `.command` file
-  the command wrote.
+  (`mach-route`, macOS 27.2, 2026-11-17). `open -a` found no application, and no application
+  claimed a `.command` file the command wrote.
 - Under the named service, `SeatbeltCheck` has rows for `open -a`, for a JVM asking the
   resolver, and for a lookup of an internet name, which must fail (SECURITY.md, "DNS").
 
@@ -103,7 +103,7 @@ for its caller outside the profile.
 
 The profile denies a command reading another process's arguments and environment through `sysctl`
 `kern.procargs2`, the call behind `ps -E` (`SeatbeltProfile.ProcessReadRule`;
-`run-on-host-profile-iterate.sh procargs`, 2026-10-04):
+`RunOnHostProfileIterate.scala procargs`, 2026-10-04 and 2026-11-17):
 
 - The kernel answers for any process of the same user. The kernel withholds the environment, not
   the arguments, of a code-signing restricted target, as Apple's own binaries are, unless the
@@ -138,7 +138,7 @@ system:
 
 - The set is discovered by running a real build under a deny-default profile and reading the
   denials. The set is never discovered by listing what a host happens to have, and never used as
-  a way to reach a user path. `src/probe/run-on-host-profile-iterate.sh` measures candidate
+  a way to reach a user path. `src/probe/RunOnHostProfileIterate.scala` measures candidate
   entries.
 - The measured set is one file, a resource of the launcher's own artifact
   (`src/main/resources/agentsandbox/SeatbeltProfile.SystemPaths.txt`). What the production
@@ -165,5 +165,5 @@ writes it.
   - This section records that, because the blacklist form is the obvious simplification when the
     whitelist will not start.
 - One setting is taken from Bazel: `(debug deny)`, which makes denials visible without the unified
-  log's redaction. `src/probe/run-on-host-profile-iterate.sh` puts it at the top of every profile
+  log's redaction. `src/probe/RunOnHostProfileIterate.scala` puts it at the top of every profile
   it iterates.

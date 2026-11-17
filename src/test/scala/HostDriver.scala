@@ -1,17 +1,20 @@
 // What the Scala CLI drivers that run on the host share: the BPF backend's suites
-// (ko-agent-fs/bpf/test/podman/) and the run-on-host checks (src/test/run-on-host/). Each driver pulls this file in
-// with `//> using file`. Scala CLI does not follow a `using file` from a file that was itself pulled in, so each driver
-// names this file itself. sbt compiles this file with the tests, which keeps it compiling without a driver run.
+// (ko-agent-fs/bpf/test/podman/), the run-on-host checks (src/test/run-on-host/) and the run-on-host probes
+// (src/probe/). Each driver pulls this file in with `//> using file`. Scala CLI does not follow a `using file` from a
+// file that was itself pulled in, so each driver names this file itself. sbt compiles this file with the tests, which
+// keeps it compiling without a driver run.
 //
 // It holds:
 //
 // - the transcript, to which every row is printed and appended;
-// - running a command on the host;
+// - running a command on the host, recorded in the transcript or not;
+// - finding a program on PATH and listing a directory;
 // - polling for a state with a bound;
 // - the refusals before a run, and the run's exit status.
 
 package agentsandbox.launcher
 
+import scala.jdk.CollectionConverters.*
 import scala.util.Using
 
 import java.lang.ProcessBuilder.Redirect
@@ -118,7 +121,17 @@ object HostDriver:
   def host(transcript: Transcript, command: Seq[String], cwd: Path = workingDir, inheritStdin: Boolean = false,
       record: Boolean = true, timeoutSeconds: Option[Int] = None, environment: Map[String, String] = Map.empty,
       inheritEnvironment: Boolean = true): Output =
-    val builder = ProcessBuilder(command*).directory(cwd.toFile).redirectErrorStream(true)
+    val output = run(command, cwd, inheritStdin, timeoutSeconds, environment, inheritEnvironment)
+    if record then transcript.record(output.text)
+    output
+
+  /** A command on the host, as `host` runs it, for a caller that keeps no transcript. With `discardStderr`, the
+    * output is stdout alone: a JVM-based tool's warnings go to stderr. */
+  def run(command: Seq[String], cwd: Path = workingDir, inheritStdin: Boolean = false,
+      timeoutSeconds: Option[Int] = None, environment: Map[String, String] = Map.empty,
+      inheritEnvironment: Boolean = true, discardStderr: Boolean = false): Output =
+    val builder = ProcessBuilder(command*).directory(cwd.toFile)
+    if discardStderr then builder.redirectError(Redirect.DISCARD) else builder.redirectErrorStream(true)
     if !inheritEnvironment then builder.environment.clear()
     environment.foreach(builder.environment.put(_, _))
     if inheritStdin then builder.redirectInput(Redirect.INHERIT)
@@ -140,8 +153,17 @@ object HostDriver:
       case _ =>
         val output = String(process.getInputStream.readAllBytes(), UTF_8)
         (process.waitFor(), output)
-    if record then transcript.record(text)
     Output(status, text)
+
+  /** The first executable of that name on PATH, as `command -v` finds it. */
+  def onPath(name: String): Option[Path] =
+    sys.env.get("PATH").toSeq.flatMap(_.split(':')).filter(_.nonEmpty).map(Path.of(_, name))
+      .find(candidate => Files.isRegularFile(candidate) && Files.isExecutable(candidate))
+
+  /** The names in the directory, sorted and without dot entries, as `ls -1` lists them. */
+  def listedNames(dir: Path): Vector[String] =
+    Using.resource(Files.list(dir))(_.iterator.asScala.map(_.getFileName.toString).filterNot(_.startsWith("."))
+      .toVector.sorted)
 
   /** Whether `condition` holds within `seconds`, tested every `intervalMillis`. A row whose state changes
     * after the causing command returns waits with this for the state itself, never for a fixed time.

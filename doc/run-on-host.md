@@ -117,13 +117,15 @@ command fails on it. The launcher checks nothing for sbt: its executable is the 
 In the launcher's environment on the host, set `JAVA_HOME` to a JDK that Coursier installed. Only
 Coursier-managed JVMs are accepted.
 
-- `JAVA_HOME` must resolve to one canonical JDK home under your Coursier cache root.
+- `JAVA_HOME` must resolve to one canonical JDK home in Coursier's archive cache, or in the JVM
+  cache where an older Coursier unpacked JDKs. `COURSIER_ARCHIVE_CACHE` and `COURSIER_JVM_CACHE`
+  move these directories; `COURSIER_CACHE` names the download cache and moves neither.
 - The one other source is the JDK that Mill's launcher resolved for a `mill` build's daemon, from
   a pinned or unset `mill-jvm-version` ("`mill`" below). That JDK passes the same checks.
 - `java` on `PATH` is `/usr/bin/java`, a macOS stub that resolves through `JAVA_HOME` or
   `/usr/libexec/java_home`. The stub reports the right JVM, but its path is not the JDK's.
 - Rejected: the stub, `/Library/Java/JavaVirtualMachines`, Homebrew and SDKMAN JVMs, and a
-  `JAVA_HOME` resolving outside the Coursier cache.
+  `JAVA_HOME` resolving outside those two directories.
 
 ### sbt
 

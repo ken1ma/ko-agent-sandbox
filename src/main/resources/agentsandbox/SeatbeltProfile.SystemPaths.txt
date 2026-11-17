@@ -4,7 +4,7 @@
 # - Entries resolve through realPath, so a symlink entry becomes a grant on its target. List a
 #   symlink's directory instead.
 #
-# `sh src/probe/run-on-host-profile-iterate.sh paths` measures the entries. It grants every root
+# `src/probe/RunOnHostProfileIterate.scala paths` measures the entries. It grants every root
 # entry, then removes the entries cumulatively, and a tree stays only if the set without it stops
 # working. Every entry is measured rather than inferred. The intuitive entries, /usr/lib,
 # /System/Library and the dyld cryptexes, all measure as unnecessary, because the shared cache is
@@ -20,8 +20,8 @@
 x /bin
 
 # The system program directories.
-# - The launcher chain itself needs nine binaries from /usr/bin: env, uname, dirname, basename,
-#   readlink, expr, sed, grep and tr (src/probe/sbt-exec-chain.sh).
+# - The launcher chain itself runs programs from /usr/bin, among them dirname, basename, readlink
+#   and uname (src/probe/SbtExecChain.scala shows the script that calls them).
 # - A command's own scripts call whatever they like: this repository's suite needs find and mount,
 #   and a profile that names programs one by one fails every workspace's tests differently.
 # - The programs there are Apple-signed binaries whose effects on files and sockets are bounded by

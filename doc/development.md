@@ -54,7 +54,7 @@ script, as `src/probe/PodmanMachineMemoryReclaim.scala` and the drivers under
 `ko-agent-fs/bpf/test/podman` are:
 
 - One file serves macOS and Windows. Its first line, `#!/usr/bin/env -S scala shebang`, runs it on
-  macOS. On Windows, run `scala shebang <file>`.
+  macOS, so commit the file with its executable bit set. On Windows, run `scala shebang <file>`.
 - Pin the build's Scala version with `//> using scala`.
 - Parse what a host's tools print in Scala. Shell and PowerShell scripts meet quirks in that
   parsing: macOS's `/bin/sh` is bash 3.2, and Windows PowerShell 5.1 decodes a native command's

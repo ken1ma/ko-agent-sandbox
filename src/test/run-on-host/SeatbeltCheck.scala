@@ -96,7 +96,7 @@ class SeatbeltRows(run: CheckRun, folding: Boolean, jobs: Option[Int] = None):
         profiles.flatMap(emitted => Seq(emitted.coursierV1, emitted.sessionTmp, emitted.gradleUserHome)) ++ Seq(
           root / ".git", hostPaths.home / ".sbt" / "boot", hostPaths.userV1, hostPaths.millDownloads,
           hostPaths.home / ".gradle", hostPaths.home / ".m2" / "repository", hostPaths.javaHome,
-          hostPaths.coursier / "jvm",
+          hostPaths.userJvm,
         )
       markerDirs.foreach(dir => Files.deleteIfExists(dir / marker))
     // The profiles' rows run in parallel, since each profile's rows touch only its own profile, run-on-host cache,
@@ -207,7 +207,7 @@ class SeatbeltRows(run: CheckRun, folding: Boolean, jobs: Option[Int] = None):
     denied("write another repository via a workspace symlink", s": >> ${q(scratch / "esc-repo" / ".git" / "config")}")
 
     transcript.step(s"writes, under the $id profile")
-    val jvmDir = hostPaths.coursier / "jvm"
+    val jvmDir = hostPaths.userJvm
     if Files.exists(jvmDir) then denied("write Coursier/jvm", s": > ${q(jvmDir / marker)}")
     else denied("write the Coursier JDK home (no jvm/; the home is in arc/)", s": > ${q(hostPaths.javaHome / marker)}")
     denied("write ~/.sbt/boot", s": > ${q(hostPaths.home / ".sbt" / "boot" / marker)}")

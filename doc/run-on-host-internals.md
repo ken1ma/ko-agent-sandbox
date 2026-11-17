@@ -271,7 +271,7 @@ The refusals and denials take these forms:
 `RunOnHostPrereqs.scala` validates the prerequisites ([run-on-host.md](run-on-host.md), "Program
 prerequisites") before a command starts. `RunOnHostProvisioning.scala` checks the prerequisites of
 `mill`, Gradle and Maven before the start prompt, and tints the prompt's question with
-`HostCommands.weakened`. `src/probe/host-layout.sh` shows what a host actually has.
+`HostCommands.weakened`. `src/probe/HostLayout.scala` shows what a host actually has.
 
 ### The JVM
 
@@ -632,8 +632,8 @@ The host run that provisions the launcher also provisions the JDK ([run-on-host.
     abandoned at once; past that, the file reads as absent until one read returns;
   - the text is never printed.
 
-Measured under the command profile with no proxy running (`src/probe/mill-pinned-jvm.sh`, macOS
-26.4.1, Mill 1.1.10, `temurin:21`, 2026-10-02):
+Measured under the command profile with no proxy running (`src/probe/MillPinnedJvm.scala`,
+`temurin:21`; macOS 26.4.1 with Mill 1.1.10, 2026-10-02; macOS 27.2 with Mill 1.3.1, 2026-11-17):
 
 - With the file present and its home granted, Mill runs that JDK, fetches nothing and leaves the
   file as it is.
@@ -1255,7 +1255,7 @@ profile grants:
 - nothing else of the user's: no workspace, no cache, and no write anywhere;
 - of the operation families, only `sysctl-read`, and `mach-lookup` limited to the resolver's
   service ([seatbelt.md](seatbelt.md), "Mach services").
-  - These were measured with `src/probe/run-on-host-profile-iterate.sh ops`, with the proxy under
+  - These were measured with `src/probe/RunOnHostProfileIterate.scala ops`, with the proxy under
     its profile and each family added in turn.
   - The profile grants no `process-fork`, since the proxy forks nothing.
 

@@ -226,7 +226,9 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     Files.createDirectories(jdk.resolve("bin"))
     Files.setPosixFilePermissions(Files.createFile(jdk.resolve("bin/java")), permissions("rwxr-xr-x"))
     val workspace = Files.createDirectories(root.resolve("workspace"))
-    val env = Map("HOME" -> root.toString, "COURSIER_CACHE" -> cache.toString, "JAVA_HOME" -> jdk.toString)
+    val env = Map(
+      "HOME" -> root.toString, "COURSIER_ARCHIVE_CACHE" -> cache.resolve("arc").toString, "JAVA_HOME" -> jdk.toString,
+    )
     val absent = assemble(workspace, Program.Gradle, env.get, workspace)
     assert(clue(absent).left.exists(_.contains("no gradle/wrapper/gradle-wrapper.properties")))
     val properties = Files.createDirectories(workspace.resolve("gradle/wrapper")).resolve("gradle-wrapper.properties")
@@ -268,7 +270,9 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     Files.createDirectories(jdk.resolve("bin"))
     Files.setPosixFilePermissions(Files.createFile(jdk.resolve("bin/java")), permissions("rwxr-xr-x"))
     val workspace = Files.createDirectories(root.resolve("workspace"))
-    val env = Map("HOME" -> root.toString, "COURSIER_CACHE" -> cache.toString, "JAVA_HOME" -> jdk.toString)
+    val env = Map(
+      "HOME" -> root.toString, "COURSIER_ARCHIVE_CACHE" -> cache.resolve("arc").toString, "JAVA_HOME" -> jdk.toString,
+    )
     val mvnw = workspace.resolve("mvnw")
     Files.write(mvnw, Array[Byte]('#', '!', 0xff.toByte, '\n'))
     Files.setPosixFilePermissions(mvnw, permissions("rwxr-xr-x"))

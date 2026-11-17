@@ -1,7 +1,6 @@
 // The run-on-host checks' test that no live run-on-host runner claims the workspaces they use, and their cleanup of a
-// process that no runner claims. The shell probes still use run-on-host-acceptance-setup.sh (doc/TODO.md, "the shell
-// probes as Scala CLI scripts"). The Scala CLI drivers under src/test/run-on-host/ pull this file in with
-// `//> using file`.
+// process that no runner claims. The Scala CLI drivers under src/test/run-on-host/ and the run-on-host probes under
+// src/probe/ pull this file in with `//> using file`.
 //
 // The file depends on the JDK alone, so that a driver compiles without the launcher's sources. It therefore copies
 // the session layout's names from RunOnHostSession, and RunOnHostIdleTest checks the copies against the originals.

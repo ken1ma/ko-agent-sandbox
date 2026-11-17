@@ -1,1 +1,1 @@
-file-read* process-exec*  sysctl-read
+file-read* process-exec* sysctl-read

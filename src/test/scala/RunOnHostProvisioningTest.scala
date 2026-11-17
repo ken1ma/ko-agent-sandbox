@@ -154,7 +154,8 @@ class RunOnHostProvisioningTest extends munit.FunSuite:
     record(planted)
     val notCoursier = finding(build, env.get)
     assert(clue(notCoursier).exists(_.isInstanceOf[Finding.Notice]))
-    assert(notCoursier.exists(_.wording.contains("no JDK inside the Coursier cache ~/Library/Caches/Coursier ")))
+    val inArchiveCache = "no JDK inside the Coursier archive cache ~/Library/Caches/Coursier/arc "
+    assert(notCoursier.exists(_.wording.contains(inArchiveCache)))
 
     // The check reads the cache only as the build's own file: through a link, the file counts as absent.
     record(jdk)

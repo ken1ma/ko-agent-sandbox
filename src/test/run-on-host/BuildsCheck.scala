@@ -282,7 +282,7 @@ class BuildsRows(run: CheckRun, emitted: Map[String, Emitted]):
    *
    *   - `mill-jvm-index-version` makes the key of Mill's java-home file one that these rows can write; Mill's own
    *     default key is its release's. Mill runs whatever home that file names under the id's key
-   *     (src/probe/mill-pinned-jvm.sh). So the rows name a JDK that is already in the Coursier cache, and nothing is
+   *     (src/probe/MillPinnedJvm.scala). So the rows name a JDK that is already in the Coursier cache, and nothing is
    *     fetched.
    *   - The rows name a JDK other than JAVA_HOME's when the cache holds one that Mill runs on, so that the grant is a
    *     second JDK's. That JDK must be Java 23 or later: for an id that names such a version, as `temurin:99` and
@@ -321,8 +321,8 @@ class BuildsRows(run: CheckRun, emitted: Map[String, Emitted]):
     Files.writeString(planted, "#!/bin/sh\nexit 0\n")
     planted.toFile.setExecutable(true)
     recordHome(pinned / "jdk")
-    refused("a java-home file naming a directory outside the Coursier cache is refused", s"$id-pinned-planted",
-      "no JDK inside the Coursier cache")
+    refused("a java-home file naming a directory outside the Coursier archive cache is refused", s"$id-pinned-planted",
+      "no JDK inside the Coursier archive cache")
     val (home, which) = secondJdk()
     recordHome(home)
     runsOn(s"a pinned JVM's $runner runs on the JDK the java-home file records", s"$id-pinned", home, which)

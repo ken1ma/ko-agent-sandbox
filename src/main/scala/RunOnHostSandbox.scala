@@ -297,9 +297,9 @@ object RunOnHostSandbox:
   private def millLauncher(env: String => Option[String], buildDirectory: Path): Either[StepRefusal, MillLauncher] =
     def recordedJdk(id: Option[String], launcher: String): Either[StepRefusal, Option[Path]] =
       for
-        cache <- context("mill jvm")(coursierCacheRoot(Os.Mac, env).toRight("no Coursier cache root"))
+        unpacked <- context("mill jvm")(coursierUnpacked(Os.Mac, env))
         home <- context("mill jvm"):
-          millRecordedJdk(id, launcher, millJavaHomeText(buildDirectory), cache, realPath, isExecutableFile)
+          millRecordedJdk(id, launcher, millJavaHomeText(buildDirectory), unpacked, realPath, isExecutableFile)
       yield Some(home)
     for
       _ <- context("mill bootstrap")(validateMillBootstrap(buildDirectory, isExecutableFile))
@@ -352,8 +352,8 @@ object RunOnHostSandbox:
   ): Either[StepRefusal, Assembled] =
     val os = Os.Mac
     for
-      coursierCache <- context("jvm")(coursierCacheRoot(os, env).toRight("no Coursier cache root"))
-      jdk <- context("jvm")(resolveJdkHome(env, coursierCache, realPath, isExecutableFile))
+      unpacked <- context("jvm")(coursierUnpacked(os, env))
+      jdk <- context("jvm")(resolveJdkHome(env, unpacked, realPath, isExecutableFile))
       executableAndDistribution <- program match
         case Program.Sbt =>
           for
@@ -366,11 +366,11 @@ object RunOnHostSandbox:
             // ISO-8859-1, not UTF-8: cs appends a jar to the scripts it installs, so the file is not text. Every
             // byte maps to a char, which leaves intact the ASCII path that this step searches for.
             inner <- context("sbt distribution")(
-              sbtDistribution(String(readBytes(sbt), ISO_8859_1), coursierCache)
-                .toRight(s"$sbt names no distribution inside $coursierCache"),
+              sbtDistribution(String(readBytes(sbt), ISO_8859_1), unpacked.archive)
+                .toRight(s"$sbt names no distribution inside ${unpacked.archive}"),
             )
             home <- context("sbt distribution")(
-              validateSbtDistribution(inner, coursierCache, realPath, isExecutableFile),
+              validateSbtDistribution(inner, unpacked.archive, realPath, isExecutableFile),
             )
           yield (sbt, Some(home), None)
         case Program.Mill =>
@@ -434,7 +434,7 @@ object RunOnHostSandbox:
    *
    *   - A system path is granted only where testing proves the read is stable.
    *   - The resource agentsandbox/SeatbeltProfile.SystemPaths.txt is the measured set.
-   *   - src/probe/run-on-host-profile-iterate.sh measures candidate entries.
+   *   - src/probe/RunOnHostProfileIterate.scala measures candidate entries.
    */
   def parseSystemPaths(all: Seq[String]): SeatbeltProfile.SystemPaths =
     val lines = all.map(_.trim).filter(line => line.nonEmpty && !line.startsWith("#"))

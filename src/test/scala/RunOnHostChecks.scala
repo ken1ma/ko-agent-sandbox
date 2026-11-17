@@ -113,10 +113,9 @@ object RunOnHostChecks:
 
   /** The user's own paths that the rows name, after every environment override. */
   case class HostPaths(
-    home: Path, javaHome: Path, stateRoot: Path, coursier: Path, sbtExecutable: Path, millDownloads: Path,
-  ):
-    def userV1: Path = coursier / "v1"
-    def userArc: Path = coursier / "arc"
+    home: Path, javaHome: Path, stateRoot: Path, userV1: Path, userArc: Path, userJvm: Path, sbtExecutable: Path,
+    millDownloads: Path,
+  )
 
   object HostPaths:
     def of(env: String => Option[String]): Either[String, HostPaths] =
@@ -124,18 +123,53 @@ object RunOnHostChecks:
         home <- env("HOME").map(Path.of(_)).toRight("HOME is not set")
         javaHome <- env("JAVA_HOME").map(Path.of(_)).filter(home => Files.isExecutable(home / "bin" / "java"))
           .toRight("JAVA_HOME does not name a JDK")
+        userV1 <- userCoursierDirectory(env, home, CoursierDirectory.V1)
+        userArc <- userCoursierDirectory(env, home, CoursierDirectory.Archive)
+        userJvm <- userCoursierDirectory(env, home, CoursierDirectory.Jvm)
       yield
         val cacheHome = env("XDG_CACHE_HOME").map(Path.of(_)).getOrElse(home / ".cache")
         HostPaths(
           home = home,
           javaHome = javaHome,
           stateRoot = env("XDG_STATE_HOME").map(Path.of(_)).getOrElse(home / ".local" / "state") / "ko-agent-sandbox",
-          coursier = env("COURSIER_CACHE").map(Path.of(_)).getOrElse(home / "Library" / "Caches" / "Coursier"),
+          userV1 = userV1,
+          userArc = userArc,
+          userJvm = userJvm,
           sbtExecutable = env("COURSIER_BIN_DIR").map(Path.of(_))
             .getOrElse(home / "Library" / "Application Support" / "Coursier" / "bin") / "sbt",
           // As the bootstrap derives it (RunOnHostPrereqs.millDownloadDir); MILL_USER_CACHE_DIR is not an input.
           millDownloads = env("MILL_FINAL_DOWNLOAD_FOLDER").map(Path.of(_)).getOrElse(cacheHome / "mill" / "download"),
         )
+
+  /** A Coursier directory under the macOS Coursier cache directory, and the variable that moves it. */
+  enum CoursierDirectory(val variable: String, val subdirectory: String):
+    case V1 extends CoursierDirectory("COURSIER_CACHE", "v1")
+    case Archive extends CoursierDirectory("COURSIER_ARCHIVE_CACHE", "arc")
+    case Jvm extends CoursierDirectory("COURSIER_JVM_CACHE", "jvm")
+
+  /** The user's directory as Coursier locates it (RunOnHostPrereqs.coursierUnpacked): its own variable, set even
+    * empty, else a subdirectory of the macOS Coursier cache directory. A relative value names a directory under each
+    * program's current directory, and is refused. */
+  def userCoursierDirectory(env: String => Option[String], home: Path, directory: CoursierDirectory)
+      : Either[String, Path] =
+    env(directory.variable) match
+      case Some(value) =>
+        Some(Path.of(value)).filter(_.isAbsolute).toRight(s"${directory.variable} is not an absolute path: '$value'")
+      case None => Right(home / "Library" / "Caches" / "Coursier" / directory.subdirectory)
+
+  /** The file's lines up to the first line that holds a control byte other than a tab or a carriage return: where a
+    * binary tail starts, such as the jar that cs appends to a launcher script it installs. The bytes before that line
+    * decode as UTF-8, the charset cs writes its scripts in (`Preamble`), so a non-ASCII path in a script survives. */
+  def leadingTextLines(file: Path): Seq[String] =
+    val bytes = Files.readAllBytes(file)
+    def control(byte: Byte): Boolean = byte >= 0 && byte < ' ' && byte != '\t' && byte != '\r' || byte == 0x7f
+    Iterator.unfold(0): start =>
+      Option.when(start < bytes.length):
+        val end = bytes.indexOf('\n'.toByte, start) match
+          case -1    => bytes.length
+          case found => found
+        (bytes.slice(start, end), end + 1)
+    .takeWhile(!_.exists(control)).map(line => String(line, UTF_8).stripSuffix("\r")).toSeq
 
   /** A path as one word of a /bin/sh command, whatever it holds. */
   def shellQuoted(text: String): String = "'" + text.replace("'", "'\\''") + "'"

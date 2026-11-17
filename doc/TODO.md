@@ -115,7 +115,7 @@ measurement.
 
 ## The profile probe's confined sbt on this checkout
 
-- [ ] `run-on-host-profile-iterate.sh`'s `run_command` fails under the rendered profile after
+- [ ] `RunOnHostProfileIterate.scala`'s `runCommand` fails under the rendered profile after
   `emit`, which runs an unconfined sbt in the same checkout. The cause is not found.
   - `sbt about` stops at `Compile / previousCompile` with `Operation not permitted` on
     `target/out/jvm/scala-3.8.4/ko-agent-sandbox-build/zinc/inc_compile_3.zip`, then prints
@@ -213,20 +213,12 @@ Why the refusals cover more than the creation:
 ## `src/probe/`: the shell probes as Scala CLI scripts
 
 `development.md`, "Probes", says to write a host-side probe as a standalone Scala CLI script.
-Ten probes in `src/probe/` are shell scripts. Nine run on the macOS host, and
+Six probes in `src/probe/` are shell scripts. Five run on the macOS host, and
 `podman-attach-stdin.sh` runs on any host with podman.
 
 - [ ] Rewrite each shell probe as a Scala CLI script, and update the documents and code comments
-  that cite its path.
-  - Start with the one-off probes: `host-layout.sh`, `jvm-proxy-rule.sh`, `loopback-rule.sh`,
-    `mill-pinned-jvm.sh`, `podman-attach-stdin.sh`, `run-on-host-profile-iterate.sh`,
-    `run-on-host-runner-session.sh`, `sbt-exec-chain.sh`, `seatbelt-semantics.sh` and
-    `session-recovery.sh`.
-  - `mill-pinned-jvm.sh` and `run-on-host-profile-iterate.sh` source
-    `run-on-host-acceptance-setup.sh` for its idle check alone. Port them onto `RunOnHostIdle`,
-    the run-on-host checks' copy of that check, then delete the setup file and
-    `RunOnHostAcceptanceSetupTest`.
-  - Rerun each rewritten probe on macOS, and compare its answers with what the documents record.
+  that cite its path: `jvm-proxy-rule.sh`, `loopback-rule.sh`, `podman-attach-stdin.sh`,
+  `run-on-host-runner-session.sh`, `seatbelt-semantics.sh` and `session-recovery.sh`.
 
 ## Open questions under the `--nesting=none` seccomp profile
 
@@ -434,8 +426,8 @@ only the container-launching suites. That document's command returns to
 2026-10-27 on the EC2 machine, and a run of 2026-10-28 fails the same suites.
 
 - [ ] Skip, with a clue, the tests that need a Unix host:
-  - those running `sh`, `/bin/bash` or `/usr/bin/perl` (`RunOnHostAcceptanceSetupTest`,
-    `RunOnHostSandboxTest`, `RunOnHostSessionTest`);
+  - those running `sh`, `/bin/bash` or `/usr/bin/perl` (`RunOnHostSandboxTest`,
+    `RunOnHostSessionTest`);
   - those setting POSIX permissions or reading the `unix` attribute view
     (`RunOnHostProvisioningTest`, `MicRelayTest`, `RunOnHostSessionTest`, and
     `SandboxStatsTest` and `RunOnHostSandboxTest` through `RunOnHostSession.publish`);
@@ -1035,7 +1027,7 @@ milliseconds where `java -jar` takes ~350ms.
 - No build or test exercises any of this code.
 - The proxy as an image does not start under its profile, and fails with
   `Fatal error: CSunMiscSignal.open() failed` (macOS 26.4.1, GraalVM CE 25.0.2,
-  `run-on-host-profile-iterate.sh mach-proxy <binary>`).
+  `RunOnHostProfileIterate.scala mach-proxy <binary>`).
 - What the profile lacks for the proxy image is unmeasured. So are the image's Mach services, which
   the same mode measures once the image starts.
 

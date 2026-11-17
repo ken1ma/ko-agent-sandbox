@@ -50,7 +50,7 @@ object RunOnHostPrereqs:
     case PrereqMillJvmUnset(launcherVersion: String)
     /** `pin` is None under an unset `mill-jvm-version`, here and in [[PrereqMillJdkNotCoursier]]. */
     case PrereqMillJdkMissing(pin: Option[String], launcherVersion: String)
-    case PrereqMillJdkNotCoursier(pin: Option[String], launcherVersion: String, cacheRoot: Path)
+    case PrereqMillJdkNotCoursier(pin: Option[String], launcherVersion: String, unpacked: CoursierUnpacked)
     case PrereqGradleWrapperMissing
     case PrereqGradleWrapperUnreadable(reason: String)
     case PrereqGradleDistributionMissing(distributionUrl: String, directory: Path)
@@ -107,10 +107,11 @@ object RunOnHostPrereqs:
         s"the JDK that mill-jvm-version pins, $id,")
       s"$jdk is not provisioned: $MillJavaHomeFile does not record it; run " +
         s"`MILL_VERSION=$launcherVersion ./mill version` once on the host"
-    case Refusal.PrereqMillJdkNotCoursier(pin, launcherVersion, cacheRoot) =>
+    case Refusal.PrereqMillJdkNotCoursier(pin, launcherVersion, unpacked) =>
       val version = pin.fold("an unset mill-jvm-version")(id => s"mill-jvm-version $id")
-      s"$MillJavaHomeFile records no JDK inside the Coursier cache ${shown(cacheRoot)} for $version; delete " +
-        s"that file, then run `MILL_VERSION=$launcherVersion ./mill version` once on the host"
+      s"$MillJavaHomeFile records no JDK inside the Coursier archive cache ${shown(unpacked.archive)} or JVM cache " +
+        s"${shown(unpacked.jvm)} for $version; delete that file, then run " +
+        s"`MILL_VERSION=$launcherVersion ./mill version` once on the host"
     case Refusal.PrereqGradleWrapperMissing =>
       "the build directory has no gradle/wrapper/gradle-wrapper.properties; a global gradle is not used"
     case Refusal.PrereqGradleWrapperUnreadable(reason) => reason
@@ -317,14 +318,46 @@ object RunOnHostPrereqs:
           Left(Refusal.CacheRootInsideWorkspace(root, workspaceRoot))
         else Right(root)
 
-  /** The user's Coursier cache root, read for the JDK and never granted whole (run-on-host-internals.md, "The JVM",
-    * "The run-on-host cache"). */
-  def coursierCacheRoot(os: Os, env: String => Option[String]): Option[Path] =
-    env("COURSIER_CACHE").filter(_.nonEmpty).flatMap(parsePath).map(_.normalize()).orElse:
-      env("HOME").filter(_.nonEmpty).flatMap(parsePath).map: home =>
-        os match
-          case Os.Mac => home.resolve("Library/Caches/Coursier")
-          case _      => home.resolve(".cache/coursier")
+  /**
+   * The user's Coursier directories that hold unpacked archives, read for the JDK and the sbt distribution and never
+   * granted whole (run-on-host-internals.md, "The JVM", "sbt", "The run-on-host cache").
+   *
+   * @param archive where Coursier unpacks archives, the sbt distribution and a current Coursier's JDKs among them
+   * @param jvm where a Coursier before its archive cache unpacked JDKs
+   */
+  case class CoursierUnpacked(archive: Path, jvm: Path)
+
+  /**
+   * Each directory as Coursier locates it (`CoursierPaths.computeCacheDirectoryFrom`): its own variable, else a
+   * subdirectory of the platform's Coursier cache directory.
+   *
+   *   - `COURSIER_CACHE` names the download cache itself, the `v1` directory, so it moves neither.
+   *   - Coursier takes a set variable as it is, an empty one included. A relative value resolves against the current
+   *     directory of whichever program runs Coursier, so it is refused rather than guessed.
+   */
+  def coursierUnpacked(os: Os, env: String => Option[String]): Either[String, CoursierUnpacked] =
+    def located(variable: String, subdirectory: String): Either[String, Path] =
+      env(variable) match
+        case Some(value) => absolute(variable, value)
+        case None        => coursierCacheBase(os, env).map(_.resolve(subdirectory))
+    for
+      archive <- located("COURSIER_ARCHIVE_CACHE", "arc")
+      jvm <- located("COURSIER_JVM_CACHE", "jvm")
+    yield CoursierUnpacked(archive, jvm)
+
+  /** The platform's Coursier cache directory, which holds `v1`, `arc` and `jvm` unless a variable moves them. Off
+    * macOS, Coursier takes any non-empty `XDG_CACHE_HOME` (directories-jvm's `ProjectDirectories`). */
+  def coursierCacheBase(os: Os, env: String => Option[String]): Either[String, Path] =
+    def home = env("HOME").filter(_.nonEmpty).toRight("HOME is not set").flatMap(absolute("HOME", _))
+    os match
+      case Os.Mac => home.map(_.resolve("Library/Caches/Coursier"))
+      case _ =>
+        env("XDG_CACHE_HOME").filter(_.nonEmpty) match
+          case Some(value) => absolute("XDG_CACHE_HOME", value).map(_.resolve("coursier"))
+          case None        => home.map(_.resolve(".cache/coursier"))
+
+  private def absolute(variable: String, value: String): Either[String, Path] =
+    parsePath(value).filter(_.isAbsolute).map(_.normalize()).toRight(s"$variable is not an absolute path: '$value'")
 
   /** Where `cs install` puts what it installs. The macOS spelling contains a space. */
   def coursierInstallDir(os: Os, env: String => Option[String]): Option[Path] =
@@ -352,24 +385,26 @@ object RunOnHostPrereqs:
    *   - With both sides canonical, the comparison is exact. Canonicalization returns the on-disk spelling on a folding
    *     volume. On a case-sensitive volume, `coursier` and `Coursier` are different directories that folding would
    *     conflate.
-   *   - Lying inside the cache is necessary, not sufficient. The cache root, `arc` and `v1` lie inside it too, and
-   *     each would be granted read/execute whole. A JDK home is what holds `bin/java`.
+   *   - Lying inside `arc` or `jvm` is necessary, not sufficient. A JDK home is what holds `bin/java`.
+   *   - `arc`'s own entries, such as `arc/https`, hold many archives, so an `arc` home lies at least two levels down.
+   *     Each `jvm` entry is one JDK, and is itself the home unless it holds macOS's `Contents/Home` (Coursier 2.0.16,
+   *     `JvmCache.finalDirectory`).
    */
   def resolveJdkHome(
     env: String => Option[String],
-    cacheRoot: Path,
+    unpacked: CoursierUnpacked,
     canonicalize: Path => Option[Path],
     isExecutableFile: Path => Boolean,
   ): Either[Refusal, Path] =
     env("JAVA_HOME").filter(_.nonEmpty) match
       case None => Left(Refusal.PrereqJvmNotCoursier("JAVA_HOME is not set"))
       case Some(value) =>
-        jdkHomeInside(value, cacheRoot, canonicalize, isExecutableFile).toRight(Refusal.PrereqJvmNotCoursier(value))
+        jdkHomeInside(value, unpacked, canonicalize, isExecutableFile).toRight(Refusal.PrereqJvmNotCoursier(value))
 
-  /** The canonical home `value` names, when it is a JDK home inside the Coursier cache. */
+  /** The canonical home `value` names, when it is a JDK home inside a directory where Coursier unpacks JDKs. */
   private def jdkHomeInside(
     value: String,
-    cacheRoot: Path,
+    unpacked: CoursierUnpacked,
     canonicalize: Path => Option[Path],
     isExecutableFile: Path => Boolean,
   ): Option[Path] =
@@ -377,11 +412,10 @@ object RunOnHostPrereqs:
       // bin/java must be canonical and still under the home. A symlink out of the home would run a JVM that the
       // profile never granted.
       val java = canonicalize(home.resolve("bin").resolve("java"))
-      canonicalize(cacheRoot).exists: root =>
-        home.startsWith(root)
-          && home != root
-          && home.getParent != root
-          && java.exists(binary => binary.startsWith(home) && isExecutableFile(binary))
+      val inArchive = canonicalize(unpacked.archive)
+        .exists(root => home.startsWith(root) && home != root && home.getParent != root)
+      val inJvm = canonicalize(unpacked.jvm).exists(root => home.startsWith(root) && home != root)
+      (inArchive || inJvm) && java.exists(binary => binary.startsWith(home) && isExecutableFile(binary))
 
   /**
    * The `sbt` that the command runs, which must be the one `cs install sbt` produced. An `sbt` found on PATH is
@@ -410,10 +444,10 @@ object RunOnHostPrereqs:
    *     host, unconfined.
    *   - The answer is the longest cache path the script names. A shorter path is a prefix of the real answer, and a
    *     grant on a prefix is wider than it should be.
-   *   - A path that escapes the cache root is refused.
+   *   - A path that escapes the archive cache is refused.
    */
-  def sbtDistribution(scriptText: String, coursierCacheRoot: Path): Option[Path] =
-    val prefix = coursierCacheRoot.toString
+  def sbtDistribution(scriptText: String, archiveCache: Path): Option[Path] =
+    val prefix = archiveCache.toString
     val candidates =
       for
         line <- scriptText.linesIterator
@@ -424,7 +458,7 @@ object RunOnHostPrereqs:
       yield trimmed
     candidates.toSeq.sortBy(-_.length).headOption
       .map(text => Path.of(text).normalize())
-      .filter(_.startsWith(coursierCacheRoot))
+      .filter(_.startsWith(archiveCache))
 
   private def indexesOf(line: String, needle: String): Seq[Int] =
     Iterator
@@ -439,21 +473,19 @@ object RunOnHostPrereqs:
    * (sbtDistribution names it).
    *
    *   - The distribution's `sbt` is checked as the script itself is: canonical, an executable file, and still inside
-   *     the cache once symlinks are followed.
-   *   - The distribution's layout is checked too: `<home>/bin/sbt`, with the home strictly inside `arc`, where Coursier
-   *     unpacks archives.
-   *   - A grant is the home, so `arc/bin/sbt` or `v1/x/bin/sbt` would grant `arc` or a `v1` entry. The layout is what
-   *     keeps a grant a distribution.
+   *     the archive cache once symlinks are followed.
+   *   - The distribution's layout is checked too: `<home>/bin/sbt`, with the home strictly inside the archive cache.
+   *   - A grant is the home, so `arc/bin/sbt` would grant the whole archive cache. The layout is what keeps a grant a
+   *     distribution.
    */
   def validateSbtDistribution(
     inner: Path,
-    coursierCache: Path,
+    archiveCache: Path,
     canonicalize: Path => Option[Path],
     isExecutableFile: Path => Boolean,
   ): Either[Refusal, Path] =
-    (canonicalize(inner), canonicalize(coursierCache)) match
-      case (Some(executable), Some(cache)) if isExecutableFile(executable) =>
-        val arc = cache.resolve("arc")
+    (canonicalize(inner), canonicalize(archiveCache)) match
+      case (Some(executable), Some(arc)) if isExecutableFile(executable) =>
         val home = Option(executable.getParent).flatMap(bin => Option(bin.getParent))
           .filter(_ => executable.getFileName.toString == "sbt" && executable.getParent.getFileName.toString == "bin")
           .filter(home => home.startsWith(arc) && home != arc)
@@ -711,7 +743,7 @@ object RunOnHostPrereqs:
    *
    * Mill uses the recorded home while the file's key equals `<id>:<index version>:<repositories>` and the home is a
    * directory. Otherwise mill resolves the id again, fetching the index and the JDK (measured,
-   * src/probe/mill-pinned-jvm.sh).
+   * src/probe/MillPinnedJvm.scala).
    *
    *   - A file recording another id than the pin is therefore refused here as not provisioned.
    *   - None of the other three parts is compared. The index version is mill's own default unless the build sets one,
@@ -725,14 +757,14 @@ object RunOnHostPrereqs:
     id: Option[String],
     launcherVersion: String,
     recorded: Option[String],
-    cacheRoot: Path,
+    unpacked: CoursierUnpacked,
     canonicalize: Path => Option[Path],
     isExecutableFile: Path => Boolean,
   ): Either[Refusal, Path] =
     recorded match
       case Some(RecordedJavaHome(key, home)) if id.forall(pin => key.startsWith(s"$pin:")) =>
-        Some(home).filter(_.startsWith("/")).flatMap(jdkHomeInside(_, cacheRoot, canonicalize, isExecutableFile))
-          .toRight(Refusal.PrereqMillJdkNotCoursier(id, launcherVersion, cacheRoot))
+        Some(home).filter(_.startsWith("/")).flatMap(jdkHomeInside(_, unpacked, canonicalize, isExecutableFile))
+          .toRight(Refusal.PrereqMillJdkNotCoursier(id, launcherVersion, unpacked))
       case _ => Left(Refusal.PrereqMillJdkMissing(id, launcherVersion))
 
   /** The JVM launcher's file, provisioned, present and executable, or a refusal naming the host command that

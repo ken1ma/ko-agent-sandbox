@@ -23,7 +23,9 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       "download/jdk-25.0.4%252B7/OpenJDK25U-jdk_aarch64_mac_hotspot_25.0.4_7.tar.gz/" +
       "jdk-25.0.4+7/Contents/Home",
   )
-  private val coursierCache = Paths.get(s"$home/Library/Caches/Coursier")
+  private val coursierBase = Paths.get(s"$home/Library/Caches/Coursier")
+  private val archiveCache = coursierBase.resolve("arc")
+  private val unpacked = CoursierUnpacked(archiveCache, coursierBase.resolve("jvm"))
   private val installDir = Paths.get(s"$home/Library/Application Support/Coursier/bin")
 
   private def env(pairs: (String, String)*): String => Option[String] =
@@ -88,24 +90,40 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
   // Discovery
   // --------------------------------------------------------------------------
 
-  test("the macOS Coursier cache root and install directory are the Library spellings"):
-    assertEquals(coursierCacheRoot(Os.Mac, env("HOME" -> home)), Some(coursierCache))
+  test("the macOS Coursier archive and JVM caches and install directory are the Library spellings"):
+    assertEquals(coursierUnpacked(Os.Mac, env("HOME" -> home)), Right(unpacked))
     assertEquals(coursierInstallDir(Os.Mac, env("HOME" -> home)), Some(installDir))
     // The install directory contains a space, and nothing downstream may split on it.
     assert(clue(installDir.toString).contains(" "))
 
   test("the Linux spellings differ, and are testable from either host"):
-    assertEquals(coursierCacheRoot(Os.Linux, env("HOME" -> home)), Some(Paths.get(s"$home/.cache/coursier")))
+    val coursierLinux = Paths.get(s"$home/.cache/coursier")
+    assertEquals(coursierCacheBase(Os.Linux, env("HOME" -> home)), Right(coursierLinux))
+    assertEquals(
+      coursierCacheBase(Os.Linux, env("HOME" -> home, "XDG_CACHE_HOME" -> "/var/cache/mine")),
+      Right(Paths.get("/var/cache/mine/coursier")),
+    )
+    assertEquals(coursierCacheBase(Os.Linux, env("HOME" -> home, "XDG_CACHE_HOME" -> "")), Right(coursierLinux))
+    assert(coursierCacheBase(Os.Linux, env("HOME" -> home, "XDG_CACHE_HOME" -> "cache")).isLeft)
     assertEquals(
       coursierInstallDir(Os.Linux, env("HOME" -> home)),
       Some(Paths.get(s"$home/.local/share/coursier/bin")),
     )
 
-  test("COURSIER_CACHE and COURSIER_BIN_DIR override discovery"):
+  test("COURSIER_ARCHIVE_CACHE, COURSIER_JVM_CACHE and COURSIER_BIN_DIR override discovery"):
     assertEquals(
-      coursierCacheRoot(Os.Mac, env("HOME" -> home, "COURSIER_CACHE" -> "/opt/cs")),
-      Some(Paths.get("/opt/cs")),
+      coursierUnpacked(
+        Os.Mac,
+        env("HOME" -> home, "COURSIER_ARCHIVE_CACHE" -> "/opt/cs/arc", "COURSIER_JVM_CACHE" -> "/opt/cs/jvm"),
+      ),
+      Right(CoursierUnpacked(Paths.get("/opt/cs/arc"), Paths.get("/opt/cs/jvm"))),
     )
+    // Coursier takes a set variable as it is, so an empty or relative one names a directory under each program's
+    // current directory.
+    for value <- Seq("", "arc") do
+      val refused = coursierUnpacked(Os.Mac, env("HOME" -> home, "COURSIER_ARCHIVE_CACHE" -> value))
+      assertEquals(refused, Left(s"COURSIER_ARCHIVE_CACHE is not an absolute path: '$value'"))
+      assert(coursierUnpacked(Os.Mac, env("HOME" -> home, "COURSIER_JVM_CACHE" -> value)).isLeft, clue(value))
     assertEquals(
       coursierInstallDir(Os.Mac, env("HOME" -> home, "COURSIER_BIN_DIR" -> "/opt/cs/bin")),
       Some(Paths.get("/opt/cs/bin")),
@@ -149,12 +167,23 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
 
   private val javaBinary = jdkHome.resolve("bin/java")
 
+  test("a set COURSIER_CACHE names v1 alone, so the JDK and the sbt distribution are still found in arc"):
+    val found = coursierUnpacked(Os.Mac, env("HOME" -> home, "COURSIER_CACHE" -> coursierBase.resolve("v1").toString))
+    assertEquals(found, Right(unpacked))
+    val known = exists(jdkHome, javaBinary, archiveCache)
+    assertEquals(
+      found.map(resolveJdkHome(env("JAVA_HOME" -> jdkHome.toString), _, known, _ == javaBinary)),
+      Right(Right(jdkHome)),
+    )
+    val script = s"""exec "$distributionExec" "$$@""""
+    assertEquals(found.map(cache => sbtDistribution(script, cache.archive)), Right(Some(distributionExec)))
+
   test("a Coursier-unpacked JDK home is accepted through its URL-derived path"):
     assertEquals(
       resolveJdkHome(
         env("JAVA_HOME" -> jdkHome.toString),
-        coursierCache,
-        exists(jdkHome, javaBinary, coursierCache),
+        unpacked,
+        exists(jdkHome, javaBinary, archiveCache),
         _ == javaBinary,
       ),
       Right(jdkHome),
@@ -163,32 +192,38 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
   test("bin/java must be an executable file under the home, not a symlink out of it"):
     val elsewhere = Paths.get("/Library/Java/JavaVirtualMachines/temurin-25.jdk/Contents/Home/bin/java")
     val escaping: Path => Option[Path] =
-      path => if path == javaBinary then Some(elsewhere) else exists(jdkHome, coursierCache, elsewhere)(path)
-    assert(resolveJdkHome(env("JAVA_HOME" -> jdkHome.toString), coursierCache, escaping, _ => true).isLeft)
+      path => if path == javaBinary then Some(elsewhere) else exists(jdkHome, archiveCache, elsewhere)(path)
+    assert(resolveJdkHome(env("JAVA_HOME" -> jdkHome.toString), unpacked, escaping, _ => true).isLeft)
     assert(
       resolveJdkHome(
         env("JAVA_HOME" -> jdkHome.toString),
-        coursierCache,
-        exists(jdkHome, javaBinary, coursierCache),
+        unpacked,
+        exists(jdkHome, javaBinary, archiveCache),
         _ => false,
       ).isLeft,
     )
 
-  test("inside the cache is not enough: the cache root, arc, v1 and a home without bin/java are refused"):
-    val arc = coursierCache.resolve("arc")
-    val v1 = coursierCache.resolve("v1")
-    for candidate <- Seq(coursierCache, arc, v1, jdkHome) do
-      val known = Seq(coursierCache, arc, v1, jdkHome, arc.resolve("bin/java"), v1.resolve("bin/java"),
-        coursierCache.resolve("bin/java"))
+  test("a JDK home unpacked by an older Coursier into its JVM cache is accepted, as the entry or its Contents/Home"):
+    for legacy <- Seq(unpacked.jvm.resolve("temurin@21/Contents/Home"), unpacked.jvm.resolve("adopt@1.11")) do
+      val known = exists(legacy, legacy.resolve("bin/java"), unpacked.jvm)
+      assertEquals(resolveJdkHome(env("JAVA_HOME" -> legacy.toString), unpacked, known, _ => true), Right(legacy))
+
+  test("inside arc or jvm is not enough: the directories, arc's entries, v1 and a home without bin/java are refused"):
+    val withJava = Seq(
+      coursierBase, archiveCache, unpacked.jvm, archiveCache.resolve("https"),
+      coursierBase.resolve("v1/https/example.com/jdk"),
+    )
+    val known = exists((withJava ++ withJava.map(_.resolve("bin/java")) :+ jdkHome)*)
+    for candidate <- withJava :+ jdkHome do
       assert(
-        resolveJdkHome(env("JAVA_HOME" -> candidate.toString), coursierCache, exists(known*), _ => true).isLeft,
+        resolveJdkHome(env("JAVA_HOME" -> candidate.toString), unpacked, known, _ => true).isLeft,
         clue(candidate),
       )
 
   test("/usr/bin/java is refused: the stub is a redirector, not a JDK"):
     val stub = Paths.get("/usr/bin/java")
-    val known = exists(stub, coursierCache)
-    assert(resolveJdkHome(env("JAVA_HOME" -> stub.toString), coursierCache, known, _ => true).isLeft)
+    val known = exists(stub, archiveCache)
+    assert(resolveJdkHome(env("JAVA_HOME" -> stub.toString), unpacked, known, _ => true).isLeft)
 
   test("a system or Homebrew JDK is refused"):
     for candidate <- Seq(
@@ -199,18 +234,18 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     do
       val path = Paths.get(candidate)
       assert(
-        resolveJdkHome(env("JAVA_HOME" -> candidate), coursierCache, exists(path, coursierCache), _ => true)
+        resolveJdkHome(env("JAVA_HOME" -> candidate), unpacked, exists(path, archiveCache), _ => true)
           .isLeft,
         clue(candidate),
       )
 
   test("JAVA_HOME unset is a prerequisite refusal, not a fallback to PATH"):
-    assert(resolveJdkHome(env(), coursierCache, exists(coursierCache), _ => true).isLeft)
+    assert(resolveJdkHome(env(), unpacked, exists(archiveCache), _ => true).isLeft)
 
   test("a JAVA_HOME that does not exist is refused rather than assumed"):
-    val absent = coursierCache.resolve("arc/gone/Contents/Home")
-    val known = exists(coursierCache)
-    assert(resolveJdkHome(env("JAVA_HOME" -> absent.toString), coursierCache, known, _ => true).isLeft)
+    val absent = archiveCache.resolve("gone/Contents/Home")
+    val known = exists(archiveCache)
+    assert(resolveJdkHome(env("JAVA_HOME" -> absent.toString), unpacked, known, _ => true).isLeft)
 
   // --------------------------------------------------------------------------
   // sbt and mill
@@ -234,43 +269,43 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assert(validateSbtExecutable(other, installDir, exists(other, installDir), _ => true).isLeft)
 
   private val distributionExec =
-    coursierCache.resolve("arc/https/github.com/sbt/sbt/releases/download/v2.0.4/sbt-2.0.4.zip/sbt/bin/sbt")
+    archiveCache.resolve("https/github.com/sbt/sbt/releases/download/v2.0.4/sbt-2.0.4.zip/sbt/bin/sbt")
 
   test("the distribution is read out of the script, not derived from a convention"):
     val script =
       s"""#!/usr/bin/env sh
          |exec "$distributionExec" "$$@"
          |""".stripMargin
-    assertEquals(sbtDistribution(script, coursierCache), Some(distributionExec))
+    assertEquals(sbtDistribution(script, archiveCache), Some(distributionExec))
 
   test("the longest cache path wins, so a grant never applies to a prefix"):
     val script =
-      s"""CACHE="$coursierCache"
+      s"""CACHE="$archiveCache"
          |exec "$distributionExec" "$$@"
          |""".stripMargin
-    assertEquals(sbtDistribution(script, coursierCache), Some(distributionExec))
+    assertEquals(sbtDistribution(script, archiveCache), Some(distributionExec))
 
-  test("a path escaping the cache root is not accepted"):
-    val escaping = s"$coursierCache/../../../etc/passwd"
-    assertEquals(sbtDistribution(s"""exec "$escaping"""", coursierCache), None)
+  test("a path escaping the archive cache is not accepted"):
+    val escaping = s"$archiveCache/../../../etc/passwd"
+    assertEquals(sbtDistribution(s"""exec "$escaping"""", archiveCache), None)
 
   test("a script naming no cache path yields nothing rather than a guess"):
-    assertEquals(sbtDistribution("#!/bin/sh\nexec /usr/local/bin/sbt \"$@\"\n", coursierCache), None)
+    assertEquals(sbtDistribution("#!/bin/sh\nexec /usr/local/bin/sbt \"$@\"\n", archiveCache), None)
 
   test("the distribution's sbt yields its home: <home>/bin/sbt, strictly inside arc"):
-    val home = coursierCache.resolve("arc/sbt-2.0.4.zip/sbt")
+    val home = archiveCache.resolve("sbt-2.0.4.zip/sbt")
     val inner = home.resolve("bin/sbt")
-    val known = exists(inner, coursierCache)
-    assertEquals(validateSbtDistribution(inner, coursierCache, known, _ => true), Right(home))
-    assert(validateSbtDistribution(inner, coursierCache, known, _ => false).isLeft)
+    val known = exists(inner, archiveCache)
+    assertEquals(validateSbtDistribution(inner, archiveCache, known, _ => true), Right(home))
+    assert(validateSbtDistribution(inner, archiveCache, known, _ => false).isLeft)
     val escaping: Path => Option[Path] =
       path => if path == inner then Some(Paths.get("/opt/sbt/bin/sbt")) else known(path)
-    assert(validateSbtDistribution(inner, coursierCache, escaping, _ => true).isLeft)
+    assert(validateSbtDistribution(inner, archiveCache, escaping, _ => true).isLeft)
 
-  test("an executable whose home would be the cache root, arc, a v1 entry or a non-bin path is refused"):
+  test("an executable whose home would be the archive cache, outside it or a non-bin path is refused"):
     for bad <- Seq("bin/sbt", "arc/bin/sbt", "v1/x/bin/sbt", "arc/sbt-2.0.4.zip/sbt/sbt", "arc/x/bin/sbtn") do
-      val inner = coursierCache.resolve(bad)
-      assert(validateSbtDistribution(inner, coursierCache, exists(inner, coursierCache), _ => true).isLeft, clue(bad))
+      val inner = coursierBase.resolve(bad)
+      assert(validateSbtDistribution(inner, archiveCache, exists(inner, archiveCache), _ => true).isLeft, clue(bad))
 
   test("mill needs the workspace's own bootstrap; a global mill is not a fallback"):
     val bootstrap = workspace.resolve("mill")
@@ -474,8 +509,8 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
   test("canonical paths compare exactly: a case-sensitive volume keeps coursier and Coursier apart"):
     val sibling = Paths.get(s"$home/Library/Caches/coursier/arc/jdk/Contents/Home")
     val binary = sibling.resolve("bin/java")
-    val known = exists(sibling, binary, coursierCache)
-    assert(resolveJdkHome(env("JAVA_HOME" -> sibling.toString), coursierCache, known, _ => true).isLeft)
+    val known = exists(sibling, binary, archiveCache)
+    assert(resolveJdkHome(env("JAVA_HOME" -> sibling.toString), unpacked, known, _ => true).isLeft)
 
   test("two markers are no version, and a version file's whitespace is kept as the script keeps it"):
     assertEquals(
@@ -523,9 +558,9 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assert(clue(wording(refusal, shown)).contains("under ~/.cache/mill/download;"))
 
   test("a pinned or unset mill-jvm-version runs on the JDK mill's java-home file records, checked as JAVA_HOME is"):
-    val present = exists(jdkHome, javaBinary, coursierCache)
+    val present = exists(jdkHome, javaBinary, archiveCache)
     def recordedJdk(id: Option[String], recorded: Option[String], canonicalize: Path => Option[Path]) =
-      millRecordedJdk(id, "1.1.10-jvm", recorded, coursierCache, canonicalize, _ == javaBinary)
+      millRecordedJdk(id, "1.1.10-jvm", recorded, unpacked, canonicalize, _ == javaBinary)
     def pinnedJdk(recorded: Option[String], canonicalize: Path => Option[Path] = present) =
       recordedJdk(Some("temurin:25"), recorded, canonicalize)
     def unsetJdk(recorded: Option[String], canonicalize: Path => Option[Path] = present) =
@@ -554,15 +589,15 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     // - a relative home;
     // - the cache's own directories;
     // - a home whose bin/java leads out of the cache.
-    val notCoursier = Left(Refusal.PrereqMillJdkNotCoursier(Some("temurin:25"), "1.1.10-jvm", coursierCache))
-    val unsetNotCoursier = Left(Refusal.PrereqMillJdkNotCoursier(None, "1.1.10-jvm", coursierCache))
+    val notCoursier = Left(Refusal.PrereqMillJdkNotCoursier(Some("temurin:25"), "1.1.10-jvm", unpacked))
+    val unsetNotCoursier = Left(Refusal.PrereqMillJdkNotCoursier(None, "1.1.10-jvm", unpacked))
     val planted = workspace.resolve("jdk")
     val everything: Path => Option[Path] = path => Some(path.normalize())
     assertEquals(pinnedJdk(recorded(key, planted), everything), notCoursier)
     assertEquals(unsetJdk(recorded(key, planted), everything), unsetNotCoursier)
     assertEquals(pinnedJdk(recorded(key, "Library/Caches/Coursier/arc/jdk"), everything), notCoursier)
-    assertEquals(pinnedJdk(recorded(key, coursierCache.resolve("arc")), everything), notCoursier)
-    assertEquals(pinnedJdk(recorded(key, jdkHome), exists(coursierCache)), notCoursier)
+    assertEquals(pinnedJdk(recorded(key, archiveCache), everything), notCoursier)
+    assertEquals(pinnedJdk(recorded(key, jdkHome), exists(archiveCache)), notCoursier)
     val escaping: Path => Option[Path] =
       path => if path == javaBinary then Some(planted.resolve("bin/java")) else Some(path.normalize())
     assertEquals(pinnedJdk(recorded(key, jdkHome), escaping), notCoursier)
@@ -989,8 +1024,8 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       Refusal.PrereqMillExecutableMissing("1.1.8", millDownload), Refusal.PrereqMillJvmUnreadable("25"),
       Refusal.PrereqMillJvmUnset("1.0.6-jvm"),
       Refusal.PrereqMillJdkMissing(Some("temurin:25"), "1.1.8-jvm"), Refusal.PrereqMillJdkMissing(None, "1.1.8-jvm"),
-      Refusal.PrereqMillJdkNotCoursier(Some("temurin:25"), "1.1.8-jvm", coursierCache),
-      Refusal.PrereqMillJdkNotCoursier(None, "1.1.8-jvm", coursierCache),
+      Refusal.PrereqMillJdkNotCoursier(Some("temurin:25"), "1.1.8-jvm", unpacked),
+      Refusal.PrereqMillJdkNotCoursier(None, "1.1.8-jvm", unpacked),
       Refusal.PrereqMillNativeLauncher("1.1.8-native"),
       Refusal.PrereqGradleWrapperMissing, Refusal.PrereqGradleWrapperUnreadable("no distributionUrl"),
       Refusal.PrereqGradleDistributionMissing(gradleUrl, workspace),
@@ -1011,8 +1046,8 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     for fixedByMillRun <- Seq(
         Refusal.PrereqMillJdkMissing(Some("temurin:25"), "1.1.8-jvm"),
         Refusal.PrereqMillJdkMissing(None, "1.1.8-jvm"),
-        Refusal.PrereqMillJdkNotCoursier(Some("temurin:25"), "1.1.8-jvm", coursierCache),
-        Refusal.PrereqMillJdkNotCoursier(None, "1.1.8-jvm", coursierCache),
+        Refusal.PrereqMillJdkNotCoursier(Some("temurin:25"), "1.1.8-jvm", unpacked),
+        Refusal.PrereqMillJdkNotCoursier(None, "1.1.8-jvm", unpacked),
       )
     do assert(clue(wording(fixedByMillRun)).contains("`MILL_VERSION=1.1.8-jvm ./mill version`"))
     assert(wording(Refusal.PrereqMvnWrapperNotOnlyScript).contains("./mvnw wrapper:wrapper -Dtype=only-script"))

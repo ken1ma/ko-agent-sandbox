@@ -1,5 +1,5 @@
 // Measures what a confined host command learns of another process of the same user through sysctl(KERN_PROCARGS2),
-// the call behind `ps -E`. The `procargs` mode of run-on-host-profile-iterate.sh runs this program under the command
+// the call behind `ps -E`. The `procargs` mode of RunOnHostProfileIterate.scala runs this program under the command
 // profile, with and without a deny of that sysctl name.
 // - `ps` is not a granted binary, and a build can make the kernel call itself, so the measurement makes the call too.
 // - The program prints counts and variable names only, never a value, because the targets are the user's own

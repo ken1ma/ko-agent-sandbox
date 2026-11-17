@@ -10,7 +10,7 @@ class RunOnHostChecksTest extends munit.FunSuite:
 
   private def checkRun(): CheckRun =
     val out = Files.createTempDirectory("checks")
-    val host = HostPaths(out, out, out, out, out, out)
+    val host = HostPaths(out, out, out, out, out, out, out, out)
     CheckRun(HostDriver.Transcript(out.resolve("transcript.log")), Checkout(out), out, Program.values.toSet, host)
 
   test("inParallel returns only once every group has ended, and a failing group reports a FAIL of its own"):
@@ -68,3 +68,12 @@ class RunOnHostChecksTest extends munit.FunSuite:
       listener.close()
       Files.deleteIfExists(dir.resolve("s"))
       Files.delete(dir)
+
+  test("a launcher's text lines stop where its appended jar starts, and keep a non-ASCII path whole"):
+    val launcher = Files.createTempFile("launcher", "")
+    val sbt = "/Users/けんいち/Library/Caches/Coursier/arc/https/github.com/sbt/sbt-2.0.11.zip/sbt/bin/sbt"
+    val script = s"#!/usr/bin/env sh\r\nexec \"$sbt\" \"$$@\"\n\tindented\n"
+    // A zip's local file header, then bytes that read as text again: the cut stays at the jar's first line.
+    val jar = Array[Byte]('P', 'K', 3, 4, 'x', '\n', 'a', 'f', 't', 'e', 'r', '\n')
+    Files.write(launcher, script.getBytes(java.nio.charset.StandardCharsets.UTF_8) ++ jar)
+    assertEquals(leadingTextLines(launcher), Seq("#!/usr/bin/env sh", s"exec \"$sbt\" \"$$@\"", "\tindented"))
