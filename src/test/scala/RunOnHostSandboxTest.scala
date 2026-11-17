@@ -741,8 +741,8 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(proxyInputs(systemPaths, classPath = "build.sbt").fold(fail(_), identity).reads,
       Seq(cwd.resolve("build.sbt")))
     assertEquals(
-      selfClassPath("target/dist/ko-agent-sandbox.jar:"),
-      Seq(Path.of("").toAbsolutePath.resolve("target/dist/ko-agent-sandbox.jar").toString,
+      selfClassPath("dist/ko-agent-sandbox.jar:"),
+      Seq(Path.of("").toAbsolutePath.resolve("dist/ko-agent-sandbox.jar").toString,
         Path.of("").toAbsolutePath.toString),
     )
     assert(proxyInputs(systemPaths, javaHome = "/no/such/jdk").isLeft)

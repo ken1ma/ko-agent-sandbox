@@ -1932,10 +1932,10 @@ commands execute outside the container, so the profile provides their confinemen
       apart in a build"). This repository's `dist` and `assembly` refuse there, and stop that
       server.
     - `doc/TODO.md`, "A terminal's sbt in a launch's server", tracks a fix in the launcher.
-  - The build output in the workspace has no such separation. A session writes `target/` as it
-    writes the sources, and `git diff` shows neither the class files nor the jars there. Your own
-    server's incremental build reuses them, so run `sbt clean dist` when a session's writes to
-    `target/` are in doubt.
+  - The build output in the workspace has no such separation. A session writes `target/` and
+    `dist/` as it writes the sources, and `git diff` shows neither the class files nor the jars
+    there. Your own server's incremental build reuses `target/`, so run `sbt clean dist` when a
+    session's writes to either are in doubt.
   - `--reset` discards all of these caches with the workspace's other state. `--reset-run-on-host`
     discards those caches alone.
   - The separation is by root, because Seatbelt has no mount namespace to overlay with. One

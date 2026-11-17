@@ -30,7 +30,7 @@ lazy val koReview = project.in(file("ko-review"))
 // ko-review/build.sbt defines the task; a key is found by its name, so this declaration names the same task.
 lazy val pluginAssembly = taskKey[File]("Assemble the plugin without its dependencies' jars")
 
-lazy val dist = taskKey[Unit]("Assemble one self-contained jar under target/dist")
+lazy val dist = taskKey[Unit]("Assemble one self-contained jar as dist/ko-agent-sandbox.jar")
 
 lazy val root = project.in(file(".")).dependsOn(egressProxy).settings(
   Compile / mainClass := Some("agentsandbox.launcher.AgentSandboxLauncher"),
@@ -218,11 +218,7 @@ lazy val root = project.in(file(".")).dependsOn(egressProxy).settings(
     index +: (bundled ++ pluginFiles).map(_._2)
   }.taskValue,
 
-  assembly / assemblyJarName := "ko-agent-sandbox.jar",
-  assembly / assemblyOutputPath :=
-    baseDirectory.value / "target" / "dist" / "ko-agent-sandbox.jar",
-
-  // assembly writes the jar that dist names, so it refuses in a run-on-host server as dist does (below).
+  // assembly builds the jar that dist copies, so it refuses in a run-on-host server as dist does (below).
   assembly := KoAgentSandboxHelper.outsideHostCommand("assembly", KoAgentSandboxHelper.BuildsWhatYouRun)(assembly)
     .value,
 
@@ -235,12 +231,43 @@ lazy val root = project.in(file(".")).dependsOn(egressProxy).settings(
   // - dist refuses in a run-on-host server, before assembly runs, so that the refusal names the task that was run: you
   //   run the jar outside the sandbox, and that server builds from the caches that the agent's commands write
   //   (SECURITY.md, "Cache poisoning stops at the workspace").
+  // - dist copies assembly's jar to dist/ko-agent-sandbox.jar, the jar that you run. On Windows, a running `java -jar`
+  //   holds its jar open without delete sharing, so nothing can delete or rename that file until the launcher exits.
+  //   sbt-assembly 2.5.0 saves its cache key before it writes the jar: once such a write fails, every later assembly
+  //   reports the old jar as up to date
+  //   (doc/upstream-issues.md, "A failed jar write leaves the old jar marked up to date"). assembly's own output is
+  //   never run, so its cache stays true, and a failed copy is retried by the next dist.
+  // - The copy replaces the jar by a rename, so a re-invocation of a running launcher (RunOnHostSandbox.selfPresent)
+  //   finds either the old jar or the new one. An unchanged jar is left in place, so that dist succeeds while a
+  //   launcher runs it.
   dist := KoAgentSandboxHelper.outsideHostCommand("dist", KoAgentSandboxHelper.BuildsWhatYouRun)(Def.task {
     Def.uncached {
-      val jar = assembly.value
-      streams.value.log.info(s"dist: ${fileConverter.value.toPath(jar)}")  // expand `${BASE}` (virtual id)
+      val built = fileConverter.value.toPath(assembly.value)
+      val distDirectory = baseDirectory.value.toPath.resolve("dist")
+      val runnable = distDirectory.resolve("ko-agent-sandbox.jar")
+      if (!java.nio.file.Files.isRegularFile(runnable) || java.nio.file.Files.mismatch(built, runnable) != -1L) {
+        java.nio.file.Files.createDirectories(distDirectory)
+        val copy = java.nio.file.Files.createTempFile(distDirectory, "ko-agent-sandbox", ".jar.tmp")
+        try {
+          java.nio.file.Files.copy(built, copy, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+          java.nio.file.Files.move(copy, runnable, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+        } catch {
+          case ex: java.io.IOException =>
+            val leftover =
+              try { java.nio.file.Files.deleteIfExists(copy); "" }
+              catch { case cleanupEx: java.io.IOException => s" Delete $copy yourself: $cleanupEx." }
+            throw new MessageOnlyException(
+              s"cannot replace $runnable: $ex. On Windows, a launcher running that jar keeps it open: exit the " +
+                s"launcher, then run dist again.$leftover"
+            )
+        }
+      }
+      streams.value.log.info(s"dist: $runnable")
     }
-  }).value
+  }).value,
+  // On Windows, clean leaves the jar in place while a launcher runs it, and still succeeds: sbt's IO.delete ignores the
+  // failed delete.
+  cleanFiles += baseDirectory.value / "dist",
 )
 
 // The container-launching suites run only under this command. `test` and `testFull` alone skip them, so no ordinary

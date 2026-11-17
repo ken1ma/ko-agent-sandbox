@@ -12,7 +12,7 @@
 //     ko-agent-fs/bpf/test/podman/launcher/Launcher.scala [--out DIR] [--platform mac|windows] [--jar PATH]
 //
 // On Windows, use `scala shebang ko-agent-fs\bpf\test\podman\launcher\Launcher.scala [options]`. The
-// jar defaults to target/dist/ko-agent-sandbox.jar.
+// jar defaults to dist/ko-agent-sandbox.jar.
 //
 // - The driver refuses to run while a sandbox container, session pins or a session record exist that
 //   it did not make, since the refusal rows and the memory row would measure them too. It checks
@@ -250,7 +250,7 @@ object Launcher:
     val platform = orExit(Platform.resolve(options.platform))
     val repoDir = orExit(repositoryRoot(s"$SuitesPath/launcher/Launcher.scala", s"$SuitesPath/launcher/sources.txt"))
     val suiteDir = repoDir / SuitesPath / "launcher"
-    val jar = options.jar.getOrElse(repoDir / "target" / "dist" / "ko-agent-sandbox.jar")
+    val jar = options.jar.getOrElse(repoDir / "dist" / "ko-agent-sandbox.jar")
     val out = options.out.getOrElse(suiteDir / platform.outDir)
     Files.createDirectories(out)
     val transcript = Transcript(out / "transcript.log")

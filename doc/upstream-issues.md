@@ -125,6 +125,51 @@ could then coexist with a developer's live server instead of ending it.
 **Related:** #8030, where a one-shot-style `sbt "show scalaVersion"` leaves a hanging server and
 surprises users. A true one-shot mode would answer that issue too.
 
+## sbt/sbt-assembly
+
+Found when `sbt dist` ran while a launcher ran from the jar that `dist` wrote. This project's `dist`
+copies the assembly jar to the jar that you run (`build.sbt`, at `dist`).
+
+### A failed jar write leaves the old jar marked up to date
+
+**Title:** `assembly` saves its cache key before it writes the jar, so after a failed write it
+reports the old jar as up to date
+
+**Versions:** sbt-assembly 2.5.0, sbt 2.0.12, Oracle Java 25.0.2 on Windows.
+
+**Reproducer:** in a project with this `build.sbt`, the plugin, and
+`src/main/scala/Hello.scala` holding
+`@main def hello(): Unit = { println("one"); scala.io.StdIn.readLine() }`:
+
+```scala
+scalaVersion := "3.8.4"
+assembly / assemblyOutputPath := baseDirectory.value / "out" / "app.jar"
+```
+
+1. Run `sbt assembly`.
+2. In a second terminal, run `java -jar out\app.jar`, which prints `one` and waits.
+3. Change `"one"` to `"two"` in `Hello.scala`, and run `sbt assembly`. It fails.
+4. Press Enter in the second terminal, so that the program exits.
+5. Run `sbt assembly`, then `java -jar out\app.jar`.
+
+**What happens:** step 5 logs `Assembly jar up to date`, and the jar prints `one`. Every later
+`assembly` keeps the old jar until an input changes again or the jar is deleted.
+
+- Step 3 saves `assembly-cacheKey-3.8.4` 1.3s before it finishes writing the new jar, which it
+  leaves as `out\zipfstmp<digits>.tmp`.
+- Step 3 cannot delete `app.jar`, because the running JVM holds it open without delete sharing.
+  sbt's `IO.delete` ignores the failure. The jar file system's own delete then fails the task with
+  `java.nio.file.FileSystemException: …\out\app.jar: The process cannot access the file because it
+  is being used by another process`, thrown by `Files.delete` in `ZipFileSystem.sync`, under
+  `ZipFileSystem.close` and `Assembly.createJar`. The run printed the Japanese text of that message.
+
+**Why:** `AssemblyCache.cachedAssembly` passes `Tracked.inputChanged` a function that has not built
+the jar yet. `inputChanged` saves the new key as soon as that function returns, and the build runs
+afterwards, when `cacheBlock(inputs)(())` applies the result.
+
+**Expected:** save the cache key only after the jar is written, or delete the saved key when the
+build fails. Deleting the leftover temporary jar would also help.
+
 ## scalameta/munit
 
 This project prints the clue through the test listener in `build.sbt`.

@@ -661,7 +661,7 @@ Run the commands below from the repository root.
 
 ### Build the launcher and images
 
-    sbt dist && java -jar target/dist/ko-agent-sandbox.jar --build
+    sbt dist && java -jar dist/ko-agent-sandbox.jar --build
 
 1. If sbt fails, `sbt shutdownall` and try again, especially on Windows.
 1. `sbt dist` assembles one self-contained jar: a single file is the whole install.

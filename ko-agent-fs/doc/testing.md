@@ -31,7 +31,7 @@ target is preinstalled. A session cannot add a target to the image's toolchain
 
 Run `--build` first. It provides the sandbox image and pulls the Rust image. Then:
 
-    java -jar target/dist/ko-agent-sandbox.jar --self-test
+    java -jar dist/ko-agent-sandbox.jar --self-test
 
 What the launcher does:
 

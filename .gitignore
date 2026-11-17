@@ -1,4 +1,5 @@
 # Entries most of our projects ignore
+dist/
 log/
 tmp/
 

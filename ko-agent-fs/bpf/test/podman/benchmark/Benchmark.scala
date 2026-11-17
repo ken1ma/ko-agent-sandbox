@@ -346,7 +346,7 @@ object Benchmark:
     removeTree(platform, scratchDir)
 
   def launcherOf(options: SuiteOptions, repoDir: Path): Path =
-    options.launcher.getOrElse(repoDir / "target" / "dist" / "ko-agent-sandbox.jar")
+    options.launcher.getOrElse(repoDir / "dist" / "ko-agent-sandbox.jar")
 
   /** The scratch workspace on the share: the host path and the machine path of the tree, what the tree
     * is, and the machine paths of the rule file, the records, the proof fixture and the volume. */

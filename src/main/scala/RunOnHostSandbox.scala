@@ -483,7 +483,7 @@ object RunOnHostSandbox:
 
   /** This JVM's class path, with every element made absolute against this JVM's working directory.
     *
-    *   - `java -jar target/dist/ko-agent-sandbox.jar` names the element relative, and an empty element is the working
+    *   - `java -jar dist/ko-agent-sandbox.jar` names the element relative, and an empty element is the working
     *     directory itself.
     *   - The proxy runs from `/` (RunOnHostProxy.startProxy), where a relative element names nothing. */
   def selfClassPath(classPath: String = System.getProperty("java.class.path")): Seq[String] =
@@ -526,8 +526,8 @@ object RunOnHostSandbox:
     * spelled.
     *
     *   - No file to check passes, since then no file exists from which a re-invocation loads this process's code.
-    *   - Both forms are checked alike. The jar and the native image are each one file, built under `target/dist`,
-    *     which `sbt clean` or `git clean` removes while a session runs.
+    *   - Both forms are checked alike. The jar and the native image are each one file under `dist`, which
+    *     `sbt clean` or `git clean -x` removes while a session runs.
     *   - The check runs before a supervisor is exec'd (RunnerRuntimes.prepare, every program) and before a proxy is
     *     started (RunOnHostProxy.proxyInputs). A JVM starts with a missing class-path entry and fails only at loading
     *     the main class. Unchecked, the jar form's failure would be the proxy's ready wait timing out over a Java

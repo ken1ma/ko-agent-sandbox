@@ -21,7 +21,7 @@ Run the commands in this section from the repository root.
 
 1. On the host, start a sandbox with the default egress rules:
 
-       java -jar target/dist/ko-agent-sandbox.jar --no-options-file --session-start=immediate bash
+       java -jar dist/ko-agent-sandbox.jar --no-options-file --session-start=immediate bash
 
    Inside that session, run `sbt testFull`, which also runs `SessionBoundaryTest`.
 
@@ -39,7 +39,7 @@ image runs:
 
 ## ko-agent-fs
 
-    java -jar target/dist/ko-agent-sandbox.jar --self-test
+    java -jar dist/ko-agent-sandbox.jar --self-test
 
 1. `--self-test` runs two suites on any machine with podman: the suite that needs no mount, and the
    suite that mounts the real FUSE backend in a privileged container. On macOS and Windows it then
@@ -181,11 +181,11 @@ Alternatively, on the host: copy the worktree
 
 1. Build the container images
 
-       sbt dist && java -jar target/dist/ko-agent-sandbox.jar --build
+       sbt dist && java -jar dist/ko-agent-sandbox.jar --build
 
 1. Run the sandbox. Native Linux has only the FUSE backend:
 
-       java -jar target/dist/ko-agent-sandbox.jar --workspace=live,fuse bash
+       java -jar dist/ko-agent-sandbox.jar --workspace=live,fuse bash
 
 
 ## On Linux x86_64

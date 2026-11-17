@@ -15,7 +15,7 @@
 # tables differ between OS versions, so the versions are part of the result.
 set -eu
 
-jar=${1:-target/dist/ko-agent-sandbox.jar}
+jar=${1:-dist/ko-agent-sandbox.jar}
 [ -f "$jar" ] || { echo "no launcher jar at $jar; run: sbt dist" >&2; exit 1; }
 jar=$(cd "$(dirname "$jar")" && pwd)/$(basename "$jar")
 

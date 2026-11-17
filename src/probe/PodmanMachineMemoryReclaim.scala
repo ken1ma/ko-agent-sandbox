@@ -24,7 +24,7 @@
       [--baseline SECONDS] [--after SECONDS] [--interval SECONDS] [--no-pressure] [-- COMMAND...]
 
   - The default command is the build that the macOS measurement used:
-    java -jar target/dist/ko-agent-sandbox.jar --no-options-file --session-start=immediate sbt test
+    java -jar dist/ko-agent-sandbox.jar --no-options-file --session-start=immediate sbt test
   - The probe refuses a machine that has been up for more than ten minutes, and a machine with a running container.
     The uptime shows a recent start, not that nothing ran since.
   - On Windows, start no other WSL distribution: every distribution shares one VM, so another distribution's memory
@@ -132,7 +132,7 @@ case class Options(
 )
 
 val DefaultCommand =
-  Seq("java", "-jar", "target/dist/ko-agent-sandbox.jar", "--no-options-file", "--session-start=immediate", "sbt",
+  Seq("java", "-jar", "dist/ko-agent-sandbox.jar", "--no-options-file", "--session-start=immediate", "sbt",
     "test")
 
 def fail(message: String): Nothing =
@@ -249,8 +249,8 @@ def windowsSamples(phase: String): Seq[Sample] =
     fail("This looks like a sandbox session. Run the probe on the host instead.")
   val command =
     if options.command.nonEmpty then options.command
-    else if Files.isRegularFile(Path.of("target/dist/ko-agent-sandbox.jar")) then DefaultCommand
-    else fail("target/dist/ko-agent-sandbox.jar is missing: run 'sbt dist' first, or pass a build command after --.")
+    else if Files.isRegularFile(Path.of("dist/ko-agent-sandbox.jar")) then DefaultCommand
+    else fail("dist/ko-agent-sandbox.jar is missing: run 'sbt dist' first, or pass a build command after --.")
 
   println("== What decides the answer")
   say("OS", s"${Properties.osName} ${System.getProperty("os.version")} ${System.getProperty("os.arch")}")

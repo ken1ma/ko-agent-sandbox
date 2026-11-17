@@ -1223,8 +1223,8 @@ under a private action.
 
 - That executable must still exist at its launch path, as spelled at launch, in either form. When
   the launcher was launched through a symlink, the path is the link.
-  - Each form is one file built under `target/dist`, which `sbt clean` or `git clean` removes while
-    a session runs.
+  - Each form is one file under `dist`, which `sbt clean` or `git clean -x` removes while a
+    session runs.
 - So the runner checks the executable before it execs every command's supervisor and before every
   proxy start (`RunOnHostSandbox.selfPresent`). A missing executable is refused with the path and
   the remedies: rebuild at that path, or relaunch. The JVM would otherwise fail at its main class

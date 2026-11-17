@@ -21,7 +21,7 @@ import FileHelper.*
 
 object WithPodman extends munit.Assertions:
 
-  val jar: Path = Paths.get("target/dist/ko-agent-sandbox.jar").toAbsolutePath
+  val jar: Path = Paths.get("dist/ko-agent-sandbox.jar").toAbsolutePath
 
   /** Whether this is a `testWithPodman` run, never detected from the machine: these suites launch
     * containers, and an ordinary `sbt test` must never start a session. That command sets the

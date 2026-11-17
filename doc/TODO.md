@@ -1034,7 +1034,7 @@ milliseconds where `java -jar` takes ~350ms.
 The build:
 
     sbt dist
-    cd target/dist
+    cd dist
     eval $(cs java --jvm graalvm-community:25 --env)
     export PATH="$JAVA_HOME/bin:$PATH"
     native-image --enable-native-access=ALL-UNNAMED \
