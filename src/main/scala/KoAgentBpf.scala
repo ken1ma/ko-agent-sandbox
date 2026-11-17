@@ -398,8 +398,8 @@ object KoAgentBpf:
         case at => Some(line.take(at) -> line.drop(at + 1).trim)
     }.toMap)
 
-  /** The upgrade that brings the machine's kernel and podman forward, per provider. The Windows machine's kernel is
-    * WSL's. */
+  /** The upgrade that brings the machine's kernel forward, per provider. The Windows machine's kernel is WSL's, which
+    * `wsl --update` replaces and the machine's `dnf upgrade` does not. */
   def upgradeRemedy(os: Os): String =
     os match
       case Os.Windows => s"update WSL, whose kernel the podman machine runs: ${Wsl.UpdateCommands}"

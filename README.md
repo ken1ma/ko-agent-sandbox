@@ -556,8 +556,9 @@ restore permission prompts and set the Claude Code status line.
 1. On macOS and Windows, compiles the BPF backend from bundled source against the machine's
    kernel, and installs it inside the podman machine.
 
-    1. Run `--build` again after `podman machine os upgrade` or `wsl --update`. A `bpf` launch
-       refuses a backend built under another kernel, and a backend from another launcher build.
+    1. Run `--build` again after `podman machine os upgrade` on macOS or `wsl --update` on
+       Windows. A `bpf` launch refuses a backend built under another kernel, and a backend from
+       another launcher build.
 
 1. Compiles the FUSE backend, `ko-agent-fs-fuse`, and the policy's resolver, `ko-agent-fs`,
    from bundled source. Installs them in `~/.local/share/ko-agent-sandbox/`: inside the podman

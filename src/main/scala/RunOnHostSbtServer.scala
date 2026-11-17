@@ -49,37 +49,47 @@ object RunOnHostSbtServer:
       "run `sbt shutdown` there and retry"
 
   /**
-   * Where the user's own sbt 2 keeps this build's server socket:
-   * `<serverDir>/<half SHA-1 hex of the portfile path's Path.toUri spelling>/sock`. serverDir is
-   * `$SBT_GLOBAL_SERVER_DIR`, or else the global base versioned `/2`, then `/server`.
+   * Where the user's own sbt keeps this build's server socket: `<serverDir>/<half SHA-1 hex of the portfile path's
+   * Path.toUri spelling>/sock`, for each serverDir that sbt 2 and sbt 1 derive. `$SBT_GLOBAL_SERVER_DIR` is both
+   * versions' serverDir. Otherwise serverDir is sbt 2's global base versioned `/2`, then `/server`, and sbt 1's
+   * `user.home/.sbt/1.0/server` (`BuildPaths.defaultVersionedGlobalBase`, v1.13.0).
    *
    * This method takes each input as sbt takes it, because a divergence here is a divergence in what gets shut down:
    *
    *   - `SBT_GLOBAL_SERVER_DIR` is taken verbatim, even when present but empty (`CommandExchange.scala`).
-   *   - The global base's own sources are trimmed and empty-filtered: `SBT_CONFIG_HOME`, else `XDG_CONFIG_HOME/sbt`,
-   *     else `user.home/.config/sbt` (`SysProp.defaultGlobalBaseDirectory`).
-   *   - The base uses `user.home`, not `$HOME`: sbt reads the property, and the two can differ.
+   *   - sbt 2's global base's own sources are trimmed and empty-filtered: `SBT_CONFIG_HOME`, else
+   *     `XDG_CONFIG_HOME/sbt`, else `user.home/.config/sbt` (`SysProp.defaultGlobalBaseDirectory`). sbt 1 reads
+   *     neither variable.
+   *   - The bases use `user.home`, not `$HOME`: sbt reads the property, and the two can differ.
    *   - `-Dsbt.global.base` comes first in sbt's order, but it is set in the user's JVM and invisible from this
-   *     process. A server launched with it derives its socket elsewhere and is never found at this socket. The
+   *     process. A server launched with it derives its socket elsewhere and is never found at these sockets. The
    *     result is the refusal in shutdownForeignServer, not a wrong shutdown.
    */
-  def sbtServerSocket(buildDirectory: Path, env: String => Option[String], userHome: Path): Path =
-    // java.io.File joins throughout, as sbt's `/` does. An empty parent then resolves against the root, where
-    // Path.resolve would keep the result relative.
-    def file(value: String) = java.io.File(value)
-    extension (parent: java.io.File) def /(child: String) = java.io.File(parent, child)
+  def sbtServerSockets(buildDirectory: Path, env: String => Option[String], userHome: Path): Vector[Path] =
     def trimmed(name: String): Option[java.io.File] =
-      env(name).filter(_.nonEmpty).map(value => file(value.trim))
+      env(name).filter(_.nonEmpty).map(value => java.io.File(value.trim))
+    val home = java.io.File(userHome.toString)
+    val sbt2Base =
+      trimmed("SBT_CONFIG_HOME")
+        .orElse(trimmed("XDG_CONFIG_HOME").map(java.io.File(_, "sbt")))
+        .getOrElse(java.io.File(java.io.File(home, ".config"), "sbt"))
+        .getAbsoluteFile
+    val serverDirs = env("SBT_GLOBAL_SERVER_DIR") match
+      case Some(serverDir) => Vector(java.io.File(serverDir))
+      case None =>
+        Vector(
+          java.io.File(java.io.File(sbt2Base, "2"), "server"),
+          java.io.File(java.io.File(java.io.File(home, ".sbt"), "1.0"), "server"),
+        )
+    serverDirs.map(serverSocketIn(_, buildDirectory))
+
+  /** `<serverDir>/<half SHA-1 hex of the portfile URI>/sock`. java.io.File joins throughout, as sbt's `/` does. An
+    * empty parent then resolves against the root, where Path.resolve would keep the result relative. */
+  private def serverSocketIn(serverDir: java.io.File, buildDirectory: Path): Path =
     val uri = RunOnHostSession.sbtPortfile(buildDirectory).toUri.toString
     val digest = java.security.MessageDigest.getInstance("SHA-1").digest(uri.getBytes(UTF_8))
     val hash = java.util.HexFormat.of().formatHex(digest).take(20)
-    val globalBase =
-      trimmed("SBT_CONFIG_HOME")
-        .orElse(trimmed("XDG_CONFIG_HOME").map(_ / "sbt"))
-        .getOrElse(file(userHome.toString) / ".config" / "sbt")
-        .getAbsoluteFile
-    val serverDir = env("SBT_GLOBAL_SERVER_DIR").map(file).getOrElse(globalBase / "2" / "server")
-    (serverDir / hash / "sock").toPath
+    java.io.File(java.io.File(serverDir, hash), "sock").toPath
 
   /** A chain longer than this is a cycle or an attempt at one. Either way, the walk cannot answer. */
   private val MaxSymlinkHops = 40
@@ -174,26 +184,28 @@ object RunOnHostSbtServer:
     releaseDeadlineMillis: Long = 10_000,
   ): Either[String, Unit] =
     def refused(cause: String) = Left(s"${foreignServerRefusal(portfileSocket)} ($cause)")
-    val derived = sbtServerSocket(buildDirectory, env, userHome)
-    if reachableThroughCommandWritable(derived, workspaceRoot, runOnHostCaches) then
-      refused(
-        s"the socket sbt derives for this build directory ($derived) is reachable through what a " +
-          "command writes, so no shutdown is sent to it",
-      )
-    else if !samePath(derived, portfileSocket) then
-      refused(s"its socket is not the one sbt derives for this build directory ($derived)")
-    else
-      log(s"shutting down the sbt server at $derived: it holds the portfile of $buildDirectory")
-      RunOnHostSbtServerShutdown.shutdown(derived, shutdownDeadlineMillis) match
-        case ServerAnswer.Unanswered(reason) => refused(s"the shutdown went unanswered: $reason")
-        // Unreachable means that the server went away between the liveness probe and now, which is the outcome
-        // sought.
-        case ServerAnswer.ShutDown | ServerAnswer.Unreachable(_) =>
-          val deadline = System.nanoTime + releaseDeadlineMillis * 1_000_000
-          while livePortfileServer(buildDirectory).isDefined && System.nanoTime < deadline do
-            Thread.sleep(50)
-          if livePortfileServer(buildDirectory).isEmpty then Right(())
-          else refused("the server answered the shutdown but still holds the portfile")
+    val candidates = sbtServerSockets(buildDirectory, env, userHome)
+    candidates.find(samePath(_, portfileSocket)) match
+      case None =>
+        val derived = candidates.mkString(", ")
+        refused(s"its socket is not one that sbt 1 or sbt 2 derives for this build directory ($derived)")
+      case Some(derived) if reachableThroughCommandWritable(derived, workspaceRoot, runOnHostCaches) =>
+        refused(
+          s"the socket sbt derives for this build directory ($derived) is reachable through what a " +
+            "command writes, so no shutdown is sent to it",
+        )
+      case Some(derived) =>
+        log(s"shutting down the sbt server at $derived: it holds the portfile of $buildDirectory")
+        RunOnHostSbtServerShutdown.shutdown(derived, shutdownDeadlineMillis) match
+          case ServerAnswer.Unanswered(reason) => refused(s"the shutdown went unanswered: $reason")
+          // Unreachable means that the server went away between the liveness probe and now, which is the outcome
+          // sought.
+          case ServerAnswer.ShutDown | ServerAnswer.Unreachable(_) =>
+            val deadline = System.nanoTime + releaseDeadlineMillis * 1_000_000
+            while livePortfileServer(buildDirectory).isDefined && System.nanoTime < deadline do
+              Thread.sleep(50)
+            if livePortfileServer(buildDirectory).isEmpty then Right(())
+            else refused("the server answered the shutdown but still holds the portfile")
 
   private def samePath(a: Path, b: Path): Boolean =
     a == b || (try a.toRealPath() == b.toRealPath() catch case _: IOException => false)
@@ -267,13 +279,11 @@ object RunOnHostSbtServer:
   /** The socket sbt derives for a build directory's server under this session's `tmp/`.
     *
     *   - The server runs with `SBT_GLOBAL_SERVER_DIR` set to `tmp/`, so its portfile names
-    *     `<tmp>/<SHA-1 of the portfile URI>/sock` (sbtServerSocket).
+    *     `<tmp>/<SHA-1 of the portfile URI>/sock` (sbtServerSockets).
     *   - The reuse and startup checks compare the portfile against this exact path, not merely against "a socket
     *     under tmp/". A portfile copied from another build directory therefore never authorizes reuse or "up". */
   def expectedServerSocket(sessionTmp: Path, buildDirectory: Path): Path =
-    val serverDir: String => Option[String] =
-      name => Option.when(name == "SBT_GLOBAL_SERVER_DIR")(sessionTmp.toString)
-    sbtServerSocket(buildDirectory, serverDir, Path.of("/"))
+    serverSocketIn(java.io.File(sessionTmp.toString), buildDirectory)
 
   /** Where a server's stdout and stderr go.
     *

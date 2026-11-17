@@ -59,26 +59,28 @@ object HostCommands:
     separator: String = ": ",
     tint: String => String = identity,
   ): String =
-    s"$label${shellLabel(path, os)}$separator${tint(displayPath(path, os, environment))}"
+    s"$label${shellLabel(path, os, environment)}$separator${tint(displayPath(path, os, environment))}"
 
   /** A path inside a sentence. The shell label that pathLine puts on the line's label follows the path here instead,
     * because the sentence names a directory to act in, and cmd.exe cannot take the PowerShell form. */
   def pathInline(path: Path, os: Os = currentOs, environment: String => Option[String] = env): String =
-    s"${displayPath(path, os, environment)}${shellLabel(path, os)}"
+    s"${displayPath(path, os, environment)}${shellLabel(path, os, environment)}"
 
-  private def shellLabel(path: Path, os: Os): String =
-    if os == Os.Windows && needsPowerShellLiteral(path.toString) then " (PowerShell)" else ""
+  private def shellLabel(path: Path, os: Os, environment: String => Option[String]): String =
+    if os == Os.Windows && needsPowerShellLiteral(windowsText(path, environment)) then " (PowerShell)" else ""
 
   def displayPath(
     path: Path,
     os: Os = currentOs,
     environment: String => Option[String] = env,
   ): String =
-    // PowerShell file commands expand ~, but cmd.exe does not, so Windows paths stay absolute. Quoting cannot suppress
-    // cmd's %NAME% expansion or delayed !NAME! expansion. Paths that need those literals, or PowerShell's $ and
-    // backtick literals, carry a PowerShell label at the call site.
+    // A Windows path under %USERPROFILE% starts with ~, which PowerShell file commands expand to %USERPROFILE%
+    // (about_Automatic_Variables, "$HOME"). A quoted ~ expands too, because the command expands ~ after the parser
+    // removes the quotes (about_Parsing, "Tilde (~)"). The launcher leaves translating ~ to cmd.exe users, since
+    // cmd.exe leaves ~ literal. Quoting cannot suppress cmd's %NAME% expansion or delayed !NAME! expansion. Paths that
+    // need those literals, or PowerShell's $ and backtick literals, carry a PowerShell label at the call site.
     if os == Os.Windows then
-      val text = path.toString
+      val text = windowsText(path, environment)
       if needsPowerShellLiteral(text) then powerShellPathArgument(text)
       else if WindowsBarePath.matches(text) then text
       else s"\"$text\""
@@ -92,7 +94,17 @@ object HostCommands:
         if relative.isEmpty then "~" else s"~/${renderArgument(relative)}"
       .getOrElse(renderArgument(path.toString))
 
-  private val WindowsBarePath = """[A-Za-z0-9_:\\./-]+""".r
+  private val WindowsBarePath = """[A-Za-z0-9_:\\./~-]+""".r
+
+  private val WindowsAbsolutePath = """[A-Za-z]:\\.+|\\\\.+""".r
+
+  /** `path` with a leading `%USERPROFILE%` replaced by `~`. Windows compares path names without regard to case. */
+  private def windowsText(path: Path, environment: String => Option[String]): String =
+    val text = path.toString
+    environment("USERPROFILE").map(_.stripSuffix("\\")).filter(WindowsAbsolutePath.matches).fold(text): home =>
+      val under = text.regionMatches(true, 0, home, 0, home.length) &&
+        (text.length == home.length || text.charAt(home.length) == '\\')
+      if under then "~" + text.drop(home.length) else text
 
   private def needsPowerShellLiteral(path: String): Boolean =
     path.exists("$`%!\"\u201c\u201d\u201e".contains(_))

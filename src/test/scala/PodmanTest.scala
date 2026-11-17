@@ -47,7 +47,7 @@ class PodmanTest extends munit.FunSuite:
     assertEquals(warning("unexpected output"), None)
     assertEquals(podmanUpgradeWarning(None), None)
 
-  test("the Podman announcement shows the path as the log dir line does, with the directory grayed"):
+  test("the Podman announcement shows the path as the log dir line does, with all but the name grayed"):
     val (gray, off) = ("\u001b[38;5;245m", "\u001b[0m")
     val home: String => Option[String] = Map("HOME" -> "/Users/me").get
     assertEquals(
@@ -56,8 +56,14 @@ class PodmanTest extends munit.FunSuite:
     )
     assertEquals(
       podmanUsingLine("C:\\Program Files\\Podman\\podman.exe", None, os = Os.Windows, color = true),
-      s"using: $gray\"C:\\Program Files\\Podman\\${off}podman.exe\"",
+      s"using: $gray\"C:\\Program Files\\Podman\\${off}podman$gray.exe\"$off",
     )
+    assertEquals(
+      podmanUsingLine("C:\\Podman\\podman.exe", None, os = Os.Windows, color = true),
+      s"using: ${gray}C:\\Podman\\${off}podman$gray.exe$off",
+    )
+    // The extension is Windows's: elsewhere a dot belongs to the name.
+    assertEquals(podmanUsingLine("podman.v6", None, os = Os.Linux, color = true), "using: podman.v6")
 
   test("the announcement, the availability check and the machine record share one version probe"):
     assume(!isWindows, "the fake executable is a POSIX shell script")

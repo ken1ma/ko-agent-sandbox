@@ -2039,29 +2039,37 @@ class RunOnHostSandboxTest extends munit.FunSuite:
   // The foreign server: derived socket, consented shutdown
   // --------------------------------------------------------------------------
 
-  test("sbtServerSocket reproduces a live server's derivation, recorded from a real portfile"):
+  test("sbtServerSockets reproduces a live server's derivation, recorded from a real portfile"):
     // A recorded observation: sbt 2.0.7 served /Users/kenichi/ko-agent-sandbox from this hash directory.
     assertEquals(
-      sbtServerSocket(Path.of("/Users/kenichi/ko-agent-sandbox"), _ => None, Path.of("/Users/kenichi")),
+      sbtServerSockets(Path.of("/Users/kenichi/ko-agent-sandbox"), _ => None, Path.of("/Users/kenichi")).head,
       Path.of("/Users/kenichi/.config/sbt/2/server/d5fe918c85e40c5548a2/sock"),
     )
+    // A recorded observation: sbt 1.13.0 served /home/nonroot/sbt1-probe from this hash directory, on Linux.
+    assertEquals(
+      sbtServerSockets(Path.of("/home/nonroot/sbt1-probe"), _ => None, Path.of("/home/nonroot"))(1),
+      Path.of("/home/nonroot/.sbt/1.0/server/0d17796bb631827a7591/sock"),
+    )
 
-  test("sbtServerSocket takes each serverDir source as sbt takes it, not as it reads better"):
+  test("sbtServerSockets takes each serverDir source as sbt 2 and sbt 1 take it, not as it reads better"):
     val workspace = Path.of("/Users/kenichi/ko-agent-sandbox")
-    def serverDir(env: (String, String)*) =
-      sbtServerSocket(workspace, env.toMap.get, Path.of("/u")).getParent.getParent
-    assertEquals(serverDir("SBT_GLOBAL_SERVER_DIR" -> "/srv"), Path.of("/srv"))
-    assertEquals(serverDir("SBT_CONFIG_HOME" -> "/cfg"), Path.of("/cfg/2/server"))
-    assertEquals(serverDir("XDG_CONFIG_HOME" -> "/x"), Path.of("/x/sbt/2/server"))
-    assertEquals(serverDir(), Path.of("/u/.config/sbt/2/server"))
-    // sbt reads SBT_GLOBAL_SERVER_DIR as `sys.env get … map file`, so an empty value counts as a value. java.io.File
-    // resolves an empty parent against the root rather than staying relative.
-    assertEquals(serverDir("SBT_GLOBAL_SERVER_DIR" -> ""), Path.of("/"))
-    // sbt reads the global base's own sources as `.filter(_.nonEmpty).map(p => file(p.trim))`.
-    assertEquals(serverDir("SBT_CONFIG_HOME" -> ""), Path.of("/u/.config/sbt/2/server"))
-    assertEquals(serverDir("SBT_CONFIG_HOME" -> " /cfg "), Path.of("/cfg/2/server"))
+    def serverDirs(env: (String, String)*) =
+      sbtServerSockets(workspace, env.toMap.get, Path.of("/u")).map(_.getParent.getParent)
+    val sbt1 = Path.of("/u/.sbt/1.0/server")
+    // Both versions read SBT_GLOBAL_SERVER_DIR as `sys.env get … map file`, so an empty value counts as a value.
+    // java.io.File resolves an empty parent against the root rather than staying relative.
+    assertEquals(serverDirs("SBT_GLOBAL_SERVER_DIR" -> "/srv"), Vector(Path.of("/srv")))
+    assertEquals(serverDirs("SBT_GLOBAL_SERVER_DIR" -> ""), Vector(Path.of("/")))
+    assertEquals(serverDirs("SBT_CONFIG_HOME" -> "/cfg"), Vector(Path.of("/cfg/2/server"), sbt1))
+    assertEquals(serverDirs("XDG_CONFIG_HOME" -> "/x"), Vector(Path.of("/x/sbt/2/server"), sbt1))
+    assertEquals(serverDirs(), Vector(Path.of("/u/.config/sbt/2/server"), sbt1))
+    // sbt 2 reads the global base's own sources as `.filter(_.nonEmpty).map(p => file(p.trim))`.
+    assertEquals(serverDirs("SBT_CONFIG_HOME" -> ""), Vector(Path.of("/u/.config/sbt/2/server"), sbt1))
+    assertEquals(serverDirs("SBT_CONFIG_HOME" -> " /cfg "), Vector(Path.of("/cfg/2/server"), sbt1))
     // $HOME is not an input, because sbt reads the user.home property, and the two can differ.
-    assertEquals(serverDir("HOME" -> "/elsewhere"), Path.of("/u/.config/sbt/2/server"))
+    assertEquals(serverDirs("HOME" -> "/elsewhere"), Vector(Path.of("/u/.config/sbt/2/server"), sbt1))
+    // Both versions hash the same portfile URI.
+    assertEquals(sbtServerSockets(workspace, _ => None, Path.of("/u")).map(_.getParent.getFileName).distinct.size, 1)
 
   private def writePortfile(workspace: Path, socket: Path): Unit =
     Files.createDirectories(workspace.resolve("project").resolve("target"))
@@ -2076,7 +2084,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     val result = shutdownForeignServer(
       workspace, workspace, Path.of("/somewhere/else/sock"), _ => None, _ => (), userHome = Path.of("/u"),
     )
-    assert(result.swap.exists(_.contains("not the one sbt derives")), result)
+    assert(result.swap.exists(_.contains("not one that sbt 1 or sbt 2 derives")), result)
     assert(result.swap.exists(_.contains("run `sbt shutdown` there and retry")), result)
 
   test("shutdownForeignServer refuses a derived socket the workspace itself could have planted"):
@@ -2084,7 +2092,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     // socket. An environment that puts sbt's server directory inside the workspace takes that defence away.
     val workspace = Files.createTempDirectory("foreign")
     val env = Map("SBT_GLOBAL_SERVER_DIR" -> workspace.resolve("srv").toString).get
-    val derived = sbtServerSocket(workspace, env, Path.of("/u"))
+    val derived = sbtServerSockets(workspace, env, Path.of("/u")).head
     Files.createDirectories(derived.getParent)
     val log = collection.mutable.Buffer[String]()
     val result =
@@ -2092,24 +2100,26 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assert(result.swap.exists(_.contains("reachable through what a command writes")), result)
     assertEquals(log.toList, Nil)
 
-  test("shutdownForeignServer treats a server gone before the shutdown as ended, and says so"):
+  test("shutdownForeignServer treats a server gone before the shutdown as ended, and says so, under sbt 2 and sbt 1"):
     val home = Files.createTempDirectory("home")
     val workspace = Files.createTempDirectory("foreign")
-    val derived = sbtServerSocket(workspace, _ => None, home)
-    writePortfile(workspace, derived)
-    val log = collection.mutable.Buffer[String]()
-    assertEquals(
-      shutdownForeignServer(workspace, workspace, derived, _ => None, log.append(_), userHome = home),
-      Right(()),
-    )
-    assert(log.exists(_.contains("shutting down the sbt server")), log)
+    val derived = sbtServerSockets(workspace, _ => None, home)
+    assertEquals(derived.size, 2)
+    for socket <- derived do
+      writePortfile(workspace, socket)
+      val log = collection.mutable.Buffer[String]()
+      assertEquals(
+        shutdownForeignServer(workspace, workspace, socket, _ => None, log.append(_), userHome = home),
+        Right(()),
+      )
+      assert(log.exists(_.contains(s"shutting down the sbt server at $socket")), log)
 
   test("shutdownForeignServer refuses when the server never answers the shutdown"):
     // The test sets SBT_GLOBAL_SERVER_DIR rather than using the home fallback, because a bound socket path must fit
     // sun_path's 104 bytes.
     val env = Map("SBT_GLOBAL_SERVER_DIR" -> Files.createTempDirectory("s").toString).get
     val workspace = Files.createTempDirectory("f")
-    val derived = sbtServerSocket(workspace, env, Path.of("/u"))
+    val derived = sbtServerSockets(workspace, env, Path.of("/u")).head
     Files.createDirectories(derived.getParent)
     val listener = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
     listener.bind(UnixDomainSocketAddress.of(derived))
@@ -2125,7 +2135,7 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     // sun_path's 104 bytes.
     val env = Map("SBT_GLOBAL_SERVER_DIR" -> Files.createTempDirectory("s").toString).get
     val workspace = Files.createTempDirectory("f")
-    val derived = sbtServerSocket(workspace, env, Path.of("/u"))
+    val derived = sbtServerSockets(workspace, env, Path.of("/u")).head
     Files.createDirectories(derived.getParent)
     writePortfile(workspace, derived)
     // A listener answers initialize and closes, so the shutdown "succeeds", but the listener lives on. The portfile

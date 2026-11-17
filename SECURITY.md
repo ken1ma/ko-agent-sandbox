@@ -1856,10 +1856,10 @@ commands execute outside the container, so the profile provides their confinemen
   - A server of *yours* that holds a build directory's portfile, started from your own terminal
     outside any launch, is ended before the runner's server starts. The transcript says so.
     - The runner ends it by protocol, which the server runs after the exec it is on. The runner
-      sends the request to the socket that it derives from the build directory by sbt's derivation,
+      sends the request to a socket that it derives from the build directory as sbt 1 or sbt 2 does,
       never to a socket the portfile names. The portfile is workspace content, so trusting its
       spelling would let the workspace redirect an unconfined client exchange to any socket this uid
-      can reach.
+      can reach. The portfile only picks which of the derived sockets gets the request.
     - The derived path is refused if a command could have planted it. Resolution proceeds one link
       at a time, and no step may resolve into the workspace or into the per-workspace caches that
       outlive a session. The refusal stays in place for an environment that places sbt's server

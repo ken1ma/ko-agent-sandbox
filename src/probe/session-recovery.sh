@@ -9,7 +9,7 @@
 #   M4  the tokenless handshake, initialize and then sbt/exec shutdown, ends the server when the handshake goes to
 #       the socket's pathname after the socket's directory is renamed
 #   M5  the server's socket is <serverDir>/<half-sha1 of the portfile path's file:// URI>/sock, the path to which
-#       the runner's foreign shutdown sends (RunOnHostSbtServer.sbtServerSocket). The script runs M5 right after
+#       the runner's foreign shutdown sends (RunOnHostSbtServer.sbtServerSockets). The script runs M5 right after
 #       M2, because M4 ends the server and takes the portfile with it.
 #
 # Run the script on macOS from this repository's root when sbt or the proxy changes.

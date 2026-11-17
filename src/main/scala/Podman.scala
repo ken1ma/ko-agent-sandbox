@@ -84,8 +84,9 @@ object Podman:
       echoAs(found, "podman")
       announced = true
 
-  /** The line grays the path's directory (lookedUp), which a reader consults only when the launcher found an
-    * unexpected podman. The version and kernel stay plain, since a reader upgrades podman and the machine by them. */
+  /** The line grays the path's directory and, on Windows, the file's extension (lookedUp), which a reader consults only
+    * when the launcher found an unexpected podman. The version and kernel stay plain, since a reader upgrades podman
+    * and the machine by them. */
   def podmanUsingLine(
     path: String,
     result: Option[Run],
@@ -97,10 +98,13 @@ object Podman:
     val version = result.filter(_.ok).map(_.text.trim).collect:
       case PodmanVersion(value) => s" ($value)"
     val separators = if os == Os.Windows then "/\\" else "/"
-    def grayDirectory(shown: String): String =
+    def grayAllButName(shown: String): String =
       val nameStart = shown.lastIndexWhere(separators.contains(_)) + 1
-      if nameStart == 0 then shown else lookedUp(shown.take(nameStart), color) + shown.drop(nameStart)
-    val using = pathLine("using", Paths.get(path), os, environment, tint = grayDirectory)
+      val extensionStart = if os == Os.Windows then shown.lastIndexOf('.') else -1
+      val nameEnd = if extensionStart > nameStart then extensionStart else shown.length
+      def grayed(text: String) = if text.isEmpty then text else lookedUp(text, color)
+      grayed(shown.take(nameStart)) + shown.slice(nameStart, nameEnd) + grayed(shown.drop(nameEnd))
+    val using = pathLine("using", Paths.get(path), os, environment, tint = grayAllButName)
     s"$using${version.getOrElse("")}${kernel.fold("")(", " + _)}"
 
   private val PodmanVersion = "podman version ([0-9][A-Za-z0-9.+-]*)".r

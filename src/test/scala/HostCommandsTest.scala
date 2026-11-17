@@ -99,18 +99,46 @@ class HostCommandsTest extends munit.FunSuite:
     val posix = Paths.get("/var/log/$USER.log")
     assertEquals(pathLine("log dir", posix, Os.Linux, _ => None), "log dir: '/var/log/$USER.log'")
 
-  test("Windows log paths quote spaces and separators for cmd.exe and PowerShell"):
+  test("Windows paths abbreviate only the user profile, as PowerShell's ~"):
     for
       user <- Seq("kenichi", "test user", "test&user", "test(user)", "test^user", "test;user", "test'user")
       name <- Seq("proxy-run.log", "run-on-host-run.log")
     do
       val home = s"C:\\Users\\$user"
-      val path = Paths.get(s"$home\\AppData\\Local\\ko-agent-sandbox\\log\\$name")
-      val expected = if user == "kenichi" then path.toString else s"\"$path\""
-      assertEquals(displayPath(path, Os.Windows, _ => Some(home)), expected)
-      for label <- Seq("log dir", "egress log dir", "egress tls ca") do
-        assertEquals(pathLine(label, path, Os.Windows, _ => Some(home)), s"$label: $expected")
-      assertEquals(pathLine("==>", path, Os.Windows, separator = " "), s"==> $expected")
+      val environment = Map("USERPROFILE" -> home, "HOME" -> "C:\\elsewhere").get
+      val relative = s"AppData\\Local\\ko-agent-sandbox\\log\\$name"
+      for profile <- Seq(home, s"$home\\", home.toUpperCase) do
+        assertEquals(
+          displayPath(Paths.get(s"$home\\$relative"), Os.Windows, Map("USERPROFILE" -> profile).get),
+          s"~\\$relative",
+        )
+      assertEquals(displayPath(Paths.get(home), Os.Windows, environment), "~")
+      assertEquals(displayPath(Paths.get(s"$home\\My Projects"), Os.Windows, environment), "\"~\\My Projects\"")
+      assertEquals(
+        pathLine("log dir", Paths.get(s"$home\\$$x"), Os.Windows, environment),
+        "log dir (PowerShell): '~\\$x'",
+      )
+      for missing <- Seq(None, Some(""), Some("Users\\me")) do
+        assertEquals(displayPath(Paths.get(s"D:\\$relative"), Os.Windows, _ => missing), s"D:\\$relative")
+    // The label follows the displayed text: a profile's `$` that the ~ replaces needs no PowerShell literal.
+    val dollarProfile = Map("USERPROFILE" -> "C:\\Users\\a$b").get
+    val underDollarProfile = Paths.get("C:\\Users\\a$b\\logs")
+    assertEquals(pathLine("log dir", underDollarProfile, Os.Windows, dollarProfile), "log dir: ~\\logs")
+    assertEquals(pathInline(underDollarProfile, Os.Windows, dollarProfile), "~\\logs")
+
+  test("Windows paths outside the user profile quote spaces and separators for cmd.exe and PowerShell"):
+    for
+      user <- Seq("kenichi", "test user", "test&user", "test(user)", "test^user", "test;user", "test'user")
+      name <- Seq("proxy-run.log", "run-on-host-run.log")
+    do
+      val home = s"C:\\Users\\$user"
+      val environment = Map("USERPROFILE" -> home).get
+      for path <- Seq(Paths.get(s"D:\\$user\\log\\$name"), Paths.get(s"$home-other\\log\\$name")) do
+        val expected = if user == "kenichi" then path.toString else s"\"$path\""
+        assertEquals(displayPath(path, Os.Windows, environment), expected)
+        for label <- Seq("log dir", "egress log dir", "egress tls ca") do
+          assertEquals(pathLine(label, path, Os.Windows, environment), s"$label: $expected")
+        assertEquals(pathLine("==>", path, Os.Windows, environment, separator = " "), s"==> $expected")
 
   test("Windows paths with expansions use labeled PowerShell literals, including embedded quote characters"):
     for
