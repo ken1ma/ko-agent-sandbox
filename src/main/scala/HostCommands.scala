@@ -527,7 +527,7 @@ object HostCommands:
       catch case _: IllegalStateException => ()
       outcome.getOrElse(throw IllegalStateException(s"$name ended without a result")).get
 
-  private def untilTheJvmEnds(): Nothing =
+  private[launcher] def untilTheJvmEnds(): Nothing =
     while true do Thread.sleep(Long.MaxValue)
     throw IllegalStateException("the JVM outlived its shutdown")
 

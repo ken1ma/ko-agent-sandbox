@@ -330,6 +330,7 @@ directory:
         run-on-host.log            the host command runner's log; only with --run-on-host
         mic.log                    the relay's log; only with --audio=mic
         ko-agent-bpf.log           the BPF backend's launch steps and their times; only under bpf
+        launch.log                 how long each part of the launch took, up to the handover
         <proxy log>-<session>.log  a host program proxy's audit log
 
 - With no arguments, `--egress-log` prints each run's proxy audit logs, oldest run first and

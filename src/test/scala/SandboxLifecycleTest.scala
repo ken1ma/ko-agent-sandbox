@@ -1,5 +1,6 @@
 // Tests the reaper's arguments, where a wrong positional argument removes the wrong container, and
-// the run's cleanup, whose whole mechanism is one hook that answers to the run's own state.
+// the run's cleanup, whose whole mechanism is one hook that answers to the run's own state, and which
+// waits for the resources that background steps are creating.
 
 package agentsandbox.launcher
 
@@ -45,6 +46,36 @@ class SandboxLifecycleTest extends munit.FunSuite:
     cleanup.startFailed()
     cleanup.perform()
     assertEquals(removals, 1, "a launch whose podman never started leaked what it had made")
+
+  test("the cleanup's settle waits for a create in flight before the removal"):
+    val steps = ResourceSteps()
+    val release = java.util.concurrent.CountDownLatch(1)
+    @volatile var created = false
+    val await = steps.start("network create"):
+      release.await()
+      created = true
+      "created"
+    val settling = Thread.startVirtualThread(() => steps.settle())
+    settling.join(java.time.Duration.ofMillis(200))
+    assert(settling.isAlive, "settle returned while the create was still running")
+    release.countDown()
+    settling.join()
+    assert(created, "settle returned before the create ended")
+    assertEquals(await(), "created")
+
+  test("a step that settle overtook never starts"):
+    val steps = ResourceSteps()
+    steps.settle()
+    @volatile var ran = false
+    steps.start("network create") { ran = true }
+    steps.settle()
+    assert(!ran, "a step started after the cleanup had settled the run's steps")
+
+  test("a step's failure reaches its join, not the cleanup"):
+    val steps = ResourceSteps()
+    val await = steps.start("network create")(throw IllegalStateException("no subnet"))
+    steps.settle()
+    intercept[IllegalStateException](await())
 
   test("arming registers the cleanup as a shutdown hook"):
     // The registration is the entire mechanism, and a launch cannot show whether the registration

@@ -41,17 +41,24 @@ passes.
 
 ## Evidence and target
 
-The image holds 1.1 GB in 3,259 files under `/home/nonroot`:
+A session's copy of the image's `/home/nonroot` holds 750 MB in 1,128 files (2026-11-17):
 
-- 830 MB under `.cache/coursier`;
-- 228 MB under `.local/share/coursier/bin`;
+- 659 MB under `.cache/coursier`;
+- 91 MB under `.local/share/coursier/bin`;
 - the remaining agent-state seeds, shell files and other program state.
 
-Startup measurements:
+Podman copies the image directory into the session's new home volume in `podman init`, and deletes
+the copy when the launcher removes the container with `podman rm -v`. The launcher runs `init` as a
+step of its own, and `launch.log`'s "ran podman init" line times it.
 
-- A new volume mounted at `/home/nonroot` takes about 2.2 to 2.5 seconds to start, because podman
-  copies the image directory into it.
-- The same image starts in about 0.2 seconds with `nocopy`.
+| measurement | macOS | Windows/WSL2 |
+| --- | --- | --- |
+| `init` with the home volume | 2.2 to 2.5s, measured as the start | 3.0 to 9.6s |
+| `init` without the volume, or with `nocopy` | about 0.2s | 0.36s |
+| `rm -v` with the home volume | unmeasured | 3.7 to 4.7s |
+
+- On Windows, the slowest copies came first: the first container of a series took 5.5s and
+  9.6s, and the later ones 3.0 to 3.7s. A launch is usually such a first container.
 - Mounting the 25 GB macOS host Coursier cache root with `:O` takes 0.225 to 0.274 seconds. A
   sandbox write is absent from the host after exit.
 
@@ -60,14 +67,15 @@ files.
 
 - Do not add `nocopy` to the home volume in this increment: `nocopy` also hides the agents' symlinks
   into `persistent-volume`.
-- Copying only the remaining home seed keeps those symlinks and costs no material startup time.
+- Copying only the remaining home seed keeps those symlinks. Its cost in `init` and `rm -v` is
+  unmeasured; "Tests" measures it.
 
 ## Cold default
 
 The launchers that `cs setup` installs are bootstraps. Without a cache overlay:
 
 - the first `sbt`, `scala`, `scalafmt` or other Scala program in every session can download a
-  substantial part of the removed 830 MB again;
+  substantial part of the removed 659 MB again;
 - that first run can fail when a narrow egress profile does not allow the repositories it needs.
 
 This cost is accepted: host artifacts stay unexposed unless the user opts in, and every download
@@ -402,11 +410,19 @@ Add image and toolchain checks:
   installed launcher remains under image home;
 - a newly created persistent volume still receives every agent seed, and each home link works.
 
-Run the exact final mount topology on macOS, native Linux and Windows/WSL2. Record create, start
-and total times separately, for three warm-machine runs in each mode. Performance acceptance rests
-on removing the copy-up regression, not on a brittle CI wall-clock threshold:
+Run the exact final mount topology on macOS, native Linux and Windows/WSL2. Record the times of
+`create`, `init`, `start` and `rm -v` separately, in each mode:
+
+- for the first container of a series, which is the slowest on Windows ("Evidence and
+  target");
+- for three further runs on a warm machine.
+
+Performance acceptance rests on removing the copy-up regression, not on a brittle CI wall-clock
+threshold:
 
 - image `/home/nonroot` stays below the chosen size and inode limits;
+- `init` and `rm -v` with the small home seed stay in the same order of magnitude as without the
+  home volume;
 - sandbox start time does not scale with the byte or inode count of the host cache;
 - overlay startup stays in the same order of magnitude as the measured empty-volume baseline;
 - no timing attributed to an interactive command's lifetime includes `podman create`.
@@ -463,7 +479,8 @@ these facts:
 - [ ] Help, README, the security model, the sandbox instructions and the launcher boundary diagram
   agree.
 - [ ] `sbt testFull` and `sbt testWithPodman` pass.
-- [ ] Startup measurements show that image-home copy-up is not the dominant delay.
+- [ ] Measurements of `init` and `rm -v`, on the first launch and on warm ones, show that copying
+  and deleting the image's home is not the dominant delay at a session's start or end.
 
 ## Deliberate exclusions
 

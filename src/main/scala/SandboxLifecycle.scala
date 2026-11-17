@@ -143,6 +143,39 @@ object SandboxLifecycle:
     }
 
   /**
+   * The run's resources that background steps are creating, such as its networks (plan-launch-parallelism.md).
+   * - The run's cleanup calls `settle` before it removes anything. Shutdown hooks run concurrently, so a removal that
+   *   did not wait could run before a create ends, and leave the resource behind.
+   * - A step that `settle` overtook does not start. Its join, which only a main thread in the JVM's shutdown can then
+   *   reach, blocks until the JVM ends, as inBackground's does.
+   * - A step's body neither prints nor calls `fail`, as inBackground's does not. The joining thread does both with the
+   *   result.
+   */
+  final class ResourceSteps:
+    private var started = Vector.empty[Thread]
+    private var settled = false
+
+    def start[A](name: String)(body: => A): () => A =
+      var outcome: Option[scala.util.Try[A]] = None
+      val worker = Thread(() => outcome = Some(scala.util.Try(body)), name)
+      val running = synchronized:
+        if !settled then
+          started :+= worker
+          worker.start()
+        !settled
+      () =>
+        if !running then untilTheJvmEnds()
+        worker.join()
+        outcome.getOrElse(throw IllegalStateException(s"$name ended without a result")).get
+
+    /** Waits for every started step, and keeps any later step from starting. */
+    def settle(): Unit =
+      val workers = synchronized:
+        settled = true
+        started
+      workers.foreach(_.join())
+
+  /**
    * Shell functions that signal a process and its descendants.
    * - The functions list processes through the ps that `$ps_command` names. The launcher proved that this ps answers
    *   exactly these arguments (ClipboardRelay.probedPs). A ps that answered nothing would leave every job childless

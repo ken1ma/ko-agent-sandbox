@@ -513,6 +513,10 @@ object KoAgentBpf:
   val StepMarker = "step="
   val IdentMarker = "ident "
 
+  /** The launch script's marker before a step, with the machine's clock, so the run's log can say
+    * what each step took (machineStepsLogLine). */
+  def stepLine(step: String): String = s"""echo "$StepMarker$step at_ms=$$(date +%s%3N)""""
+
   /**
    * Step 1 of "Lifecycle" as script lines: the session's attach cgroup made under the manager, its path in `$cg`,
    * and its record at `$sess/cgroup`, which the teardown and the reconcile read. The caller's script sets `sess`.
@@ -591,7 +595,7 @@ object KoAgentBpf:
          |backing="$$(${printingCommand(backing)})"
          |fixture="$$(${printingCommand(fixture)})"
          |mkdir -p "$$sess" "$$fixture"
-         |echo "${StepMarker}checks"
+         |${stepLine("checks")}
          |case "$$("$$HOME/$KoAgentFsBinary" --version 2>/dev/null || true)" in
          |  *" source $fsSourceId") ;;
          |  *) echo "the installed ko-agent-fs is not this launcher's build; run --build" >&2; exit 1 ;;
@@ -600,22 +604,22 @@ object KoAgentBpf:
          |  || { echo "the installed BPF backend is not this launcher's build; run --build" >&2; exit 1; }
          |podman volume exists $volume >/dev/null 2>&1 || podman volume create $volume >/dev/null
          |volmp="$$(podman volume inspect --format '{{.Mountpoint}}' $volume)"
-         |echo "${StepMarker}records"
+         |${stepLine("records")}
          |${printingCommand(fileRules)} > "$$sess/rules"
          |${if noRoot then ": > \"$sess/resolved\"; : > \"$sess/proof-rules\""
          else "\"$HOME/" + KoAgentFsBinary + "\" --source \"$backing\" --resolve --file-rules \"$sess/rules\" " +
            "--bpf-records \"$sess/records.bin\" > \"$sess/resolved\""}
-         |echo "${StepMarker}fixture"
+         |${stepLine("fixture")}
          |stamp="$$({ echo $bpfSourceId; cat "$$sess/rules" $proofRules 2>/dev/null; } | sha256sum | cut -d' ' -f1)"
          |if [ "$$(cat "$$fixture/.laid" 2>/dev/null || true)" != "$$stamp" ]; then
          |  find "$$fixture" -mindepth 1 -delete
          |  "$$dir/fixture" make "$$fixture" $proofRules >/dev/null
          |  printf %s "$$stamp" > "$$fixture/.laid"
          |fi
-         |echo "${StepMarker}cgroup"
+         |${stepLine("cgroup")}
          |${attachCgroupStep(facts, session)}
          |echo "cgroup path=$$cg id=$$(stat -c %i "$$cg") parent=$parent"
-         |echo "${StepMarker}attach"
+         |${stepLine("attach")}
          |pins=${pinDir(session)}
          |preloaded=""
          |if sudo -n "$$dir/readback" check-preloaded $PreloadedPinDir --tags "$$dir/tags.txt" \\
@@ -623,17 +627,17 @@ object KoAgentBpf:
          |else sudo -n "$$dir/controller" unpin $PreloadedPinDir >/dev/null 2>&1 || true; fi
          |sudo -n "$$dir/controller" attach "$$cg" "$$pins" $recordsOption --workspace "$$backing" \\
          |  --fixture "$$fixture" --volume "$$volmp" --bind-source "$$backing" $flags $noRootFlag $$preloaded $hookList
-         |echo "${StepMarker}verify"
+         |${stepLine("verify")}
          |sudo -n "$$dir/readback" verify "$$cg" --tags "$$dir/tags.txt" $recordsOption --workspace "$$backing" \\
          |  --fixture "$$fixture" --volume "$$volmp" $flags $noRootFlag $hookList
-         |echo "${StepMarker}proof"
+         |${stepLine("proof")}
          |proof="$$($proofStep)" || true
          |printf '%s\\n' "$$proof" | grep -e mismatch -e '^fixture ops' || true
          |case "$$proof" in
          |  *" mismatches=0 "*) ;;
          |  *) rm -f "$$fixture/.laid"; echo "the proof fixture found a mismatch or did not run" >&2; exit 4 ;;
          |esac
-         |echo "${StepMarker}placement"
+         |${stepLine("placement")}
          |placement="$$(${printingCommand(placement)})"
          |mkdir -p "$$(dirname "$$placement")"
          |rm -f "$$placement"
@@ -642,7 +646,7 @@ object KoAgentBpf:
          |if [ -n "$$preloaded" ]; then
          |  (nohup sudo -n "$$dir/controller" preload $PreloadedPinDir >/dev/null 2>&1 &)
          |fi
-         |echo "${StepMarker}done"
+         |${stepLine("done")}
          |${identities.mkString("\n")}
          |echo "${FileRules.ResolvedMarker}"
          |cat "$$sess/resolved\"""".stripMargin,
@@ -730,6 +734,7 @@ object KoAgentBpf:
     attachLine: String,
     verifyLine: String,
     proofLine: String,
+    stepMillis: Vector[(String, Long)],
   )
 
   /** A `key=value` field of one line. */
@@ -738,8 +743,15 @@ object KoAgentBpf:
 
   /** The step the script reached, out of its output: the last `step=` line. */
   def stepReached(output: String): String =
-    output.linesIterator.filter(_.startsWith(StepMarker)).map(_.stripPrefix(StepMarker)).toVector.lastOption
-      .getOrElse("start")
+    output.linesIterator.filter(_.startsWith(StepMarker)).map(stepName).toVector.lastOption.getOrElse("start")
+
+  private def stepName(markerLine: String): String = markerLine.stripPrefix(StepMarker).takeWhile(_ != ' ')
+
+  /** What each step took in the machine: the time from its marker to the next one (stepLine). */
+  def stepMillis(output: String): Vector[(String, Long)] =
+    val marks = output.linesIterator.filter(_.startsWith(StepMarker)).toVector
+      .flatMap(line => field("at_ms", line).flatMap(_.toLongOption).map(stepName(line) -> _))
+    marks.zip(marks.drop(1)).map { case ((step, at), (_, next)) => step -> (next - at) }
 
   def parseLaunched(output: String): Either[String, Launched] =
     val lines = output.linesIterator.toVector
@@ -762,6 +774,7 @@ object KoAgentBpf:
       attach,
       lines.find(_.startsWith("verify ")).getOrElse(""),
       lines.find(_.startsWith("fixture ops")).getOrElse(""),
+      stepMillis(output),
     )
 
   /** The launch line. A check that fails ends the launch, so what each step cost goes to the run's
@@ -776,6 +789,12 @@ object KoAgentBpf:
     val proof = field("ms", launched.proofLine).getOrElse("?")
     val how = if launched.preloaded then "the program set verified ahead" else "programs verified now"
     s"attached $hooksAttached hooks in ${load}ms from $how; read back in ${verify}ms; tested in ${proof}ms"
+
+  /** What each step of the launch script took in the machine. The run's `launch.log` (LaunchTimings)
+    * has the script's round trip, which adds `podman machine ssh`. */
+  def machineStepsLogLine(launched: Launched): String =
+    val steps = launched.stepMillis.map((step, millis) => s"$step ${millis}ms")
+    s"the launch script's steps in the machine: ${steps.mkString(", ")}"
 
   /** The run's log of the backend's steps, which `log dir` names. A failed write loses only the line. */
   def appendLog(file: Path, line: String): Unit =

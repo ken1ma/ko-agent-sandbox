@@ -10,6 +10,7 @@
 //   ImageBuilds.scala           --build, --update and --self-test: build commands, context, lock
 //   ContainerfileSources.scala  the remote images the bundled Containerfiles name, for the refresh
 //   SandboxLifecycle.scala      the handover to podman, and both paths that remove a run's proxy
+//   LaunchTimings.scala         the run's launch.log: how long each part of the launch took
 //   EgressRules.scala           the workspace's egress rules, their resolution, the audit log, and the
 //                               --egress-* actions
 //   LauncherState.scala         the state root, and the resets with the name patterns they sweep
@@ -731,12 +732,15 @@ object AgentSandboxLauncher:
    *     `podman machine ssh`, a second round trip to the machine. The check asks a machine that it starts again.
    *   - The check prints the `using:` line once `podman info` has said the kernel (machineKernel), and without the
    *     kernel before a failure that `podman info` causes.
+   *   - The caller's own reads (`beside`) start with the memory probe, and are discarded and started again with it
+   *     when the machine was stopped.
    */
   def requirePodman(
     os: Os,
     memoryScale: Long => Headroom = launchMemoryHeadroom,
     refuseRootful: Boolean = true,
     requireLimits: Boolean = false,
+    beside: BesideInfo = BesideInfo.Nothing,
   ): Option[Long] =
     val podman = unannouncedPodman
     if !podmanRuns then
@@ -748,6 +752,7 @@ object AgentSandboxLauncher:
       )
     val awaitAvailable = inBackground("machine memory probe")(probedMachineAvailable(os, podman))
     val awaitWslVersion = Option.when(os == Os.Windows)(inBackground("WSL version probe")(Wsl.version()))
+    beside.start()
     val answered = run(podman, "info", "--format", PodmanInfoFormat)
     val (info, available) =
       if answered.ok then (answered, awaitAvailable())
@@ -760,8 +765,9 @@ object AgentSandboxLauncher:
             )
           case _ =>
             // The probe's answer is discarded, since a stopped machine gives no answer. The probe is settled first, so
-            // the probe does not run into the start.
+            // the probe does not run into the start. The caller's reads go the same way.
             awaitAvailable()
+            beside.discard()
             System.err.println("the podman machine is not running; starting it")
             val started = run(podman, "machine", "start")
             if !started.ok then
@@ -773,6 +779,7 @@ object AgentSandboxLauncher:
                    |Initialize it once, for example:
                    |  podman machine init""".stripMargin,
               )
+            beside.start()
             (run(podman, "info", "--format", PodmanInfoFormat), probedMachineAvailable(os, podman))
     val kernel = podmanInfoField(info, 2)
     announcePodman(machineKernel(os, kernel))
@@ -797,6 +804,31 @@ object AgentSandboxLauncher:
         Option.when(olderVersion(read, MinimumWsl))(
           s"WSL $read is older than $MinimumWsl. Once no sandbox session runs, ${KoAgentBpf.upgradeRemedy(Os.Windows)}",
         )
+
+  /**
+   * Reads of the machine that a caller of requirePodman starts beside `podman info`, once podman resolves.
+   * - `start` starts the reads in the background (inBackground), and must neither print nor touch `podman`, whose
+   *   first use prints the `using:` line before requirePodman knows the kernel; the reads use `unannouncedPodman`.
+   * - A stopped machine answers none of them. requirePodman then calls `discard`, which waits for the started reads
+   *   and drops their answers, and calls `start` again once the machine runs.
+   */
+  trait BesideInfo:
+    def start(): Unit
+    def discard(): Unit
+
+  object BesideInfo:
+    val Nothing: BesideInfo = new BesideInfo:
+      def start(): Unit = ()
+      def discard(): Unit = ()
+
+    /** Reads that `begin` starts, of which the caller takes the last set started (`started`). */
+    final class Restartable[A](begin: () => A, settle: A => Unit) extends BesideInfo:
+      @volatile private var current: Option[A] = None
+      def start(): Unit = current = Some(begin())
+      def discard(): Unit =
+        current.foreach(settle)
+        current = None
+      def started: A = current.getOrElse(throw IllegalStateException("requirePodman did not start the reads"))
 
   /** What requirePodman asks `podman info`, in one call: rootlessness, MemTotal, the kernel release, then the cgroup
     * controllers, one line each. */
@@ -867,8 +899,19 @@ object AgentSandboxLauncher:
     chosen.fold((default, false))(image => (image, true))
 
   /** The proxy image's Id, then its bundle label: the answer that proxyImageLock reads. */
-  def inspectProxyImage(proxyImage: String): Run =
+  def inspectProxyImage(proxyImage: String, podman: String = Podman.podman): Run =
     run(podman, "image", "inspect", "--format", s"{{.Id}}{{println}}$BundleLabelTemplate", proxyImage)
+
+  /** The sandbox image's Id, its bundle label and its environment, one per line; launchImages reads them. */
+  def inspectSandboxImage(image: String, podman: String): Run =
+    run(
+      podman, "image", "inspect",
+      "--format",
+      "{{.Id}}{{println}}" + // imageId: every run of the image and every cache stamp below
+        s"$BundleLabelTemplate{{println}}" + // the version lock
+        "{{range .Config.Env}}{{println .}}{{end}}", // JdkTrust's JAVA_HOME
+      image,
+    )
 
   /**
    * The version lock on the egress proxy image, for a launch and the egress actions alike. The launcher parses this
@@ -925,11 +968,14 @@ object AgentSandboxLauncher:
    * creation failure is a failed launch, stated with podman's own reason.
    */
   def createNetwork(network: String, internal: Boolean): Unit =
+    networkCreated(network, internal).foreach(fail(_))
+
+  /** Creates the network, and returns createNetwork's refusal instead of failing, for a background step. */
+  def networkCreated(network: String, internal: Boolean): Option[String] =
     val created =
       if internal then run(podman, "network", "create", "--internal", network)
       else run(podman, "network", "create", network)
-    if !created.ok then
-      fail(s"error: could not create the network $network\n${created.err}")
+    Option.when(!created.ok)(s"error: could not create the network $network\n${created.err}")
 
   /**
    * The question that a run of the image answers about the workspace's mount path (mountPathRefusal):
@@ -1437,18 +1483,28 @@ object AgentSandboxLauncher:
     * body reads from them. The cleanup and the hold stay here, because the cleanup reads `heldLineClosed`, and the hold
     * sets it. */
   def launch(options: OptionsInForce): Unit =
+    val timings = LaunchTimings()
     val os = currentOs
     val parsed = options.parsed
-    val settings = launchSettings(options, os)
+    val settings = timings.timed("read the settings")(launchSettings(options, os))
     // The launch's first lines: the options that the file supplied, except those that another line states (ownLines),
     // so each option is printed once.
     options.fileLines(ownLines(settings, parsed), os).foreach(System.err.println)
-    val workspace = launchWorkspace(parsed, settings, os)
+    val workspace = timings.timed("resolved the workspace")(launchWorkspace(parsed, settings, os))
     import parsed.command
     import settings.{workspaceRoot, runOnHost, sessionStartMode}
     import workspace.{mountPath, workspaceId}
     val workspaceSettings = parsed.workspaceSettings
-    val machineMemory = requirePodman(os, requireLimits = true)
+    // The images' inspects and the backends' checks run beside `podman info` (LaunchReads). The launch reads their
+    // answers where it read them when they ran in sequence, so the lines and refusals keep their order.
+    val koAgentFsSourceId = Option.when(workspaceSettings.fuseMounted)(bundledKoAgentFsSourceId())
+    val reads = BesideInfo.Restartable[LaunchReads](
+      () => startLaunchReads(settings, workspaceSettings, mountPath, koAgentFsSourceId, timings, os),
+      _.settle(),
+    )
+    val machineMemory = timings.timed("checked podman and the machine's memory"):
+      requirePodman(os, requireLimits = true, beside = reads)
+    val LaunchReads(awaitImage, awaitProxyImage, startedBpfChecks, startedKoAgentFsChecks) = reads.started
 
     // One suffix ties this run's containers, networks and log directory together in podman output and the retained
     // logs.
@@ -1460,18 +1516,9 @@ object AgentSandboxLauncher:
     // refused launch's empty directory count toward the RetainedRuns that pruning keeps.
     System.err.println(pathLine("log dir", runLogs, os, tint = lookedUp(_)))
 
-    // The FUSE backend's read-only checks run beside the image and rule checks below. prepareKoAgentFs reads the
-    // checks' answer once this run's cleanup is armed.
-    val startedKoAgentFsChecks = Option.when(workspaceSettings.fuseMounted):
-      val sourceId = bundledKoAgentFsSourceId()
-      (sourceId, inBackground("ko-agent-fs checks")(koAgentFsChecks(podman, os, sourceId)))
-    // The BPF backend's capability probe runs the same way (KoAgentBpf.checksScript). The launch reads the probe's
-    // answer below, before anything of the run exists.
-    val startedBpfChecks = Option.when(workspaceSettings.bpf):
-      inBackground("ko-agent-bpf checks")(run(koAgentFsScriptCommand(podman, os, KoAgentBpf.checksScript(mountPath))*))
-
-    val images = launchImages(settings, workspace, os)
-    val rules = launchRules(parsed, settings, workspace, images, os)
+    val images = timings.timed("checked the images")(launchImages(settings, workspace, awaitImage, awaitProxyImage, os))
+    val rules = timings.timed("resolved the egress and file rules"):
+      launchRules(parsed, settings, workspace, images, os)
     import rules.{fileRuleLines, fileRulesText, sessionCredentials}
 
     // -----------------------------------------------------------------------
@@ -1502,7 +1549,7 @@ object AgentSandboxLauncher:
     //   defence against a descriptor that a live session passes, and the bind refuses the session's own writes either
     //   way (ko-agent-fs/bpf/doc/architecture.md, "The hooks", `file_receive`).
     val bpfFacts: Option[KoAgentBpf.Facts] = startedBpfChecks.flatMap: awaitChecks =>
-      val checks = awaitChecks()
+      val checks = timings.timed("waited for the BPF backend's probe")(awaitChecks())
       if !checks.ok then fail(s"error: the BPF backend's probe did not run in the podman machine:\n${checks.err}")
       val facts = KoAgentBpf.parseFacts(checks.text)
       val missing = KoAgentBpf.requirementFailures(facts, os, KoAgentBpf.bundledSourceId(), bundledKoAgentFsSourceId())
@@ -1517,6 +1564,20 @@ object AgentSandboxLauncher:
             missing.map(line => s"  - $line")).mkString("\n"),
         )
         None
+    // The backend's reconcile runs at this launcher's start (ko-agent-fs/bpf/doc/architecture.md, "Lifecycle", step
+    // 7), under the launch lock, so the reconcile does not take a launch in flight's pins for an orphan's.
+    // - The reconcile runs beside the launch's next steps, none of which takes the launch lock, and the launch joins it
+    //   before its launch lines. `FileChannel.lock` refuses a second holder in one JVM, so the join must also come
+    //   before createUnderLaunchLock.
+    // - The reconcile does not touch this run, which has no record or attach cgroup until the launch script.
+    // - A launch refused before the join drops the reconcile's notes; the next launch reconciles again.
+    val reconciling = bpfFacts.map: facts =>
+      val asked = System.nanoTime()
+      inBackground("ko-agent-bpf reconcile"):
+        withFileLock(KoAgentBpf.launchLockFile(stateRoot(os))):
+          timings.since("waited for the launch lock before the reconcile", asked)
+          timings.timed("ran the BPF backend's reconcile"):
+            run(koAgentFsScriptCommand(podman, os, KoAgentBpf.reconcileScript(facts.manager))*)
     // What this run is, for its labels and for the comparison with the live sessions. A read-only session that the
     // probe left without a policy is a FUSE backend session with no socket setting, whatever was asked. A live `bpf`
     // session beside it is therefore refused, as it would be beside any other FUSE backend session.
@@ -1558,10 +1619,12 @@ object AgentSandboxLauncher:
     //   itself ends (confirmStart).
     // - Elsewhere an empty line is the price, after a refusal too.
     var heldLineClosed = false
+    val resourceSteps = ResourceSteps()
     val removeWhatThisRunCreated = () =>
       // Podman takes about a second on cleanup, whether a launch was refused, interrupted, or ended normally through
       // the resident path. The notice reports progress, so the pause does not look like a hang.
       System.err.println((if heldLineClosed then "" else "\n") + "removing this run's containers and networks")
+      resourceSteps.settle()
       removeRunResources(podman, sandboxContainer, proxyContainer, Seq(sandboxNetwork, egressNetwork))
       // This run's mount-source copies. The reaper deliberately does not remove them, so the reaper's argument list
       // stays fixed. A run that the reaper cleans up leaves its copies to the next launch's liveness sweep, or to a
@@ -1582,19 +1645,9 @@ object AgentSandboxLauncher:
     // The launch reads the FUSE backend's checks, started above, and prepares its mountpoint now. The mount itself
     // happens once the sandbox container exists (mountKoAgentFs has the reason), which is after the proxy and the hold.
     val fuseWorkspace = startedKoAgentFsChecks.map: (sourceId, awaitChecks) =>
-      prepareKoAgentFs(podman, os, workspaceId, sourceId, awaitChecks(), startPrompt(sessionStartMode, terminalReader))
-    // The backend's reconcile runs at this launcher's start (ko-agent-fs/bpf/doc/architecture.md, "Lifecycle", step
-    // 7), under the launch lock, so the reconcile does not take a launch in flight's pins for an orphan's.
-    bpfFacts.foreach: facts =>
-      val reconciled = withFileLock(KoAgentBpf.launchLockFile(stateRoot(os))):
-        run(koAgentFsScriptCommand(podman, os, KoAgentBpf.reconcileScript(facts.manager))*)
-      if !reconciled.ok then
-        System.err.println(
-          s"note: the BPF backend's reconcile did not run; stale sessions stay until the next\n${reconciled.err}",
-        )
-      reconciled.text.linesIterator.filter(line => line.contains("action=refused") || line.contains("action=removed"))
-        .foreach(line => System.err.println(s"  $line"))
-      KoAgentBpf.reconcileNote(reconciled.text).foreach(System.err.println)
+      timings.timed("waited for the FUSE backend's checks and prepared its mountpoint"):
+        val prompt = startPrompt(sessionStartMode, terminalReader)
+        prepareKoAgentFs(podman, os, workspaceId, sourceId, awaitChecks(), prompt)
     // After an edit of file/rule, the launch joins a live mount under other file rules under the mount's rules, which
     // an earlier session of the workspace accepted. The start prompt below is the consent.
     val joinedRules = joinUnderOtherRules(
@@ -1610,8 +1663,16 @@ object AgentSandboxLauncher:
     // Networks
     // -----------------------------------------------------------------------
     //
-    createNetwork(sandboxNetwork, internal = true)
-    createNetwork(egressNetwork, internal = false)
+    // The two creates run beside each other and beside the run's files. prepareRunFiles waits for them before the
+    // proxy's create, the networks' first use.
+    val creatingNetworks = Vector(("internal", sandboxNetwork, true), ("egress", egressNetwork, false)).map:
+      (kind, network, internal) =>
+        val started = System.nanoTime()
+        resourceSteps.start(s"$kind network create"):
+          try networkCreated(network, internal)
+          finally timings.since(s"created the $kind network", started)
+    val awaitNetworks = () =>
+      timings.timed("waited for the networks")(creatingNetworks.map(await => await())).flatten.foreach(fail(_))
 
     // -----------------------------------------------------------------------
     // This run's logs
@@ -1628,19 +1689,32 @@ object AgentSandboxLauncher:
     val channelLogFile = runLogs.resolve("run-on-host.log")
     val micLogFile = runLogs.resolve("mic.log")
     val backendLogFile = runLogs.resolve("ko-agent-bpf.log")
+    val launchLogFile = runLogs.resolve("launch.log")
 
-    val git = gitAccess(settings, workspace, images, rules, os)
-    val sandboxFiles =
+    val git = timings.timed("read the workspace's Git layout")(gitAccess(settings, workspace, images, rules, os))
+    val sandboxFiles = timings.timed("prepared the run's files"):
       prepareRunFiles(
-        parsed, settings, workspace, images, rules, names, git, tlsDir, runFiles, logDir, runLogs, hostLogFile, os,
+        parsed, settings, workspace, images, rules, names, git, tlsDir, runFiles, logDir, runLogs, hostLogFile,
+        awaitNetworks, os,
       )
 
-    val proxyNetworks =
+    val proxyNetworks = timings.timed("started the egress proxy and waited until it was ready"):
       startProxyContainer(podman, proxyContainer, sessionCredentials)(
-        awaitProxyReady(podman, proxyContainer, hostLogFile, EgressProxyReadyBound),
+        timings.timed("waited for the egress proxy's ready line"):
+          awaitProxyReady(podman, proxyContainer, hostLogFile, EgressProxyReadyBound),
       ).fold(reason => fail(s"error: $reason"), identity)
     val proxyIp = addressOn(proxyNetworks, sandboxNetwork)
       .getOrElse(fail(s"error: could not determine the egress proxy's address on $sandboxNetwork"))
+
+    reconciling.foreach: awaitReconcile =>
+      val reconciled = timings.timed("waited for the BPF backend's reconcile")(awaitReconcile())
+      if !reconciled.ok then
+        System.err.println(
+          s"note: the BPF backend's reconcile did not run; stale sessions stay until the next\n${reconciled.err}",
+        )
+      reconciled.text.linesIterator.filter(line => line.contains("action=refused") || line.contains("action=removed"))
+        .foreach(line => System.err.println(s"  $line"))
+      KoAgentBpf.reconcileNote(reconciled.text).foreach(System.err.println)
 
     val mount =
       LaunchMount(fuseWorkspace, bpfFacts, effectiveSettings, joinedRules, sessionRuleLines, sessionRulesText)
@@ -1652,7 +1726,7 @@ object AgentSandboxLauncher:
     // Before the hold, the launch offers the run that provisions each executable whose absence would make the first
     // mill, gradle or mvn command refuse (RunOnHostProvisioning). The reader is the hold's reader, so a launch that
     // holds nothing tells and asks nothing.
-    if runOnHost.nonEmpty then
+    if runOnHost.nonEmpty then timings.timed("checked the run-on-host programs"):
       RunOnHostProvisioning.run(
         workspaceRoot,
         RunOnHostPrereqs.Program.values.filter(program => runOnHost.contains(program.name)).toSet,
@@ -1676,13 +1750,15 @@ object AgentSandboxLauncher:
     //     container.
     // - The cost: the notes below print after the release, and the TUI then clears them with the rest. The notes say
     //   that the reaper could not be spawned, or which branch the mount took.
-    if !confirmStart(sessionStartMode, if command.isEmpty then Vector("bash") else command, terminalReader) then
+    val started = timings.timed("waited for the answer to the start prompt"):
+      confirmStart(sessionStartMode, if command.isEmpty then Vector("bash") else command, terminalReader)
+    if !started then
       heldLineClosed = true
       sys.exit(0)
 
     startSandbox(
       parsed, settings, workspace, rules, names, mount, git, createCommand, fuseReap, runFiles, channelLogFile,
-      micLogFile, backendLogFile, cleanup, os,
+      micLogFile, backendLogFile, launchLogFile, timings, cleanup, os,
     )
 
   /** The options that another launch line states when in force. That line names the options file when the option came
@@ -1926,7 +2002,59 @@ object AgentSandboxLauncher:
       ClaudePlugins.SessionWritten(root, s"the host commands' directory $root, which --run-on-host commands write")
     caches.map(_ ++ sessions)
 
-  private def launchImages(settings: LaunchSettings, workspace: LaunchWorkspace, os: Os): LaunchImages =
+  /** The machine's answers that a launch reads beside `podman info` (requirePodman's `beside`). */
+  private final case class LaunchReads(
+    image: () => Run,
+    proxyImage: () => Run,
+    bpfChecks: Option[() => Run],
+    fuseChecks: Option[(String, () => Run)],
+  ):
+    /** Waits for every read and drops its answer, a failure included. */
+    def settle(): Unit =
+      (Vector(image, proxyImage) ++ bpfChecks ++ fuseChecks.map(_._2)).foreach: await =>
+        try await()
+        catch case _: Exception => ()
+
+  /**
+   * Starts a launch's LaunchReads, each timed on its own.
+   * - The BPF backend's capability probe (KoAgentBpf.checksScript): the launch reads the probe's answer before anything
+   *   of the run exists.
+   * - The FUSE backend's read-only checks: prepareKoAgentFs reads the checks' answer once the run's cleanup is armed.
+   */
+  private def startLaunchReads(
+    settings: LaunchSettings,
+    workspaceSettings: CommandLine.WorkspaceSettings,
+    mountPath: String,
+    koAgentFsSourceId: Option[String],
+    timings: LaunchTimings,
+    os: Os,
+  ): LaunchReads =
+    val podman = unannouncedPodman
+    def timedRead(what: String, name: String)(body: => Run): () => Run =
+      val started = System.nanoTime()
+      inBackground(name):
+        try body
+        finally timings.since(what, started)
+    LaunchReads(
+      timedRead("inspected the sandbox image", "sandbox image inspect")(inspectSandboxImage(settings.image, podman)),
+      timedRead("inspected the proxy image", "proxy image inspect")(inspectProxyImage(settings.proxyImage, podman)),
+      Option.when(workspaceSettings.bpf)(timedRead("ran the BPF backend's probe", "ko-agent-bpf checks")(
+        run(koAgentFsScriptCommand(podman, os, KoAgentBpf.checksScript(mountPath))*),
+      )),
+      koAgentFsSourceId.map: sourceId =>
+        (sourceId, timedRead("ran the FUSE backend's checks", "ko-agent-fs checks")(
+          koAgentFsChecks(podman, os, sourceId),
+        )),
+    )
+
+  /** The images' checks, from the inspects that the launch started beside `podman info` (LaunchReads). */
+  private def launchImages(
+    settings: LaunchSettings,
+    workspace: LaunchWorkspace,
+    awaitImage: () => Run,
+    awaitProxyImage: () => Run,
+    os: Os,
+  ): LaunchImages =
     import settings.{image, imageOverridden, workspaceRoot}
     import workspace.{mountPath, workspaceId}
     // -----------------------------------------------------------------------
@@ -1934,14 +2062,7 @@ object AgentSandboxLauncher:
     // -----------------------------------------------------------------------
     //
     // The launch pulls no image implicitly, because image rollout is separate from running an agent.
-    val imageInspected = run(
-      podman, "image", "inspect",
-      "--format",
-      "{{.Id}}{{println}}" + // imageId: every run of the image and every cache stamp below
-        s"$BundleLabelTemplate{{println}}" + // the version lock
-        "{{range .Config.Env}}{{println .}}{{end}}", // JdkTrust's JAVA_HOME
-      image,
-    )
+    val imageInspected = awaitImage()
     if !imageInspected.ok then
       fail(
         s"""error: sandbox image not found: $image
@@ -1961,8 +2082,8 @@ object AgentSandboxLauncher:
     // the cases).
     //   - The probe is a run of the image, 0.2s on a macOS podman machine (2026-09-18). The probe's `absent` is
     //     therefore cached per image Id, and written once the workspace's cache directory exists below.
-    //   - On a cache miss, the probe runs beside the sandbox image's version lock and the proxy image's inspect. The
-    //     probe's refusals come between theirs.
+    //   - On a cache miss, the probe runs beside the sandbox image's version lock and the wait for the proxy image's
+    //     inspect. The probe's refusals come between theirs.
     val mountPathAnswerFile = rulesetStateRoot(os).resolve(workspaceId).resolve("mount-path.answer")
     val cachedMountPath = cachedMountPathAnswer(mountPathAnswerFile, imageId, mountPath)
     val awaitMountPathProbe = cachedMountPath.fold(
@@ -1978,7 +2099,7 @@ object AgentSandboxLauncher:
     import settings.{proxyImage, proxyImageOverridden}
 
     // The proxy side of the version lock above (proxyImageLock).
-    val proxyInspected = inspectProxyImage(proxyImage)
+    val proxyInspected = awaitProxyImage()
 
     val mountPathProbe = awaitMountPathProbe()
     if !mountPathProbe.ok then
@@ -2162,6 +2283,7 @@ object AgentSandboxLauncher:
     logDir: Path,
     runLogs: Path,
     hostLogFile: Path,
+    awaitNetworks: () => Unit,
     os: Os,
   ): Vector[String] =
     import parsed.{egressProfile, workspaceMode}
@@ -2397,6 +2519,7 @@ object AgentSandboxLauncher:
       //   block) then sees this run's files above without a container that names the run. A launch that dies before
       //   this create leaves files that no container names, and that sweep exists for those files.
       // - The launch starts the proxy once the lock is released.
+      awaitNetworks()
       val proxyCreated = run(
         Vector(
           podman, "create",
@@ -2732,6 +2855,8 @@ object AgentSandboxLauncher:
    *   (ko-agent-fs/bpf/doc/architecture.md, "Lifecycle", step 7).
    * - `identities` gives each path's identity in the machine, as the labels record it.
    * - On native Linux no backend but the FUSE backend runs, so no identity is read, and no live session is compared.
+   * - The listing runs beside `prepare` (liveSessions), and the launch reads it after `prepare`, so a failed backend
+   *   step still refuses first.
    */
   private def createUnderLaunchLock(
     createCommand: CreateCommand,
@@ -2741,6 +2866,7 @@ object AgentSandboxLauncher:
     prepare: () => Option[KoAgentBpf.Launched],
     identities: Option[KoAgentBpf.Launched] => Vector[String] => Map[String, String],
     environment: Map[String, String],
+    timings: LaunchTimings,
     os: Os,
   ): (Option[KoAgentBpf.Launched], HostCommands.Run) =
     def bpfOptions(launched: Option[KoAgentBpf.Launched]): Vector[String] =
@@ -2748,20 +2874,17 @@ object AgentSandboxLauncher:
         Vector(s"--cgroup-parent=${done.parent}", "--restart=no", s"--label=${KoAgentBpf.CgroupLabel}=${done.cgroup}")
     if os == Os.Linux then
       val labels = KoAgentBpf.labelArguments(settings, persistentVolume, Vector.empty, None)
-      return (None, runWithEnvironment(environment, createCommand.withOptions(labels)*))
+      val created = timings.timed("created the container"):
+        runWithEnvironment(environment, createCommand.withOptions(labels)*)
+      return (None, created)
+    val asked = System.nanoTime()
     withFileLock(KoAgentBpf.launchLockFile(stateRoot(os))):
+      timings.since("waited for the launch lock", asked)
+      val listing = inBackground("live sessions listing")(liveSessions(podman, timings))
       val launched = prepare()
-      val names = listedNames(podman, "ps", "--all", "--filter", "name=ko-agent-sandbox-run-", "--format", "{{.Names}}")
-        .fold(
-          err => fail(s"error: could not list the live sessions, which the backend's launch compares with\n$err"),
-          identity,
-        )
-      val live = names.map: name =>
-        val inspected = run(podman, "inspect", "--format", KoAgentBpf.LabelsFormat, name)
-        if !inspected.ok then fail(s"error: could not read the labels of the live session $name\n${inspected.err}")
-        KoAgentBpf.liveSessionOf(name, inspected.text)
+      val live = timings.timed("waited for the live sessions' listing")(listing()).fold(fail(_), identity)
       val paths = (mountPaths ++ live.flatMap(_.mounts.map(_.path))).distinct
-      val known = identities(launched)(paths)
+      val known = timings.timed("read the mounts' identities")(identities(launched)(paths))
       val mine = mountPaths.map: path =>
         val identity = known.getOrElse(path, fail(s"error: the machine answered no identity for $path"))
         if identity == "gone" then fail(s"error: the machine finds nothing at $path, which this launch mounts")
@@ -2769,7 +2892,45 @@ object AgentSandboxLauncher:
       KoAgentBpf.refusalBeside(settings, persistentVolume, mine, live, path => known.get(path).filter(_ != "gone"))
         .foreach(reason => fail(reason))
       val labels = KoAgentBpf.labelArguments(settings, persistentVolume, mine, None)
-      (launched, runWithEnvironment(environment, createCommand.withOptions(labels ++ bpfOptions(launched))*))
+      val created = timings.timed("created the container"):
+        runWithEnvironment(environment, createCommand.withOptions(labels ++ bpfOptions(launched))*)
+      (launched, created)
+
+  /**
+   * The live sessions, each with its labels, or the refusal that createUnderLaunchLock makes.
+   * - A container that is gone by its inspect is no live session. A session can end without the launch lock, and the
+   *   listing runs beside the launch script, which takes seconds.
+   * - The method neither prints nor calls `fail`, since it runs in the background (inBackground).
+   */
+  private[launcher] def liveSessions(
+    podman: String,
+    timings: LaunchTimings,
+  ): Either[String, Vector[KoAgentBpf.LiveSession]] =
+    val listed = System.nanoTime()
+    val sessions =
+      listedNames(podman, "ps", "--all", "--filter", "name=ko-agent-sandbox-run-", "--format", "{{.Names}}")
+        .left.map(err => s"error: could not list the live sessions, which the backend's launch compares with\n$err")
+        .flatMap: names =>
+          names.foldLeft[Either[String, Vector[KoAgentBpf.LiveSession]]](Right(Vector.empty)): (found, name) =>
+            found.flatMap: sessions =>
+              val inspected = run(podman, "inspect", "--format", KoAgentBpf.LabelsFormat, name)
+              if inspected.ok then Right(sessions :+ KoAgentBpf.liveSessionOf(name, inspected.text))
+              // `container exists` answers 1 for a missing container, and 125 when podman could not tell.
+              else if run(podman, "container", "exists", name).exit == 1 then Right(sessions)
+              else Left(s"error: could not read the labels of the live session $name\n${inspected.err}")
+    timings.since(s"listed and inspected ${sessions.fold(_ => 0, _.size)} live sessions", listed)
+    sessions
+
+  /** `podman init` of the created container, in the background and timed there. The launch joins the init after the
+    * relays and the runner, so the join's wait alone can understate the init. */
+  private[launcher] def startInit(
+    podman: String,
+    container: String,
+    timings: LaunchTimings,
+  ): java.util.concurrent.FutureTask[Run] =
+    val task = java.util.concurrent.FutureTask(() => timings.timed("ran podman init")(run(podman, "init", container)))
+    Thread.startVirtualThread(task)
+    task
 
   /** What follows the hold: the create, the reaper, the FUSE backend's mount and the command runner, then the handover
     * to the sandbox. */
@@ -2787,6 +2948,8 @@ object AgentSandboxLauncher:
     channelLogFile: Path,
     micLogFile: Path,
     backendLogFile: Path,
+    launchLogFile: Path,
+    timings: LaunchTimings,
     cleanup: RunCleanup,
     os: Os,
   ): Nothing =
@@ -2817,8 +2980,10 @@ object AgentSandboxLauncher:
         sandboxContainer, workspaceSettings, facts, mountPath, fixture, placement, sessionRulesText, persistentVolume,
         gitdirSource, Vector.empty, bundledKoAgentFsSourceId(), KoAgentBpf.bundledSourceId(), os,
       )
+      val asked = System.nanoTime()
       val ran = withFileLock(ImageBuilds.imageBuildLockFile(os)):
-        run(koAgentFsScriptCommand(podman, os, script)*)
+        timings.since("waited for the image-build lock", asked)
+        timings.timed("ran the launch script")(run(koAgentFsScriptCommand(podman, os, script)*))
       if !ran.ok then
         fail(
           s"error: the BPF backend's launch failed at its ${KoAgentBpf.stepReached(ran.text)} step; nothing is bound " +
@@ -2836,7 +3001,7 @@ object AgentSandboxLauncher:
           KoAgentBpf.parseIdentities(asked.text)
     val (launched, created) = createUnderLaunchLock(
       createCommand, workspaceSettings, persistentVolume, mountPaths, () => bpf.map(backendSteps), identities,
-      awsCredential.map(_.environment).getOrElse(Map.empty), os,
+      awsCredential.map(_.environment).getOrElse(Map.empty), timings, os,
     )
     if !created.ok then
       fail(
@@ -2848,13 +3013,11 @@ object AgentSandboxLauncher:
       KoAgentBpf.appendLog(backendLogFile, KoAgentBpf.stepsLogLine(done))
       if done.preloaded then
         KoAgentBpf.appendLog(backendLogFile, "a program set for the next launch is being verified behind this one")
+      KoAgentBpf.appendLog(backendLogFile, KoAgentBpf.machineStepsLogLine(done))
     // Step 4's placement check (ko-agent-fs/bpf/doc/architecture.md, "Lifecycle", step 4). `podman init` makes the
     // container now, so the machine's watcher reads the container's cgroup while the launch goes on. The start below
     // waits for the verdict.
-    val initializing = launched.map: _ =>
-      val task = java.util.concurrent.FutureTask(() => run(podman, "init", sandboxContainer))
-      Thread.startVirtualThread(task)
-      task
+    val initializing = launched.map(_ => startInit(podman, sandboxContainer, timings))
 
     // The status file lies in this run's own directory, where the reaper's microphone job reports its probe.
     val micJob = mic.filter(_ => os != Os.Windows).map: recorders =>
@@ -2863,7 +3026,7 @@ object AgentSandboxLauncher:
     // A failed spawn is not fatal. The handover takes the resident path (handOver), which is the model that Windows
     // always uses.
     val reaperArmed =
-      os != Os.Windows &&
+      os != Os.Windows && timings.timed("spawned the reaper"):
         spawnReaper(
           podman, sandboxContainer, proxyContainer, sandboxNetwork, egressNetwork,
           fuseReap.map(_ => koAgentFsTeardownMode(os)).getOrElse("none"),
@@ -2883,11 +3046,14 @@ object AgentSandboxLauncher:
       if mic.nonEmpty then
         fail(s"error: could not spawn the proxy reaper, which serves $MicOption; launch again, or without it")
       System.err.println("note: could not spawn the proxy reaper; staying resident to remove the proxy on exit")
-    clipboardHost.powershell.foreach(ClipboardRelay.startResident(_, podman, sandboxContainer, clipboard))
+    clipboardHost.powershell.foreach: powershell =>
+      timings.timed("started the clipboard relay"):
+        ClipboardRelay.startResident(powershell, podman, sandboxContainer, clipboard)
 
     // The launch probe runs before the sandbox starts, and the recorder that delivers becomes the session's recorder.
     // A launch whose microphone cannot record fails here, and its cleanup hook removes what was made.
     mic.foreach: recorders =>
+      val probing = System.nanoTime()
       val notice = () =>
         System.err.println("mic: answer macOS's microphone permission prompt; the launch waits up to a minute")
       def recording(label: String, silent: Boolean): Unit =
@@ -2907,11 +3073,12 @@ object AgentSandboxLauncher:
               val diagnosis = findOnPath("powershell", os)
                 .map(MicRelay.windowsDiagnostics).getOrElse(Vector.empty)
               fail(MicRelay.failureMessage(reasons, os, diagnosis))
+      timings.since("probed the microphone", probing)
 
     // The launch prints the mount's branch here, not on the workspace line above. The user should not have to infer
     // "joined" from silence, and which branch the mount took is known only now.
     val mountedFileRules = fuseWorkspace.map: prepared =>
-      val (joined, resolved) =
+      val (joined, resolved) = timings.timed("mounted the FUSE backend"):
         mountKoAgentFs(podman, os, prepared, workspaceId, mountPath, sandboxContainer, sessionRulesText)
       System.err.println(
         if joined then "FUSE backend: joined the existing mount for this workspace"
@@ -2930,7 +3097,7 @@ object AgentSandboxLauncher:
       // there.
       val runnerFileRules = runFiles.resolve("file-rules.resolved")
       resolvedFileRules.foreach(resolved => writePrivate(runnerFileRules, resolved.text))
-      if !RunOnHostChannel.spawnRunner(
+      if !timings.timed("spawned the command runner")(RunOnHostChannel.spawnRunner(
           podman, sandboxContainer, workspaceRoot, runOnHost, channelLogFile, mountPath,
           // A brokered name reaches a host command as the sandbox has the name: with its placeholder.
           forwards = parsed.env ++ awsCredential.toVector.flatMap(_.forwards) ++ credentials.map(credential =>
@@ -2938,14 +3105,16 @@ object AgentSandboxLauncher:
           ),
           fileRules = resolvedFileRules.map(_ => runnerFileRules),
           credentials = credentials,
-        )
+        ))
       then fail("error: could not spawn the command runner, which serves --run-on-host")
 
     launched.zip(initializing).foreach: (done, task) =>
-      val initialized = task.get()
+      val initialized = timings.timed("waited for podman init")(task.get())
       val waiting = System.nanoTime()
       val report = KoAgentBpf.placementFile(stateRoot(os), sandboxContainer)
-      KoAgentBpf.confirmPlacement(initialized, KoAgentBpf.awaitPlacement(report), done.cgroup) match
+      val placed = KoAgentBpf.confirmPlacement(initialized, KoAgentBpf.awaitPlacement(report), done.cgroup)
+      timings.since("waited for the placement report", waiting)
+      placed match
         case Right(_) =>
           KoAgentBpf.appendLog(
             backendLogFile,
@@ -2958,6 +3127,7 @@ object AgentSandboxLauncher:
     // Separate the launch diagnostics from the agent's terminal UI.
     System.err.println()
 
+    timings.write(launchLogFile, Instant.now())
     handOver(
       Vector(podman, "start", "--attach", "--interactive", sandboxContainer),
       viaExec = reaperArmed,

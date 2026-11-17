@@ -59,6 +59,93 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       ),
     )
 
+  test("requirePodman settles the reads started beside podman info, and starts them again once the machine runs"):
+    // A probe JVM (RequirePodmanProbe), because podman resolves once per JVM from PATH and prints its `using:` line
+    // once. The fake's `info` fails until `machine start` has run, as a stopped machine's does; PATH holds only the
+    // fake, so the script uses shell builtins alone.
+    assume(!scala.util.Properties.isWin, "the fake podman is a /bin/sh script")
+    val dir = Files.createTempDirectory("require-podman").toRealPath()
+    val podman = dir.resolve("podman")
+    try
+      Files.writeString(
+        podman,
+        """#!/bin/sh
+          |case "$1 $2" in
+          |  '--version ') echo 'podman version 6.1.1' ;;
+          |  'machine start') : > "$0.started" ;;
+          |  'machine ssh') echo 'MemAvailable: 4194304 kB' ;;
+          |  info*) [ -e "$0.started" ] || { echo 'the machine is not running' >&2; exit 125; }
+          |    printf 'true\n8589934592\n6.12.0\ncpu memory pids\n' ;;
+          |  *) exit 9 ;;
+          |esac
+          |""".stripMargin,
+      )
+      podman.toFile.setExecutable(true)
+      val jvm = Paths.get(sys.props("java.home"), "bin", "java").toString
+      val builder = ProcessBuilder(
+        jvm, "-cp", EmitRunOnHostProfile.classpathForRelaunch, "agentsandbox.launcher.RequirePodmanProbe",
+        s"$podman.started",
+      )
+      builder.environment().put("PATH", dir.toString)
+      val process = builder.start()
+      process.getOutputStream.close()
+      val output = String(process.getInputStream.readAllBytes())
+      val error = String(process.getErrorStream.readAllBytes())
+      assertEquals(process.waitFor(), 0, error)
+      assertEquals(
+        output.linesIterator.toVector,
+        Vector("start stopped", "discard", "start running", "read running"),
+        "the launch must read only the answers of the running machine",
+      )
+    finally FileHelper.deleteRecursively(dir)
+
+  test("a live session whose inspect fails is skipped only when podman says the container is gone"):
+    assume(!scala.util.Properties.isWin, "the fake podman is a /bin/sh script")
+    val dir = Files.createTempDirectory("live-sessions").toRealPath()
+    val Ended = "ko-agent-sandbox-run-ended"
+    // `container exists` answers `exists`: 1 for a missing container, 0 for a present one, 125 when podman cannot tell.
+    def podman(exists: Int): String =
+      val path = dir.resolve(s"podman-$exists")
+      Files.writeString(
+        path,
+        s"""#!/bin/sh
+           |case "$$1" in
+           |  ps) echo $Ended ;;
+           |  inspect) echo 'no such container' >&2; exit 125 ;;
+           |  container) exit $exists ;;
+           |  *) exit 9 ;;
+           |esac
+           |""".stripMargin,
+      )
+      path.toFile.setExecutable(true)
+      path.toString
+    try
+      assertEquals(liveSessions(podman(1), LaunchTimings()), Right(Vector.empty))
+      for exists <- Seq(0, 125) do
+        val refused = liveSessions(podman(exists), LaunchTimings())
+        assert(
+          refused.swap.exists(_.startsWith(s"error: could not read the labels of the live session $Ended")),
+          s"exists=$exists: $refused",
+        )
+    finally FileHelper.deleteRecursively(dir)
+
+  test("podman init is timed where it runs, so a join after the init ended still shows how long it took"):
+    assume(!scala.util.Properties.isWin, "the fake podman is a /bin/sh script")
+    val dir = Files.createTempDirectory("podman-init").toRealPath()
+    val podman = dir.resolve("podman")
+    try
+      Files.writeString(podman, "#!/bin/sh\n[ \"$1\" = init ] && sleep 0.3\n")
+      podman.toFile.setExecutable(true)
+      val timings = LaunchTimings()
+      val task = startInit(podman.toString, "sandbox", timings)
+      while !task.isDone do Thread.sleep(10)
+      assert(timings.timed("waited for podman init")(task.get()).ok)
+      val lines = timings.text(java.time.Instant.EPOCH).linesIterator.toVector
+      val ran = lines.collectFirst { case s"ran podman init: ${millis}ms, from $_" => millis.toLong }
+      assert(ran.exists(_ >= 300), lines)
+      assert(lines.exists(_.startsWith("waited for podman init: ")), lines)
+    finally FileHelper.deleteRecursively(dir)
+
   test("an SELinux-enforcing host relabels every launcher file bind privately, and no file reaches two containers"):
     val containers = containerArguments(selinuxEnforcing = true).map(fileBinds)
     assertEquals(containers.map(_.size), Vector(3, 4, 1), s"a bind went unparsed: $containers")
@@ -2716,3 +2803,19 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(posixTz(ZoneId.of("+05:45")), "UTC-5:45")
     assertEquals(posixTz(ZoneId.of("+05:45:30")), "UTC-5:45")
     assertEquals(posixTz(ZoneId.of("-00:00:30")), "UTC")
+
+object RequirePodmanProbe:
+  /** Runs requirePodman as on macOS against the fake podman on PATH. Prints each start of the reads beside `podman
+    * info` with whether the machine ran then (the marker file in the argument), each discard, and the reads taken. */
+  def main(args: Array[String]): Unit =
+    val machineStarted = Paths.get(args(0))
+    val reads = BesideInfo.Restartable[String](
+      () => {
+        val state = if Files.exists(machineStarted) then "running" else "stopped"
+        println(s"start $state")
+        state
+      },
+      _ => println("discard"),
+    )
+    requirePodman(Os.Mac, refuseRootful = false, beside = reads)
+    println(s"read ${reads.started}")

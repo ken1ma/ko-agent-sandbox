@@ -237,11 +237,12 @@ class KoAgentBpfTest extends munit.FunSuite:
       "host-view /Users\nread-only .vscode\n", "ko-agent-sandbox-persistent-id", Some("/Users/me/main/.git"),
       Vector("/Users/me/other"), "fs-id", "bpf-id", Os.Mac,
     )
-    val steps = script.linesIterator.filter(_.startsWith("echo \"step="))
-      .map(_.stripPrefix("echo \"step=").stripSuffix("\"")).toVector
+    val markers = script.linesIterator.filter(_.startsWith("echo \"step=")).toVector
     assertEquals(
-      steps, Vector("checks", "records", "fixture", "cgroup", "attach", "verify", "proof", "placement", "done"),
+      markers.map(_.stripPrefix("echo \"step=").takeWhile(_ != ' ')),
+      Vector("checks", "records", "fixture", "cgroup", "attach", "verify", "proof", "placement", "done"),
     )
+    assert(markers.forall(_.endsWith(" at_ms=$(date +%s%3N)\"")), "each step's time comes from its marker")
     // The watcher waits for this session's container, which starts once the proof passed.
     assert(
       script.contains("(nohup sh \"$sess/watch-placement\" \"$placement\" s1 >/dev/null 2>&1 &)"), script,
@@ -292,20 +293,21 @@ class KoAgentBpfTest extends munit.FunSuite:
     val attachRest = "preloaded=1 hooks=8 rule_count=56 aliases=0 roots=5 fs_type=virtiofs vol_fs_type=xfs flags=0 " +
       "no_root=0 runtime_mnt_ns=1 load_ms=0.9 fill_ms=0.1 attach_ms=8.5 total_ms=9.5"
     val output =
-      s"""step=checks
-         |step=records
-         |step=fixture
-         |step=cgroup
+      s"""step=checks at_ms=1000
+         |step=records at_ms=1100
+         |step=fixture at_ms=1300
+         |step=cgroup at_ms=61300
          |cgroup path=/sys/fs/cgroup/user.slice/x/ko-agent-bpf-s1.slice id=4711 parent=ko-agent-bpf-s1.slice
-         |step=attach
+         |step=attach at_ms=61400
          |preloaded taken=1 preloaded=/sys/fs/bpf/ko-agent-bpf/preloaded
          |root kind=workspace path=/w mkdev=1 ino=2
          |attach cgroup=/sys/fs/cgroup/x pindir=/sys/fs/bpf/ko-agent-bpf/s1 object=policy.bpf.o $attachRest
-         |step=verify
+         |step=verify at_ms=61410
          |verify ok=1 programs=8 maps=9 roots=5 rule_count=56 aliases=0 fs_type=virtiofs ms=14.2
-         |step=proof
+         |step=proof at_ms=61425
          |fixture ops=68 mismatches=0 share_answered=0 ms=40.3
-         |step=done
+         |step=placement at_ms=61470
+         |step=done at_ms=61480
          |ident 36:1234 ${java.util.Base64.getEncoder.encodeToString("/Users/me/My Project".getBytes)}
          |ident gone ${java.util.Base64.getEncoder.encodeToString("/Users/me/gone".getBytes)}
          |${FileRules.ResolvedMarker}
@@ -323,8 +325,14 @@ class KoAgentBpfTest extends munit.FunSuite:
       stepsLogLine(launched),
       "attached 8 hooks in 0.9ms from the program set verified ahead; read back in 14.2ms; tested in 40.3ms",
     )
+    assertEquals(
+      machineStepsLogLine(launched),
+      "the launch script's steps in the machine: checks 100ms, records 200ms, fixture 60000ms, cgroup 100ms, " +
+        "attach 10ms, verify 15ms, proof 45ms, placement 10ms",
+    )
     assertEquals(stepReached(output), "done")
-    assertEquals(stepReached("step=checks\nstep=records\nerror"), "records")
+    assertEquals(stepReached("step=checks at_ms=1\nstep=records at_ms=2\nerror"), "records")
+    assertEquals(stepMillis("step=checks\nstep=records"), Vector.empty, "a marker without a time adds no step time")
     assert(parseLaunched("step=checks").isLeft)
 
   test("the container starts only from a cgroup below the attach cgroup, in the shape each manager gives"):

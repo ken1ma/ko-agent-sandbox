@@ -918,7 +918,9 @@ How the steps of "Lifecycle" map onto the code:
     cannot tell apart, the build completes the rest and then fails.
   - It installs the binaries beside the FUSE backend's daemon under
     `~/.local/share/ko-agent-sandbox/bpf/`, records the tags and prepares the preloaded set.
-- A launch runs the probe and the reconcile under the launch lock (`reconcileScript`, the
+- A launch runs the probe beside `podman info` and its image and rule checks, without the launch
+  lock. Once the probe passes, the launch runs the reconcile under the launch lock, beside its
+  networks, files and proxy, and waits for it before the start prompt (`reconcileScript`, the
   controller's `reconcile`; "Lifecycle", 7).
 - `startSandbox` holds the launch lock from the backend's steps 1 to 3 through the listing of the
   live sessions, the comparison (`refusalBeside`) and `podman create`.
