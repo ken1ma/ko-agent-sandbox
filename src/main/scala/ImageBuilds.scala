@@ -13,6 +13,7 @@ import scala.jdk.CollectionConverters.*
 import AgentSandboxLauncher.*
 import ContainerfileSources.*
 import HostCommands.*
+import Podman.*
 import FileHelper.*
 import KoAgentFs.*
 import LauncherImages.*
@@ -124,12 +125,8 @@ object ImageBuilds:
         staleTags,
       )
       writeImageCleanupJournal(journal, remaining)
-      // The notes come before the backend's failure, which a newer kernel may remove.
-      os match
-        case Os.Mac => machineOsUpdateNote(run(machineOsUpdateCommand(podman)*)).foreach(System.err.println)
-        case Os.Windows =>
-          wslKernelNote(run(podman, "info", "--format", "{{.Host.Kernel}}")).foreach(System.err.println)
-        case Os.Linux => ()
+      // The note comes before the backend's failure, which a newer kernel may remove.
+      if os == Os.Mac then machineOsUpdateNote(run(machineOsUpdateCommand(podman)*)).foreach(System.err.println)
       bpfFailure.foreach(reason => fail(KoAgentBpf.buildFailedError(reason, os)))
     sys.exit(0)
 
@@ -214,24 +211,6 @@ object ImageBuilds:
           "note: the podman machine's OS has an update. To install it once no sandbox session runs: " +
             s"`${KoAgentBpf.MachineOsUpgrade}`",
         )
-
-  /**
-   * The note for a WSL kernel older than the one the BPF backend's evidence measured (KoAgentBpf.MeasuredWslKernel),
-   * or None. podman's WSL provider has no `podman machine os`, so the kernel's version is the one sign of a stale WSL.
-   * A release whose version does not parse gets no note; the `using:` line prints the release.
-   */
-  def wslKernelNote(answer: Run): Option[String] =
-    import scala.math.Ordering.Implicits.{infixOrderingOps, seqOrdering}
-    def numbers(version: String): Option[Vector[Int]] =
-      val parsed = version.split('.').toVector.map(_.toIntOption)
-      Option.when(parsed.forall(_.isDefined))(parsed.flatten)
-    val running = kernelVersion(answer.text.trim)
-    val measured = KoAgentBpf.MeasuredWslKernel
-    val older = answer.ok && numbers(running).zip(numbers(measured)).exists(_ < _)
-    Option.when(older)(
-      s"note: the podman machine's kernel $running is older than $measured, which the BPF backend's evidence " +
-        s"measured. Once no sandbox session runs, ${KoAgentBpf.upgradeRemedy(Os.Windows)}",
-    )
 
   /** `--update` (README.md has what it rebuilds). */
   def update(os: Os): Nothing =

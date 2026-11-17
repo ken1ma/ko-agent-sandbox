@@ -68,12 +68,6 @@ reason, so that nobody proposes it again.
     - The cost of the rejection: a subscription session gets no path-based protection before
       step 6, since exact-path grants refuse the storage endpoints whatever credential is sent.
 
-## TLS inspection of the agents' model traffic
-
-- [ ] Note at `--build` when an installed client's version differs from the measured version
-  beside its lines in `defaults/model-provider/<name>`, as `--build` notes a podman machine that
-  is behind. The build still succeeds: the image then runs that client over inspection unmeasured.
-
 ## Host process observations without helper processes
 
 - [ ] Start no `ps`, `pgrep` or `lsof` under `--run-on-host`, where `RunOnHostSession.HostProcesses`
@@ -978,7 +972,7 @@ Recorded Windows results (Windows Server 2025, 10.0.26100.32522, podman 6.1.0; 2
 - A launch from PowerShell in `\\wsl.localhost\podman-machine-default\home\user\<dir>` is
   refused with `error: cannot map ... into the podman machine`, before any `workspace:` line.
 - A first launch of a new workspace prepares the image's JDK (`JdkTrust.prepareScript` through
-  `HostCommands.quoteFreeSh`) and reaches a shell.
+  `Podman.quoteFreeSh`) and reaches a shell.
 - Under `KO_AGENT_SANDBOX_CLIPBOARD=paste`, `xclip -selection clipboard -t image/png -o` in the
   session reads a copied image, 15498 bytes, through both wrapped clipboard execs.
 
@@ -1121,8 +1115,8 @@ bans sources`, compilation, binary identity, and the installed FUSE backend's mo
 - [ ] Repeat, on the image CI builds, the measurement of each agent whose model hosts the defaults
   inspect (`agent-measurement.md`, "Measurement"), signed in to that agent with a test
   account. The measurement suite runs it ("The measurement suite").
-  - A run that passes at another client version is the evidence for recording that version beside
-    the agent's lines in `defaults/model-provider/<name>`.
+  - A run that passes at another client version is the evidence for recording that version in
+    `ko-agent-egress-proxy/doc/model-provider/<name>-evidence.md`.
   - CI runs no `/voice`, which needs a microphone. `/voice` is measured by hand.
 
 ## Before the first release — the published identity

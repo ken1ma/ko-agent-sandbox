@@ -12,7 +12,8 @@ import java.io.IOException
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Path
 
-import HostCommands.{ExecWithInput, Os, findOnPath, quoteFreeSh, relayRequest, run, serveWhileRunning}
+import HostCommands.{Os, findOnPath, relayRequest, run}
+import Podman.{ExecWithInput, quoteFreeSh, serveWhileRunning}
 
 object ClipboardRelay:
 

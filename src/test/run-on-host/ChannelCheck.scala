@@ -39,7 +39,7 @@
   - The runner's writers open each FIFO with `dd conv=nocreat` (RunOnHostChannel.writer), a GNU conversion that the
     container's dd has and macOS's dd lacks (file_cmds, dd/args.c). A stand-in dd opens the existing FIFO without
     creating it.
-  - The stub podman runs S of `podman exec -i --detach-keys= C sh -c S` (HostCommands.ExecWithInput) here, and a file
+  - The stub podman runs S of `podman exec -i --detach-keys= C sh -c S` (Podman.ExecWithInput) here, and a file
     that the check flips stands for the container's liveness. Each exec records its pid and start, so the rows can
     stage "the container died, taking every exec with it", and clean up, against exactly this run's processes. A
     pattern kill would match every live session's own `podman exec` command lines too.

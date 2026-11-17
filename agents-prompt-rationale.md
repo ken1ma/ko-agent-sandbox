@@ -92,9 +92,9 @@ replaces the failing one no longer needs it.
    "Describe what a tool or service does with the verb its own documentation uses" invites tool
    terms.
 
-## Writing style: "Open a reply that takes a stance"
+## Writing style: "Open a reply to a proposal or claim"
 
-> Open a reply that takes a stance with how far you agree.
+> Open a reply to a proposal or claim with how far you agree, even when you only act on it.
 
 1. Incident: `ko-agent-sandbox`, `claude-opus-5-5` at high. The user said that "keep-id" does not
    tell readers which id it means, and asked the model to say uid/gid. The model renamed every
@@ -105,6 +105,14 @@ replaces the failing one no longer needs it.
 1. Failure: the reply does not open with whether the model agrees.
 1. What was missing: the rule listed three kinds of reply, a proposal, an objection and a decision,
    and a reply to the user's proposal fit none of them.
+1. Second incident: `ko-agent-sandbox`, `claude-opus-5-5` at high, under "Open a reply that takes a
+   stance". The user asked to mark the comment lines that a test parses, giving the reason, and the
+   model carried it out without saying whether it agreed.
+    1. What was missing: the rule keyed on the kind of reply, and a reply that only acts on a
+       request does not read as taking a stance to its writer. The rule keys on the message
+       replied to, and names acting on it.
+    1. "A proposal or claim", not "the user's": a reviewer's finding, as in ko-review, needs the
+       same opening.
 
 ## What helps other agents: "as general as it can be"
 

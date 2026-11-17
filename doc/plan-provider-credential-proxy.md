@@ -358,7 +358,7 @@ endpoint, bounded JSON fields, rotation and write mount.
 
 Copilot 1.0.111 sends one credential to its plan host and to `api.github.com` alike, and calls no
 token exchange: every request to both hosts carried the same credential index
-(`defaults/model-provider/github` has the measurement).
+(`ko-agent-egress-proxy/doc/model-provider/github-evidence.md` has the measurement).
 
 - Both hosts are inspected, so the adapter's placeholder is substituted on each host, the built-in
   GitHub MCP server's requests on the plan host included.
@@ -422,9 +422,10 @@ reaches the origin as the placeholder. Brokering does not support HTTP/2-only or
 certificate-pinned clients; those clients do not regain a real credential inside the sandbox.
 
 The Codex client accepts the inspection CA, falls back from a refused websocket upgrade to HTTP
-requests, and completes its turns over an inspected connection (`defaults/model-provider/openai`
-records the measurement). Each other installed agent's TLS and HTTP compatibility is measured the
-same way before its service is listed as supported.
+requests, and completes its turns over an inspected connection
+(`ko-agent-egress-proxy/doc/model-provider/openai-evidence.md` records the measurement). Each
+other installed agent's TLS and HTTP compatibility is measured the same way before its service is
+listed as supported.
 
 ## Failure and audit contract
 

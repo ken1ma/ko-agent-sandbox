@@ -17,6 +17,7 @@ import java.util.concurrent.atomic.AtomicReference
 import scala.jdk.CollectionConverters.*
 
 import HostCommands.*
+import Podman.*
 import WithPodman.*
 
 class ProxyContainerTest extends munit.FunSuite:
@@ -214,7 +215,8 @@ class ProxyContainerTest extends munit.FunSuite:
       // The audit line records the origin's address, not the upstream proxy's, and the log holds
       // the credential nowhere.
       val audit = run(podman, "logs", live.proxy).err
-      assert(audit.linesIterator.exists(_.matches(".* allow docs.python.org HEAD / -> [0-9a-f.:]+")), audit)
+      val checkLine = ".* allow docs.python.org HEAD / id=[0-9]+ client=ko-sandbox-egress-check -> [0-9a-f.:]+"
+      assert(audit.linesIterator.exists(_.matches(checkLine)), audit)
       assert(!audit.contains("s3cret") && !audit.contains(basic), audit)
     finally
       session.foreach(stop)
@@ -266,7 +268,8 @@ class ProxyContainerTest extends munit.FunSuite:
       assert(requested.ok, s"${requested.text}\n${requested.err}")
       val audit = run(podman, "logs", live.proxy).err
       assert(audit.contains("brokered credentials: BROKERED_TOKEN@docs.python.org:Authorization"), audit)
-      val substituted = ".* allow docs.python.org GET /3/ inject=BROKERED_TOKEN -> [0-9a-f.:]+"
+      val substituted =
+        ".* allow docs.python.org GET /3/ inject=BROKERED_TOKEN id=[0-9]+ client=curl/[0-9.]+ cred=1 -> [0-9a-f.:]+"
       assert(audit.linesIterator.exists(_.matches(substituted)), audit)
       assert(!audit.contains(value) && !audit.contains(placeholder), audit)
 

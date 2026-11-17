@@ -28,6 +28,14 @@ class KoAgentSandboxHelperTest extends munit.FunSuite:
       process.destroyForcibly()
       Files.deleteIfExists(output)
 
+  /** Whether the server deleted its portfile within 10 seconds. The server deletes it after the client that stopped
+    * the server has returned, so a deletion of the build before then can race the server's own. */
+  private def serverEnded(build: Path): Boolean =
+    val portfile = build.resolve("project/target/active.json")
+    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+    while Files.exists(portfile) && System.nanoTime() < deadline do Thread.sleep(100)
+    !Files.exists(portfile)
+
   // sbt 1's plain `sbt` runs a JVM of its own, so only its thin client meets a launch's server; sbt 2's `sbt` is a thin
   // client already. Both take --client.
   for sbtVersion <- Seq("2.0.12", "1.13.1") do
@@ -57,15 +65,13 @@ class KoAgentSandboxHelperTest extends munit.FunSuite:
         val refusal = "dist: your sbt command reached an sbt server that ko-agent-sandbox's run-on-host started"
         assert(output.contains(refusal), output)
         assert(output.contains("Stopping that server: run your sbt command again in a host terminal."), output)
-        val portfile = build.resolve("project/target/active.json")
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
-        while Files.exists(portfile) && System.nanoTime() < deadline do Thread.sleep(100)
-        assert(!Files.exists(portfile), "the server left its portfile")
+        assert(serverEnded(build), "the server left its portfile")
         val (built, builtOutput) = runSbt(build, Map.empty, "--client", "dist")
         assertEquals(built, 0, builtOutput)
         assert(builtOutput.contains("built"), builtOutput)
       finally
         runSbt(build, Map.empty, "--client", "shutdown")
+        serverEnded(build)
         FileHelper.deleteRecursively(build)
 
 object KoAgentSandboxHelperTest:

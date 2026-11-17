@@ -152,6 +152,8 @@ lazy val root = project.in(file(".")).dependsOn(egressProxy).settings(
     //   bpf/test/host and the policy suite's exerciser stay, because the self-test image compiles them.
     // - The egress proxy's tests: the proxy's Containerfile runs `sbt dist`, which packages the main sources alone,
     //   and no image runs the suites. They run from a checkout (doc/development.md, "egress-proxy").
+    // - The egress proxy's doc/, the measurement evidence behind its defaults, which MeasurementReport reads from a
+    //   checkout.
     //
     // IO.relativize answers in the platform's separator, and everything downstream reads `/`: the exclusion tests here,
     // the jar's own entry names, and the INDEX that the launcher resolves them by. Without the normalization, a Windows
@@ -163,7 +165,7 @@ lazy val root = project.in(file(".")).dependsOn(egressProxy).settings(
       "ko-agent-fs/doc", "ko-agent-fs/policy/doc", "ko-agent-fs/bpf/doc", "ko-agent-fs/fuse/doc",
       "ko-agent-fs/policy/probe", "ko-agent-fs/fuse/probe", "ko-agent-fs/bench",
       "ko-agent-fs/policy/examples", "ko-agent-fs/fuse/examples",
-      "ko-agent-egress-proxy/app/src/test",
+      "ko-agent-egress-proxy/app/src/test", "ko-agent-egress-proxy/doc",
     )
 
     def included(root: File, file: File): Boolean =

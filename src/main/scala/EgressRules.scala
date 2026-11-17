@@ -19,6 +19,7 @@ import agentsandbox.egress.{AgentEgressProxy, CredentialBinding, RulesetHelper}
 
 import AgentSandboxLauncher.*
 import HostCommands.*
+import Podman.*
 import FileHelper.*
 import LauncherState.*
 import SandboxWorkspace.*

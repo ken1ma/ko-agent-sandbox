@@ -30,6 +30,7 @@ package agentsandbox.launcher
 import java.nio.file.{Files, Path}
 
 import HostCommands.*
+import Podman.*
 import WithPodman.{*, given}
 import KoAgentFs.*
 

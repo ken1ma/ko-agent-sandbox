@@ -104,8 +104,8 @@ exists only on your machine.
 Delete completed TODO rows once the document or code their facts belong in records them.
 
 Replies lead with the result and include only details affecting the reader's next action; narrate
-the process only when necessary, and report a check only when it fails. Open a reply that takes a
-stance with how far you agree.
+the process only when necessary, and report a check only when it fails. Open a reply to a proposal
+or claim with how far you agree, even when you only act on it.
 
 Do not assume the writer speaks English natively. Report unnatural English and suggest a
 correction; do not explain the grammar unless asked.

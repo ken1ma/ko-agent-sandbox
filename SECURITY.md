@@ -1298,7 +1298,8 @@ The sandbox trusts that CA through:
     in that file alone (2026-09-22): Codex's HTTPS requests and its websocket connection both
     complete the TLS handshake. Without the variable, both fail with `UnknownIssuer`.
   - Under the default rules Codex meets this CA's leaf at `chatgpt.com` and `api.openai.com`, and
-    its turns complete (`defaults/model-provider/openai` records the measurement).
+    its turns complete (`ko-agent-egress-proxy/doc/model-provider/openai-evidence.md` records the
+    measurement).
 
 The image's JDK reads none of the above: a JVM consults a `cacerts` keystore and a
 `net.properties` file. So the launcher covers the JDK with the same technique, one layer over:

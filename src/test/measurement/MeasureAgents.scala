@@ -248,8 +248,8 @@ object MeasureAgents:
       "-H", "Authorization: Bearer gho_measurement-not-a-token")
 
   // OpenCode has no provider of its own, and the ChatGPT sign-in is the one route measured
-  // (defaults/model-provider/openai). Without --model, opencode run takes opencode/big-pickle, whose posts to
-  // opencode.ai the defaults refuse.
+  // (ko-agent-egress-proxy/doc/model-provider/openai-evidence.md). Without --model, opencode run takes
+  // opencode/big-pickle, whose posts to opencode.ai the defaults refuse.
   val OpencodeModel = "openai/gpt-6-astra"
 
   /** A subagent's session as `opencode export` prints it, with its output and errors kept beside the turns' files, or

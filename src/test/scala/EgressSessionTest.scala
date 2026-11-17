@@ -34,6 +34,7 @@ package agentsandbox.launcher
 import java.nio.file.{Files, Path}
 
 import HostCommands.*
+import Podman.*
 import WithPodman.*
 
 class EgressSessionTest extends munit.FunSuite:

@@ -4,25 +4,31 @@ import MeasurementReport.*
 
 class MeasurementReportTest extends munit.FunSuite:
 
+  /** Evidence Markdown whose one `measurement-report` block holds `lines`. */
+  private def evidence(lines: String*): String =
+    s"# Evidence\n\nProse.\n\n$BlockFence\n${lines.mkString("\n")}\n```\n"
+
   private val record = parseRecord(
     "example",
     """allow https://api.example/ read method=POST,PUT,PATCH,DELETE
       |allow https://login.example/ read method=POST
-      |#   path api.example /v1/messages /api/eval/sdk-<key>
-      |#   path api.example /api/orgs/<org>/skills  (a note after the paths)
-      |#   path login.example /token
-      |#   refused telemetry.example CONNECT
-      |#   refused cdn<region>.example CONNECT
-      |#   refused api.example GET /v1/stream
-      |#   error api.example client:
       |""".stripMargin,
+    evidence(
+      "path api.example /v1/messages /api/eval/sdk-<key>",
+      "path api.example /api/orgs/<org>/skills",
+      "path login.example /token",
+      "refused telemetry.example CONNECT",
+      "refused cdn<region>.example CONNECT",
+      "refused api.example GET /v1/stream",
+      "error api.example client:",
+    ),
   )
 
   private def stamped(line: String) = s"2026-11-14T09:00:00Z $line"
 
   private def reportOf(lines: String*): Report = report(lines.toVector.map(stamped), Vector(record))
 
-  test("a record's lines give its hosts, paths, refusals and errors; a note after the paths is no path"):
+  test("a record's lines give its hosts, paths, refusals and errors"):
     assertEquals(record.hosts, Set("api.example", "login.example"))
     assertEquals(
       record.paths,
@@ -41,6 +47,31 @@ class MeasurementReportTest extends munit.FunSuite:
     assert(!record.recordsPath("api.example", "/v1/messages/extra"))
     assertEquals(reportOf("deny cdnwestus2.example CONNECT host not allowed").findings, Vector.empty)
     assertEquals(reportOf("deny cdn.a.example CONNECT host not allowed").findings.size, 1)
+
+  test("lines outside a block are prose; a block line in none of the three forms, or an unclosed block, is refused"):
+    val prose = parseRecord(
+      "prose",
+      "# refused api.example CONNECT\n",
+      """The defaults' read-only line for the registry
+        |refused npm's audit, and one connection ended in the handshake:
+        |path api.example /v1/messages
+        |
+        |```text
+        |error api.example client:
+        |```
+        |""".stripMargin,
+    )
+    assertEquals((prose.paths, prose.refusals, prose.errors), (Vector.empty, Vector.empty, Vector.empty))
+    for line <- Seq(
+        "refused npm's audit, and one connection ended in the handshake:",
+        "path api.example /v1/messages (a note after the paths)",
+        "paths api.example /v1/messages",
+      )
+    do
+      val refusal = intercept[IllegalArgumentException](parseRecord("typo", "", evidence(line)))
+      assert(refusal.getMessage.contains(line), refusal.getMessage)
+    val unclosed = intercept[IllegalArgumentException](parseRecord("open", "", s"$BlockFence\npath a.example /\n"))
+    assert(unclosed.getMessage.contains("no closing fence"), unclosed.getMessage)
 
   test("the shipped records parse, each with its paths, and every path names a host that a default file allows"):
     val shipped = records()
@@ -94,11 +125,10 @@ class MeasurementReportTest extends munit.FunSuite:
   test("a host that two records name takes a path that either records, and an unrecorded path is one finding"):
     val other = parseRecord(
       "forge",
-      """allow https://forge.example/login read method=POST
-        |#   path forge.example /login
-        |""".stripMargin,
+      "allow https://forge.example/login read method=POST\n",
+      evidence("path forge.example /login"),
     )
-    val agent = parseRecord("agent", "#   path forge.example /<owner>/<repo>\n")
+    val agent = parseRecord("agent", "", evidence("path forge.example /<owner>/<repo>"))
     val both = report(
       Vector(
         "allow forge.example POST /login content-length=10 id=1 -> 1.2.3.4",

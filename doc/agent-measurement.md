@@ -2,21 +2,21 @@
 
 The defaults inspect each agent's model and login hosts once a measurement shows that the agent's
 client works over an inspected connection. `design.md` records the decision and its costs ("Model
-hosts inspected by default"). This document says how to measure a client release, and what each
-agent's measurement covers.
+hosts inspected by default"). This document says how to measure a client release. Each provider's
+evidence file holds its agents' measurements ("The agents, in order").
 
 ## Rules
 
 1. A model or login host moves from `tunnel` to inspected only after the measurement below has
    passed for one version of the agent's client.
-   - The defaults file holds the measurement's record beside the lines ("Measurement").
+   - The provider's evidence file holds the measurement's record ("Measurement", "The agents, in
+     order"). The defaults file names its evidence file in its last line.
    - The image installs every agent at its latest release (`Containerfile`), so a build can
      install a client newer than the measured one, and runs that client unmeasured.
    - A client at another version is measured again before its lines record that version. A client
      that fails returns its lines to `tunnel`.
-   - `TODO.md` has the two checks for a newer client: CI's repeat of the measurement ("Before the
-     first release — continuous integration"), and the note at `--build` ("TLS inspection of the
-     agents' model traffic").
+   - `TODO.md` has the check for a newer client: CI's repeat of the measurement ("Before the first
+     release — continuous integration").
 2. An inspected model or login host grants `read` and every `method=` word at the root. The
    treatment still fails requests that a tunnel carries, and a client that meets such a failure
    stays a tunnel. "Measurement" says how each failure shows.
@@ -81,9 +81,11 @@ The reader (`MeasurementReport.scala`):
 - `curl`'s requests and `ko-sandbox-egress-check`'s `HEAD` are probes. The report lists each probe
   with its framing, credential index and body end, and never judges them. A refusal of the check's
   `CONNECT` names no client, so it stays a finding.
-- The records hold the reader's lines among their comments: `path <host> </path>...`,
-  `refused <host> <method> [</path>]` and `error <host> <reason prefix>`. A `<name>` stands for one
-  segment, part of one, or one label of a host.
+- Each evidence file holds the reader's lines in fenced `measurement-report` blocks:
+  `path <host> </path>...`, `refused <host> <method> [</path>]` and `error <host> <reason prefix>`.
+  - A `<name>` stands for one segment, part of one, or one label of a host.
+  - A block line in none of the three forms, or a block without its closing fence, fails the
+    reader.
 
 `sbt "testWithPodman *AgentMeasurementTest"` runs the driver and the reader per agent. A test
 fails on a turn that did not complete, on a finding, or when a probe's whole or cut upload is
@@ -141,7 +143,7 @@ The log misses one failure, which shows as the client's own error. A client that
 request on a connection meets the closed socket, and can lose the end of the first response
 (`HTTPHelper.toClientBytes`).
 
-Each result is recorded beside the agent's lines in the defaults file:
+Each result is recorded in the provider's evidence file:
 
 - the client's exact version and the date;
 - the mode, interactive or headless, and any child process the mode spawns;
@@ -162,155 +164,20 @@ failing rule. `design.md` says why the relay does not change ("Model hosts inspe
 
 ## The agents, in order
 
-The agents are measured in the README's order.
+The agents are measured in the README's order. Each provider's evidence file holds what its agents'
+documentation and reported issues say, and the agents' measurement records:
 
-- Each agent's "Documented" pages were read on 2026-09-28. The issues under "Reported" were read
-  again on 2026-11-11, and each state is that day's.
-- A report establishes a transport that differed in the named release on the named platform. A
-  report does not establish the installed client's behavior.
-- The version beside each agent is the image's on 2026-11-11.
+- `claude`: [`anthropic-evidence.md`](../ko-agent-egress-proxy/doc/model-provider/anthropic-evidence.md)
+- `codex`: [`openai-evidence.md`](../ko-agent-egress-proxy/doc/model-provider/openai-evidence.md)
+- `agy`: [`google-evidence.md`](../ko-agent-egress-proxy/doc/model-provider/google-evidence.md)
+- `kiro-cli`: [`aws-evidence.md`](../ko-agent-egress-proxy/doc/model-provider/aws-evidence.md)
+- `copilot`: [`github-evidence.md`](../ko-agent-egress-proxy/doc/model-provider/github-evidence.md)
+- `opencode`: [`openai-evidence.md`](../ko-agent-egress-proxy/doc/model-provider/openai-evidence.md),
+  and for its Copilot sign-in
+  [`github-evidence.md`](../ko-agent-egress-proxy/doc/model-provider/github-evidence.md)
 
-- `claude` 2.1.319, `api.anthropic.com`.
-  - `/voice` under `--audio=mic` streams the recording over a WebSocket to `api.anthropic.com`, at
-    `/api/ws/speech_to_text/voice_stream` (`mic.md`, "Claude Code"). The defaults grant
-    `upgrade=websocket` at that path.
-  - The 2.1.319 binary builds other WebSocket URLs at run time: it holds
-    `/v2/session_ingress/mcp/ws/` and several conversions of an `http` URL to `ws`. The
-    measurement's session sent no other `Upgrade` to `api.anthropic.com`.
-  - Documented: `HTTPS_PROXY`; a custom CA through `NODE_EXTRA_CA_CERTS`, which the launcher sets
-    (`AgentSandboxLauncher.scala`); `CLAUDE_CODE_CERT_STORE`, which selects the bundled Mozilla set,
-    the OS store or both (https://code.claude.com/docs/en/network-config). A streamed response is
-    `text/event-stream` (the gateway protocol page, "Response headers").
-  - Measured on 2026-11-13 with 2.1.319 and 2.1.323, and inspected by default with
-    `platform.claude.com`: `defaults/model-provider/anthropic` holds the record.
-- `codex` 0.169.0, `api.openai.com` and `chatgpt.com`.
-  - The defaults give these hosts no `upgrade=websocket` line while the HTTP fallback below
-    works: with the line, Codex's model traffic would move into the WebSocket, and the log would
-    show one handshake line per connection in place of a line per request. A workspace that
-    prefers the WebSocket writes the line itself.
-  - Documented: `CODEX_CA_CERTIFICATE`, falling back to `SSL_CERT_FILE`, for login, HTTPS and
-    WebSocket alike (https://learn.chatgpt.com/docs/auth, "Custom CA bundles").
-  - On `main`:
-    - the WebSocket client is built from the HTTP client's custom-CA configuration
-      (`codex-rs/websocket-client/src/lib.rs`);
-    - one failed WebSocket disables WebSockets for the rest of the session
-      (`codex-rs/core/src/client.rs`, `disable_websockets`);
-    - the source warns that a client built outside that policy bypasses the policy. So each
-      transport is measured rather than inferred from a login.
-  - In 0.169.0, `client.rs` switches the session to HTTP when either WebSocket connect is answered
-    `426 Upgrade Required`: the turn's prewarm or its stream. It retries after an authorization
-    error that the provider can recover from, and returns any other failure as an error. The proxy
-    answers a refused `Upgrade` with `403`, except at `chatgpt.com`'s Codex path (`design.md`,
-    "WebSocket only at a path that a line names").
-  - Reported:
-    - 0.147.0 and 0.154.0 on macOS accept the custom CA for HTTP, and reject it for the Responses
-      WebSocket with `UnknownIssuer` (openai/codex #46489, open).
-    - The WebSocket retries run out before the HTTP fallback (openai/codex #19821, open).
-    - 0.155.1 completed both handshakes against a local server (SECURITY.md, "Who holds the CA
-      key").
-  - Measured on 2026-11-13, and inspected by default: `defaults/model-provider/openai` holds the
-    record. The TUI runs on the image's Codex, since the image turns off Codex's app-server daemon
-    (`container/ko-agent-sandbox/codex/config.toml`).
-  - Codex passes with refused upgrades when the first turn completes over inspected HTTP, and no
-    later turn in the same process tries an upgrade again.
-    - The number of refusals is recorded, not required.
-    - When retries end the turn, or a later turn tries an upgrade again, the hosts are inspected
-      with `upgrade=websocket` at the path of Codex's WebSocket, which the refused upgrades' `deny`
-      lines name. Codex is then measured again with that line, and passes on the WebSocket
-      condition under "Measurement".
-    - That treatment logs more than a tunnel: the handshake's path, client and credential, the
-      stream's bytes, and a line for every other request on the host, such as a file upload.
-    - `design.md` has why the proxy answers `426` at `chatgpt.com`'s Codex path alone, and
-      why the defaults set Codex no custom provider.
-  - `/voice` is not served (`TODO.md`, "Codex's `/voice`"). That item reads the call's setup on
-    `chatgpt.com`, which an inspected host logs by path.
-- `agy` 1.5.3, `cloudcode-pa.googleapis.com`, `daily-cloudcode-pa.googleapis.com`,
-  `generativelanguage.googleapis.com`, and the `businessaicode` and `aiplatform` hosts.
-  - `aicode.googleapis.com` has no line: `/voice` streams there over gRPC, which needs HTTP/2, so a
-    workspace adds the host as a tunnel (`model-provider/google`; `TODO.md`, "Deferred — an HTTP/2
-    relay for gRPC hosts"). Without the host, agy falls back for its flags, and its turns complete.
-  - Documented: nothing on a proxy or a CA in the 28 CLI pages under
-    https://antigravity.google/docs/cli.
-  - Reported:
-    - 1.0.2 on Windows sent `loadCodeAssist` past `HTTPS_PROXY`
-      (google-antigravity/antigravity-cli #181, closed as a duplicate).
-    - 1.1.21 on Windows sent `loadCodeAssist` through the proxy, and the model calls,
-      `streamGenerateContent`, directly (#875, open).
-  - Measured on 2026-11-14 with 1.5.8 under a consumer sign-in, and inspected by default with
-    `cloudcode-pa.googleapis.com` and `oauth2.googleapis.com`: `defaults/model-provider/google`
-    holds the record.
-    - Every model call went to `daily-cloudcode-pa.googleapis.com`, as `POST /v1internal:<method>`.
-  - The API-key and Business modes' hosts have no line, and a workspace adds them as tunnels
-    (`model-provider/google`). Still to measure: the GCP-licensed accounts on `cloudcode-pa`, the
-    Business sign-in, which waits for such an account, and where a `GEMINI_API_KEY` session sends
-    the key, which waits for a key. A key in the query, `?key=`, keeps
-    `generativelanguage.googleapis.com` out of inspection ("Rules").
-- `kiro-cli` 3.1.0, `runtime.us-east-1.kiro.dev` and `management.us-east-1.kiro.dev`, each also
-  in `eu-central-1`.
-  - Documented: `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` from v1.8.0
-    (https://kiro.dev/docs/cli/quick-start, "Proxy configuration"). Neither that page nor the
-    firewall page has a CA setting.
-  - The firewall page names the `runtime` and `q` hosts "Kiro service", and the `management` hosts
-    "Configuration, access management". The page says that CLI application traffic, chat and
-    completions included, follows the proxy settings
-    (https://kiro.dev/docs/privacy-and-security/firewalls).
-  - Reported:
-    - 2.8.1 on Windows spawned the `acp` child of interactive `chat` without the parent's proxy and
-      certificate variables (kirodotdev/Kiro #9608, closed as completed).
-    - 2.10.0 under WSL failed behind a TLS-inspecting proxy in its v3 harness, while v2 worked
-      (#9860, closed as completed).
-  - Measured on 2026-11-14 with 3.3.0 under a Google sign-in, and inspected by default with the
-    sign-in hosts: `defaults/model-provider/aws` holds the record.
-    - Every mode ran the V3 engine, in a Node child that kept the proxy and CA variables.
-    - Every request to `runtime` and `management` carried `cred=`: a bearer token, not a SigV4
-      signature.
-    - V3's model calls are `POST /v1/responses` on `runtime`, and its other calls are `POST /`.
-    - Under `deny-unless-model`, which admits the provider file alone, a TUI turn completed.
-  - The V2 engine, kiro-cli's own `acp` child, sends its model calls to
-    `q.us-east-1.amazonaws.com`, and its turns completed under inspection. Kiro removes V2 in
-    January, so `q` has no line, and a workspace that runs V2 adds it (README, `kiro-cli`).
-- `copilot` 1.0.111, `api.githubcopilot.com` and the three plan hosts.
-  - Documented: `proxyUrl` in the CLI's configuration reference, overridden by `HTTP_PROXY` or
-    `HTTPS_PROXY`
-    (https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference).
-  - The changelog lists:
-    - the proxy variables from 0.0.336;
-    - custom CA certificates loaded at startup from 1.0.40;
-    - HTTP/1.1 as the default transport from 1.0.57, with `COPILOT_ENABLE_HTTP2=1` as the opt-in;
-    - mTLS to an HTTPS proxy from 1.0.83.
-
-    The changelog does not say how the CA is configured.
-  - Copilot's network troubleshooting page says that on Linux Copilot reads
-    `/etc/ssl/certs/ca-certificates.crt`, the file the launch mounts its bundle over. The page does
-    not say whether that covers the CLI
-    (https://docs.github.com/en/copilot/how-tos/troubleshoot-copilot/troubleshoot-network-errors).
-  - Session sync is on by default. With `remote` "on" and `remoteExport` true in the configuration
-    reference, Copilot sends the session to the user's GitHub account. The session-data page says
-    what a session holds. SECURITY.md covers the export and `--no-remote-export` ("Not defended").
-  - Reported:
-    - A model call is `POST /chat/completions` on the plan's host,
-      `api.individual.githubcopilot.com` for one plan (github/copilot-cli #454).
-    - The built-in GitHub MCP server is `/mcp/readonly` on the same plan host (github/copilot-cli
-      #4408).
-    - Under inspection, the two are distinct lines.
-  - Measured on 2026-11-14 with 1.0.111 on an individual plan, and inspected by default:
-    `defaults/model-provider/github` holds the record. The client trusted the launch CA, and every
-    request went over HTTP/1.1 with `COPILOT_ENABLE_HTTP2` unset.
-    - The model path is `POST /responses` on `api.individual.githubcopilot.com`, and the GitHub MCP
-      server is `POST /mcp/readonly` there.
-  - Still to measure: session sync, which waits for an account whose organization allows it, and
-    the business and enterprise hosts, which wait for an account on those plans.
-- `opencode` 1.19.5, the image's on 2026-11-14. OpenCode has no provider file: a launch names the
-  providers that OpenCode connects, and those providers' lines carry its traffic.
-  - Documented: `HTTPS_PROXY`, `NO_PROXY`, and a custom CA through `NODE_EXTRA_CA_CERTS`, which
-    the launcher sets (https://opencode.ai/docs/network/).
-  - Measured on 2026-11-14 under a ChatGPT sign-in: `defaults/model-provider/openai` holds the
-    record beside Codex's.
-  - GitHub Copilot: the device sign-in passed, but no turn ran. `defaults/model-provider/github`
-    records why.
-  - Still to measure: a Copilot turn, which waits for an account whose answer marks a model, and
-    the Anthropic and Google API keys, which wait for keys. OpenCode's Google provider posts to
-    `generativelanguage.googleapis.com`, which the defaults refuse (README, `opencode`).
+A report establishes a transport that differed in the named release on the named platform. A
+report does not establish the installed client's behavior.
 
 A login or token host is inspected once the measurement covers the agent's sign-in and a token
 refresh.
@@ -327,18 +194,5 @@ refresh.
 
 ## References
 
-- https://code.claude.com/docs/en/llm-gateway-protocol — "Response headers" for the streamed
-  content type
-- openai/codex `codex-rs/http-client/src/custom_ca.rs`, `codex-rs/websocket-client/src/lib.rs`,
-  `codex-rs/core/src/client.rs` — custom CA shared by HTTP and WebSocket; the session-wide
-  fallback and the `426` that starts it at once
-- openai/codex #46489, #19821 — the WebSocket rejecting the custom CA a release's HTTP accepted;
-  the retries before the HTTP fallback
-- google-antigravity/antigravity-cli #181, #875 — request paths that ignored `HTTPS_PROXY` in
-  released versions
-- kirodotdev/Kiro #9608, #9860 — a child process without the proxy variables; a harness that
-  failed behind a TLS-inspecting proxy
-- github/copilot-cli `changelog.md`; #454, #4408 — proxy, CA and mTLS entries by version; a
-  model path and the built-in MCP server's path on a plan host
 - https://embracethered.com/blog/posts/2025/claude-abusing-network-access-and-anthropic-api-for-data-exfiltration/
 - https://www.promptarmor.com/resources/claude-cowork-exfiltrates-files

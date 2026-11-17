@@ -489,9 +489,9 @@ headers. Chosen instead: the `upgrade=websocket` grant, at a path that a line na
   as one line each. The defaults grant at a path, never at a root (`agent-measurement.md`,
   "Rules").
 - The Codex CLI's built-in provider opens a WebSocket to its model host, and falls back to HTTP
-  after the refusal (`defaults/model-provider/openai` has the measurement). Its hosts take no grant
-  while the fallback works: with the grant, the log would show one line per connection in place of
-  a line per request.
+  after the refusal (`ko-agent-egress-proxy/doc/model-provider/openai-evidence.md` has the
+  measurement). Its hosts take no grant while the fallback works: with the grant, the log would
+  show one line per connection in place of a line per request.
   - A `403` costs each new Codex process about seven seconds and seven refused upgrades before the
     fallback. So the proxy answers a refused handshake at `chatgpt.com`'s
     `/backend-api/codex/responses` with `426`, on which Codex falls back at once.
@@ -507,8 +507,8 @@ headers. Chosen instead: the `upgrade=websocket` grant, at a path that a line na
     `supports_websockets = false` either. The image would then select a provider for every user,
     and follow Codex's configuration schema across releases.
 - Copilot CLI opens a WebSocket at its plan host's `/responses`, and after the `403` sends the
-  turn over HTTP at once (`defaults/model-provider/github` has the measurement). Its hosts take no
-  grant, for Codex's reason above.
+  turn over HTTP at once (`ko-agent-egress-proxy/doc/model-provider/github-evidence.md` has the
+  measurement). Its hosts take no grant, for Codex's reason above.
 - The binaries of the other installed agents hold no `wss://` literal for a model host.
   - `claude` holds one for its Remote Control bridge, `bridge.claudeusercontent.com`, which no
     default rule allows.
@@ -580,8 +580,8 @@ serious first:
   - A certificate-pinned client cannot be terminated at all.
   - An HTTP/2-only client needs a relay that the proxy lacks, and a WebSocket client needs a line
     for each path it streams at.
-  - The measurement finds these clients one agent at a time. Each provider's defaults file records
-    the result beside its lines.
+  - The measurement finds these clients one agent at a time. Each provider's evidence file records
+    the result (`agent-measurement.md`, "The agents, in order").
 - It would take away a workspace's way to keep a host out of the proxy's plaintext view: a
   `tunnel` line of its own, under `deny defaults` for a host the defaults inspect.
   - For a measured model host, the defaults accept that view without a per-launch consent
@@ -786,8 +786,8 @@ Left out:
       private repository. Hiding the model token does not pay for a per-release contract.
   - The Codex CLI trusts the CA in `SSL_CERT_FILE`. The CLI's built-in provider opens a websocket
     first, which the proxy refuses on an inspected connection. Codex then falls back to HTTP, and
-    its turns complete under a ChatGPT login and under an API key (`defaults/model-provider/openai`
-    records the measurement).
+    its turns complete under a ChatGPT login and under an API key
+    (`ko-agent-egress-proxy/doc/model-provider/openai-evidence.md` records the measurement).
   - Which credential may reach a model host is a rule that an inspected host could apply and a
     tunnel cannot (SECURITY.md, "Exfiltration through allowed network traffic"). `TODO.md` has
     that item ("Credential brokering").

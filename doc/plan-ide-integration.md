@@ -224,7 +224,7 @@ default egress profile.
     the path is `/usr/local/bin/code`. That form is untested, as is the form without absolute
     paths.
   - A relay that the launcher runs adds `--detach-keys=`, which the launcher passes to every exec
-    that attaches stdin (`HostCommands.ExecWithInput`).
+    that attaches stdin (`Podman.ExecWithInput`).
   - `code agent endpoints` in the sandbox prints the instance id and the token.
   - The listener accepts any local process; the connection token is what refuses other processes.
     VS Code keeps the token in the profile's settings, under `chat.remoteAgentHosts`.

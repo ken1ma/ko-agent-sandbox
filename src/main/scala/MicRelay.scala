@@ -16,7 +16,8 @@ import java.nio.file.{Files, Path, StandardOpenOption}
 import java.time.Instant
 import java.util.concurrent.TimeUnit
 
-import HostCommands.{ExecWithInput, Os, findOnPath, quoteFreeSh, relayRequest, run, serveWhileRunning}
+import HostCommands.{Os, findOnPath, relayRequest, run}
+import Podman.{ExecWithInput, quoteFreeSh, serveWhileRunning}
 
 object MicRelay:
 
@@ -53,7 +54,7 @@ object MicRelay:
     s"trap \"\" INT HUP TERM; d=$sandboxDir; mkdir -p -m 700 $$d; " +
       s"[ -p $$d/req ] || mkfifo -m 600 $$d/req; head -n 1 $$d/req"
 
-  /** The writer's command line inside the sandbox, run with [[HostCommands.ExecWithInput]] and no shell. */
+  /** The writer's command line inside the sandbox, run with [[Podman.ExecWithInput]] and no shell. */
   def writerCommand(sandboxDir: String = SandboxDir): Vector[String] =
     Vector("ko-sandbox-mic", "write", s"$sandboxDir/mic")
 

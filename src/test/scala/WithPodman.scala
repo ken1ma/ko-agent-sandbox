@@ -16,6 +16,7 @@ import scala.util.Using
 import munit.EventuallyOptions
 
 import HostCommands.*
+import Podman.*
 import FileHelper.*
 
 object WithPodman extends munit.Assertions:
@@ -35,7 +36,7 @@ object WithPodman extends munit.Assertions:
     assume(underTestWithPodman, "run `sbt testWithPodman` to run the container-launching suites")
     assert(Files.isRegularFile(jar), s"testWithPodman needs $jar: run `sbt dist` first")
     requireJarCurrent()
-    // Before anything reads `HostCommands.podman`: when podman is missing, that lookup exits the JVM, and these
+    // Before anything reads `Podman.podman`: when podman is missing, that lookup exits the JVM, and these
     // suites run in sbt's own JVM, so the exit would end the sbt server rather than fail the test.
     commandMissing("podman", env("PATH").getOrElse("")).foreach(fail(_))
     requireImagesCurrent()
@@ -337,7 +338,7 @@ object WithPodman extends munit.Assertions:
     SandboxWorkspace.mountPathOf(currentOs, workspaceRoot).fold(reason => throw AssertionError(reason), identity)
 
   /** Runs a command inside a live session, the way the agent in it would. No word may hold a double
-    * quote or a newline, which a Windows host cannot pass to podman (HostCommands.quoteFreeSh). The
+    * quote or a newline, which a Windows host cannot pass to podman (Podman.quoteFreeSh). The
     * check runs on every platform, so a macOS or Linux run finds such a word first. */
   def exec(session: Session, command: String*): Run =
     val unpassable = command.filter(_.exists(char => char == '"' || char == '\n'))

@@ -20,6 +20,7 @@ package agentsandbox.launcher
 
 import AgentSandboxLauncher.addressOn
 import HostCommands.*
+import Podman.*
 import WithPodman.{*, given}
 
 class RunTopologyTest extends munit.FunSuite:

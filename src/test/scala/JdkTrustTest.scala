@@ -40,7 +40,7 @@ class JdkTrustTest extends munit.FunSuite:
       val bin = Files.createTempDirectory(work, "bin")
       val stub = Files.writeString(bin.resolve("ko-sandbox-jdk-use-proxy"), s"#!/bin/sh\nexit $stubExit\n")
       stub.toFile.setExecutable(true)
-      val builder = ProcessBuilder(HostCommands.quoteFreeSh(prepareScript(prepared.toString), jdk.toString)*)
+      val builder = ProcessBuilder(Podman.quoteFreeSh(prepareScript(prepared.toString), jdk.toString)*)
       builder.environment.put("PATH", s"$bin:${System.getenv("PATH")}")
       builder.redirectErrorStream(true).start().waitFor()
     val existing = Files.createDirectories(work.resolve("existing"))

@@ -15,6 +15,7 @@ import java.io.IOException
 import java.nio.file.{Files, Path, Paths}
 
 import HostCommands.*
+import Podman.*
 import FileHelper.*
 import LauncherImages.{bundledSourceId, contextSourceId}
 

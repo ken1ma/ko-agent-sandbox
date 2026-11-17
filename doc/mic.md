@@ -467,7 +467,7 @@ lasts the recording.
       bytes arrive, whether or not the contained process reads them (podman-exec(1),
       `--interactive`). So audio handed to podman before `ready` would reach the sandbox on a stale
       `start`, into a pipe that any process of the one uid can open through `/proc`.
-    - Without `--detach-keys=`, PCM bytes could detach the exec (`HostCommands.ExecWithInput`).
+    - Without `--detach-keys=`, PCM bytes could detach the exec (`Podman.ExecWithInput`).
   - On `ready`, the job copies the recorder's FIFO into the exec's stdin, beginning with what the
     pipe kept during the round trip. So the audio of the round trip reaches the agent too. The job
     reads the next request only when the exec and the copy have ended, since the recording's end

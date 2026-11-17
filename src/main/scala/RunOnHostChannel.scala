@@ -183,7 +183,7 @@ object RunOnHostChannel:
 
   /**
    * How the runner reaches the sandbox. The transport is data, so that ChannelCheck and the tests can
-   * substitute a local shell for `podman exec` (HostCommands.ExecWithInput). The tests stub the transport, never the
+   * substitute a local shell for `podman exec` (Podman.ExecWithInput). The tests stub the transport, never the
    * protocol.
    */
   final case class Transport(
@@ -723,8 +723,8 @@ object RunOnHostChannel:
           endCurrentCommand()
           teardown(bySignal = true)))
         val transport = Transport(
-          execPrefix = podman +: HostCommands.ExecWithInput :+ container,
-          sandboxRunning = () => HostCommands.containerRunning(podman, container),
+          execPrefix = podman +: Podman.ExecWithInput :+ container,
+          sandboxRunning = () => Podman.containerRunning(podman, container),
         )
         val service = Service(
           workspaceRoot = workspaceRoot,

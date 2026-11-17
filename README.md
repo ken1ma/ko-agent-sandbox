@@ -77,13 +77,13 @@ other.
 
 ### Prerequisites
 
-1. [podman](https://github.com/containers/podman) 6.1.0 or later
+1. [podman](https://github.com/containers/podman) 6.2.0 or later
     1. Download [the installer](https://github.com/containers/podman/releases)
         1. On macOS and Windows, run `podman machine init` after a new installation;
            on native Linux, podman runs rootless without a machine.
         1. `podman machine start` is optional: the launcher automatically starts a stopped machine.
     1. [Windows prerequisite](https://github.com/podman-container-tools/podman/blob/main/docs/tutorials/podman-for-windows.md):
-       WSL 2 or Hyper-V. Assuming the default WSL 2 provider:
+       WSL 3.0.5 or later, or Hyper-V. Assuming the default WSL provider:
         1. `wsl --version` shows the versions if WSL is installed.
             1. Update WSL with `wsl --update`, then `wsl --shutdown`.
         1. No Linux distribution is needed; `wsl --install --no-distribution` is enough.

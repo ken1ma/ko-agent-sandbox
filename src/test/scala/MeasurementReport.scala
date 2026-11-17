@@ -1,6 +1,6 @@
-// Reads one run's proxy log against the measurement records in defaults/model-provider (doc/agent-measurement.md,
-// "The measurement suite"). src/test/measurement/MeasureAgents.scala runs the modes that need no person; the manual
-// items add to the same run. On the host:
+// Reads one run's proxy log against the measurement records in ko-agent-egress-proxy/doc/model-provider
+// (doc/agent-measurement.md, "The measurement suite"). src/test/measurement/MeasureAgents.scala runs the modes that
+// need no person; the manual items add to the same run. On the host:
 //
 //     sbt "Test/runMain agentsandbox.launcher.MeasurementReport [<proxy.log>]"
 //
@@ -21,6 +21,7 @@ import agentsandbox.egress.LogHelper
 object MeasurementReport:
 
   val RecordDirectory: Path = Paths.get("ko-agent-egress-proxy/app/src/main/resources/defaults/model-provider")
+  val EvidenceDirectory: Path = Paths.get("ko-agent-egress-proxy/doc/model-provider")
 
   /** A refusal that a record accepts: a host's CONNECT, or a request's method at a path. */
   final case class AcceptedRefusal(host: String, method: String, path: Option[String]):
@@ -29,12 +30,14 @@ object MeasurementReport:
         path.forall(pattern => line.target.exists(target => matches(pattern, pathOf(target), PathPart)))
 
   /**
-   * One provider's record, as its file states it.
+   * One provider's record: its defaults file's hosts, and what its evidence file accepts.
    *
-   * - `hosts` are the hosts of the file's `allow` lines.
-   * - `paths`, `refusals` and `errors` come from the comment lines `path <host> </path>...`, `refused <host> <method>
-   *   [</path>]` and `error <host> <why prefix>`. A `<name>` in a host or path stands for one label or segment, or
-   *   part of one.
+   * - `hosts` are the hosts of the defaults file's `allow` lines.
+   * - `paths`, `refusals` and `errors` come from the lines `path <host> </path>...`, `refused <host> <method>
+   *   [</path>]` and `error <host> <why prefix>` in the evidence file's `measurement-report` blocks. A `<name>` in a
+   *   host or path stands for one label or segment, or part of one.
+   * - A block line in none of the three forms, or a block without its closing fence, is refused, so that a mistyped
+   *   line fails instead of accepting nothing.
    * - The record names the hosts of its `allow` and `path` lines, and judges every path on them. A `refused` line
    *   accepts a refusal without naming its host: OpenCode is refused at registry.npmjs.org, where every session's
    *   npm installs read packages that no record lists.
@@ -52,25 +55,37 @@ object MeasurementReport:
     def recordsPath(host: String, path: String): Boolean = paths.exists(pathMatches(_, host, path))
 
   private val AllowLine = raw"allow https://([^/\s]+)/.*".r
-  private val PathLine = raw"#\s+path (\S+) (.+)".r
-  private val RefusedLine = raw"#\s+refused (\S+) (\S+)(?: (/\S*))?\s*".r
-  private val ErrorLine = raw"#\s+error (\S+) (.+)".r
+  val BlockFence = "```measurement-report"
+  private val PathLine = raw"path (\S+)((?: /\S*)+)".r
+  private val RefusedLine = raw"refused (\S+) (\S+)(?: (/\S*))?".r
+  private val ErrorLine = raw"error (\S+) (.+)".r
 
-  def parseRecord(provider: String, text: String): Record =
-    val lines = text.linesIterator.toVector
+  /** The record of `provider` from its defaults file's `rules` and its evidence file's Markdown. */
+  def parseRecord(provider: String, rules: String, evidence: String = ""): Record =
+    val (block, open) = evidence.linesIterator.foldLeft((Vector.empty[String], false)):
+      case ((kept, false), line) => (kept, line == BlockFence)
+      case ((kept, true), "```") => (kept, false)
+      case ((kept, true), line)  => (kept :+ line.trim, true)
+    if open then throw IllegalArgumentException(s"$provider: a $BlockFence block has no closing fence")
+    val lines = block.filter(_.nonEmpty)
+    lines.filterNot(line => PathLine.matches(line) || RefusedLine.matches(line) || ErrorLine.matches(line))
+      .foreach(line => throw IllegalArgumentException(s"$provider: a block line in none of the three forms: $line"))
     Record(
       provider,
-      lines.collect { case AllowLine(host) => host }.toSet,
+      rules.linesIterator.collect { case AllowLine(host) => host }.toSet,
       lines.flatMap:
-        case PathLine(host, rest) => rest.trim.split("\\s+").toVector.takeWhile(_.startsWith("/")).map(host -> _)
-        case _                    => Vector.empty,
+        case PathLine(host, paths) => paths.trim.split(" ").toVector.map(host -> _)
+        case _                     => Vector.empty,
       lines.collect { case RefusedLine(host, method, path) => AcceptedRefusal(host, method, Option(path)) },
       lines.collect { case ErrorLine(host, why) => host -> why.trim },
     )
 
-  def records(directory: Path = RecordDirectory): Vector[Record] =
-    Using.resource(Files.list(directory))(_.iterator.asScala.toVector).sortBy(_.getFileName.toString)
-      .map(file => parseRecord(file.getFileName.toString, Files.readString(file, UTF_8)))
+  /** Each provider's record, from its defaults file and the `<provider>-evidence.md` that every one must have. */
+  def records(rules: Path = RecordDirectory, evidence: Path = EvidenceDirectory): Vector[Record] =
+    Using.resource(Files.list(rules))(_.iterator.asScala.toVector).sortBy(_.getFileName.toString).map: file =>
+      val provider = file.getFileName.toString
+      parseRecord(provider, Files.readString(file, UTF_8),
+        Files.readString(evidence.resolve(s"$provider-evidence.md"), UTF_8))
 
   private val HostPart = "[^./]+"
   private val PathPart = "[^/]+"

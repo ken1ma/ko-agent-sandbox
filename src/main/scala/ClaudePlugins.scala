@@ -12,7 +12,8 @@ import java.nio.file.attribute.BasicFileAttributes
 import scala.jdk.CollectionConverters.*
 
 import FileHelper.{hasSecondName, realPath}
-import HostCommands.{colorStderr, fileBind, Os, weakened}
+import HostCommands.{colorStderr, Os, weakened}
+import Podman.fileBind
 import SandboxWorkspace.overlapsInAnySpelling
 
 object ClaudePlugins:

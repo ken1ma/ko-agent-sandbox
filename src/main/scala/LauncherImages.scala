@@ -12,7 +12,8 @@ import java.security.MessageDigest
 import scala.jdk.CollectionConverters.*
 import scala.util.Using
 
-import HostCommands.{echoCommand, fail, podman, run, runOk, Run}
+import HostCommands.{echoCommand, fail, run, runOk, Run}
+import Podman.podman
 import FileHelper.{readIfPresent, writePrivate}
 
 object LauncherImages:

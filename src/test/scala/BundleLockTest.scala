@@ -25,6 +25,7 @@ import java.nio.file.{Files, Path}
 
 import LauncherImages.BundleLabel
 import HostCommands.*
+import Podman.*
 import WithPodman.*
 
 class BundleLockTest extends munit.FunSuite:
@@ -40,6 +41,11 @@ class BundleLockTest extends munit.FunSuite:
   private val ProxyMislabelled = "ko-agent-egress-proxy:bundle-lock-mislabelled"
 
   private val LockRefusal = "was not built from the sources this launcher bundles"
+
+  /** Whether a `warning:` line says `text`. A launch prints other warnings, such as an old podman's, so the label and
+    * the text must share the line. */
+  private def warnedOf(output: String, text: String): Boolean =
+    output.linesIterator.exists(line => line.startsWith("warning:") && line.contains(text))
 
   /** Runs the launcher to completion, for the paths that end without a session, and returns its exit
     * status and output. */
@@ -90,7 +96,7 @@ class BundleLockTest extends munit.FunSuite:
       )
       live = Some(session)
       assert(
-        session.output.contains("warning:") && session.output.contains(LockRefusal),
+        warnedOf(session.output, LockRefusal),
         s"no warning for the explicitly overridden image:\n${session.output}",
       )
     finally
@@ -132,8 +138,7 @@ class BundleLockTest extends munit.FunSuite:
       retagged = false
 
       val overridden = s"--proxy-image=$ProxyMislabelled"
-      def warned(output: String): Boolean =
-        output.contains("warning:") && output.contains(s"container image $ProxyMislabelled $LockRefusal")
+      def warned(output: String): Boolean = warnedOf(output, s"container image $ProxyMislabelled $LockRefusal")
 
       val (effectiveExit, effective) = launcherOutcome(
         workspace, workspace.resolve("warned-egress-effective.log"), Vector(overridden, "--egress-effective"),

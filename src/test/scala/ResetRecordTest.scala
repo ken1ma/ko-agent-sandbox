@@ -22,6 +22,7 @@ import java.nio.file.Files
 import java.nio.file.attribute.PosixFilePermissions
 
 import HostCommands.*
+import Podman.*
 import FileHelper.*
 import WithPodman.*
 

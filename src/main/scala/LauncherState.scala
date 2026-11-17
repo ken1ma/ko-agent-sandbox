@@ -9,6 +9,7 @@ import java.nio.file.{Files, Path, Paths}
 
 import AgentSandboxLauncher.*
 import HostCommands.*
+import Podman.*
 import FileHelper.*
 import ImageBuilds.*
 import KoAgentFs.*

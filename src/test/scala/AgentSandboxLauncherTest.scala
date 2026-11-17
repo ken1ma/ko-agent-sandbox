@@ -194,23 +194,22 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val silent = machineOsUpdateNote(HostCommands.Run(0, Array.emptyByteArray, ""))
     assert(silent.exists(_.endsWith(": no JSON in its answer")), silent)
 
-  test("--build on Windows notes a WSL kernel older than the one the BPF evidence measured"):
-    def note(release: String, exit: Int = 0) = wslKernelNote(HostCommands.Run(exit, s"$release\n".getBytes, ""))
-    val measured = KoAgentBpf.MeasuredWslKernel
-    assertEquals(note(s"$measured-microsoft-standard-WSL2"), None)
-    assertEquals(note(s"$measured.1-microsoft-standard-WSL2"), None)
-    assertEquals(note("99.0-microsoft-standard-WSL2"), None)
+  test("a WSL older than README.md's prerequisite, or a version Wsl.version did not read, gets a warning"):
+    for version <- Seq("3.0.5", "3.0.5.0", "3.1.0.0") do assertEquals(wslUpgradeWarning(Right(version)), None, version)
     assertEquals(
-      note("6.18.40.1-microsoft-standard-WSL2"),
+      wslUpgradeWarning(Right("3.0.4.0")),
       Some(
-        s"note: the podman machine's kernel 6.18.40.1 is older than $measured, which the BPF backend's evidence " +
-          "measured. Once no sandbox session runs, update WSL, whose kernel the podman machine runs: `wsl --update`, " +
-          "then `wsl --shutdown`",
+        "WSL 3.0.4.0 is older than 3.0.5. Once no sandbox session runs, update WSL, whose kernel the podman machine " +
+          "runs: `wsl --update`, then `wsl --shutdown`",
       ),
     )
-    assertEquals(note("0.1", exit = 125), None)
-    assertEquals(note("custom"), None)
-    assertEquals(note(""), None)
+    assertEquals(
+      wslUpgradeWarning(Left("wsl.exe is not on PATH")),
+      Some(
+        "could not read the WSL version, which must be 3.0.5 or later: wsl.exe is not on PATH. " +
+          "To see it: `wsl --version`",
+      ),
+    )
 
   test("podman actions refuse a service that is rootful or does not say, with the fix for the OS"):
     assertEquals(rootfulRefusal(Os.Linux, HostCommands.Run(0, "true\n".getBytes, "")), None)
@@ -283,7 +282,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val path = "/opt/podman/bin/podman"
     val version = Some(HostCommands.Run(0, "podman version 6.1.4".getBytes, ""))
     assertEquals(
-      HostCommands.podmanUsingLine(
+      Podman.podmanUsingLine(
         path, version, machineKernel(Os.Mac, release, color = false), Os.Mac, _ => None, color = false,
       ),
       s"using: $path (6.1.4), podman machine kernel 7.2.5-200.fc44.aarch64",
@@ -923,21 +922,22 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(shellWord(""), "''")
     import HostCommands.renderCommand
     val pull = Vector("/opt/podman/bin/podman", "pull", "docker.io/library/debian:13.6-slim", "--quiet")
+    val announced = Map("/opt/podman/bin/podman" -> "podman")
+    assertEquals(renderCommand(pull, announced), "+ podman pull docker.io/library/debian:13.6-slim --quiet")
     assertEquals(
-      renderCommand(pull, Some("/opt/podman/bin/podman")),
-      "+ podman pull docker.io/library/debian:13.6-slim --quiet",
+      renderCommand(pull, Map.empty),
+      "+ /opt/podman/bin/podman pull docker.io/library/debian:13.6-slim --quiet",
     )
-    assertEquals(renderCommand(pull, None), "+ /opt/podman/bin/podman pull docker.io/library/debian:13.6-slim --quiet")
-    assertEquals(renderCommand(Vector("rm", "-rf", "/a b"), Some("/opt/podman/bin/podman")), "+ rm -rf '/a b'")
+    assertEquals(renderCommand(Vector("rm", "-rf", "/a b"), announced), "+ rm -rf '/a b'")
     val script = "set -eu\nsudo sh -c 'echo user_allow_other >> /etc/fuse.conf'\n"
-    val rendered = renderCommand(Vector("podman", "machine", "ssh", script), None)
+    val rendered = renderCommand(Vector("podman", "machine", "ssh", script), Map.empty)
     assert(!rendered.contains('\n'), rendered)
     assert(rendered.startsWith("+ podman machine ssh 'set -eu\\nsudo"), rendered)
-    val inError = HostCommands.commandWords(Vector("podman", "machine", "ssh", script), None)
+    val inError = HostCommands.commandWords(Vector("podman", "machine", "ssh", script), Map.empty)
     assert(!inError.contains('\n'), inError)
     assert(inError.startsWith("podman machine ssh 'set -eu\\nsudo"), inError)
     assertEquals(
-      HostCommands.commandWords(pull, Some("/opt/podman/bin/podman")),
+      HostCommands.commandWords(pull, announced),
       "podman pull docker.io/library/debian:13.6-slim --quiet",
     )
 
@@ -1427,7 +1427,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         System.setErr(saved)
         FileHelper.deleteRecursively(dir)
     assertEquals(remaining, Vector("fs-old", "proxy-old", "bpf-old"))
-    def echoed(words: String*) = HostCommands.renderCommand(stub +: words, None)
+    def echoed(words: String*) = HostCommands.renderCommand(stub +: words, Map.empty)
     assertEquals(
       captured.toString.linesIterator.toVector,
       Vector(
@@ -2095,7 +2095,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val command = mountPathProbeCommand("podman", "ko-agent-sandbox:latest", "/usr/local/bin")
     assert(command.containsSlice(Vector("--rm", "--pull=never", "--network=none", "--entrypoint=")), command)
     assertEquals(command.last, "/usr/local/bin")
-    // Windows argument encoding passes a double quote through unescaped (HostCommands.quoteFreeSh).
+    // Windows argument encoding passes a double quote through unescaped (Podman.quoteFreeSh).
     assert(command.forall(word => !word.contains('"') && !word.contains('\n')), command)
 
   test("a reset's failed removal counts as done only when podman says the resource is gone"):
@@ -2143,7 +2143,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       // Bytes that a line reader or a charset would change: a newline first, and a digit line inside.
       val binary = Files.write(dir.resolve("agents.md"), Array[Byte](10, 52, 50, 10, -1, 0, 10))
       val paths = Vector(text.toString, dir.resolve("absent").toString, dir.toString, binary.toString)
-      val process = ProcessBuilder(HostCommands.quoteFreeSh(ImageFilesScript, paths*)*).start()
+      val process = ProcessBuilder(Podman.quoteFreeSh(ImageFilesScript, paths*)*).start()
       process.getOutputStream.close()
       val out = process.getInputStream.readAllBytes()
       assertEquals(process.waitFor(), 0)

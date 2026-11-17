@@ -208,7 +208,7 @@ class RunOnHostChannelTest extends munit.FunSuite:
     val running = AtomicBoolean(true)
     val transport =
       Transport(
-        host.resolve("podman").toString +: HostCommands.ExecWithInput :+ "C", () => running.get, FifoDir.toString,
+        host.resolve("podman").toString +: Podman.ExecWithInput :+ "C", () => running.get, FifoDir.toString,
       )
     val log = StringBuilder()
     val runner = Thread(() =>

@@ -114,6 +114,7 @@ import CommandLine.*
 import JdkTrust.*
 import EgressRules.*
 import HostCommands.*
+import Podman.*
 import FileHelper.*
 import ImageBuilds.*
 import KoAgentFs.*
@@ -746,6 +747,7 @@ object AgentSandboxLauncher:
         127,
       )
     val awaitAvailable = inBackground("machine memory probe")(probedMachineAvailable(os, podman))
+    val awaitWslVersion = Option.when(os == Os.Windows)(inBackground("WSL version probe")(Wsl.version()))
     val answered = run(podman, "info", "--format", PodmanInfoFormat)
     val (info, available) =
       if answered.ok then (answered, awaitAvailable())
@@ -772,12 +774,29 @@ object AgentSandboxLauncher:
                    |  podman machine init""".stripMargin,
               )
             (run(podman, "info", "--format", PodmanInfoFormat), probedMachineAvailable(os, podman))
-    announcePodman(machineKernel(os, podmanInfoField(info, 2)))
+    val kernel = podmanInfoField(info, 2)
+    announcePodman(machineKernel(os, kernel))
+    // The WSL provider's kernel release ends in `-microsoft-standard-WSL2`; the Hyper-V provider runs no WSL.
+    if kernel.text.contains("WSL") then awaitWslVersion.flatMap(await => wslUpgradeWarning(await())).foreach(warn)
     if refuseRootful then rootfulRefusal(os, podmanInfoField(info, 0)).foreach(fail(_))
     if requireLimits then limitControllerRefusal(os, podmanInfoField(info, 3)).foreach(fail(_))
     val total = memoryTotal(podmanInfoField(info, 1))
     machineMemoryLine(os, total, available, scale = memoryScale).foreach(System.err.println)
     total
+
+  /** README.md's prerequisite for the WSL provider. */
+  val MinimumWsl = "3.0.5"
+
+  /** The warning for a WSL older than MinimumWsl, or for a version that Wsl.version did not read. A WSL machine
+    * runs, so its WSL is expected to name a version. */
+  def wslUpgradeWarning(version: Either[String, String]): Option[String] =
+    version match
+      case Left(reason) =>
+        Some(s"could not read the WSL version, which must be $MinimumWsl or later: $reason. To see it: `wsl --version`")
+      case Right(read) =>
+        Option.when(olderVersion(read, MinimumWsl))(
+          s"WSL $read is older than $MinimumWsl. Once no sandbox session runs, ${KoAgentBpf.upgradeRemedy(Os.Windows)}",
+        )
 
   /** What requirePodman asks `podman info`, in one call: rootlessness, MemTotal, the kernel release, then the cgroup
     * controllers, one line each. */

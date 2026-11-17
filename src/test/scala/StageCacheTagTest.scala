@@ -20,6 +20,7 @@ import java.nio.file.Files
 
 import FileHelper.deleteRecursively
 import HostCommands.*
+import Podman.*
 import ImageBuilds.NoRegistryLookup
 import LauncherImages.*
 import WithPodman.*

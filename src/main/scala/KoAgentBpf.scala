@@ -402,15 +402,11 @@ object KoAgentBpf:
     * WSL's. */
   def upgradeRemedy(os: Os): String =
     os match
-      case Os.Windows => "update WSL, whose kernel the podman machine runs: `wsl --update`, then `wsl --shutdown`"
+      case Os.Windows => s"update WSL, whose kernel the podman machine runs: ${Wsl.UpdateCommands}"
       case _ => s"upgrade the podman machine's OS: `$MachineOsUpgrade`"
 
   /** The upgrade on every provider but WSL's, which has no `podman machine os`. */
   val MachineOsUpgrade = "podman machine os upgrade --restart"
-
-  /** The kernel of the evidence's WSL machine (ko-agent-fs/bpf/doc/evidence.md, "Environment evidence", the WSL
-    * row). KoAgentBpfTest fails until the two agree. */
-  val MeasuredWslKernel = "6.18.54.1"
 
   /**
    * What the machine lacks for the backend, each with what to do, or nothing. `bpfSourceId` and
