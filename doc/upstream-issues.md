@@ -356,35 +356,48 @@ without a daemon (`run-on-host-internals.md`, "Mill 1.2 and later: no daemon").
 **Title:** On macOS, `ProcessHandle.info()` throws `RuntimeException: Operation not permitted` for
 a process whose arguments the caller may not read, and drops the start time it already read
 
-**Versions:** Temurin 25.0.4, macOS 26.6.2 on Apple silicon. Source read on 2026-10-19:
-`src/java.base/macosx/native/libjava/ProcessHandleImpl_macosx.c` at jdk-25+36 and `master`.
+**Versions:** Temurin 25.0.4+7 and OpenJDK 28-ea+24 on macOS 27.2, Apple silicon.
+`src/java.base/macosx/native/libjava/ProcessHandleImpl_macosx.c` read at jdk-25+36 (2026-10-19)
+and `master` (2026-11-19).
 
 **Reproducer:** `Info.java`:
 
 ```java
 public class Info {
     public static void main(String[] args) {
-        var process = ProcessHandle.of(Long.parseLong(args[0])).orElseThrow();
-        System.out.println(process.info().startInstant());
+        // sandbox-exec execs java, so the parent is the shell outside the sandbox.
+        var parent = ProcessHandle.current().parent().orElseThrow();
+        System.out.println(parent.info().startInstant());
     }
 }
 ```
 
-```sh
-sleep 600 & outside=$!
-printf '%s\n' '(version 1)' '(allow default)' \
-    '(deny sysctl-read (sysctl-name-regex #"procargs"))' \
-    '(deny process-info-pidinfo)' '(allow process-info-pidinfo (target same-sandbox))' > info.sb
-sandbox-exec -f info.sb "$JAVA_HOME/bin/java" Info.java "$outside"
+`info.sb`:
+
+```scheme
+(version 1)
+(allow default)
+; KERN_PROCARGS2 succeeds while either operation below is allowed.
+(deny sysctl-read (sysctl-name-regex #"procargs"))
+(deny process-info-pidinfo)
+; Without this rule, java dies on SIGTRAP.
+(allow process-info-pidinfo (target same-sandbox))
 ```
 
-**What happens:**
+```sh
+"$JAVA_HOME/bin/java" Info.java
+sandbox-exec -f info.sb "$JAVA_HOME/bin/java" Info.java
+```
+
+**What happens:** the first command prints `Optional[2026-11-19T01:51:21.470Z]`. The second
+throws:
 
 ```text
-java.lang.RuntimeException: Operation not permitted
+Exception in thread "main" java.lang.RuntimeException: Operation not permitted
     at java.base/java.lang.ProcessHandleImpl$Info.info0(Native Method)
     at java.base/java.lang.ProcessHandleImpl$Info.info(ProcessHandleImpl.java:562)
     at java.base/java.lang.ProcessHandleImpl.info(ProcessHandleImpl.java:479)
+    at Info.main(Info.java:5)
 ```
 
 **Why:**
@@ -397,8 +410,13 @@ java.lang.RuntimeException: Operation not permitted
 - Linux's `os_getCmdlineAndUserInfo` returns quietly when it cannot open `/proc/<pid>/cmdline`.
 - A sandbox refuses the read with `EPERM`. The profile above has the rule of agent-safehouse's
   `profiles/10-system-runtime.sb`.
+- In a larger profile with the same three rules, adding
+  `(allow sysctl-read (sysctl-name "kern.procargs2.<pid>"))` for another JDK's pid made `info()` of
+  that JDK succeed (macOS 26, Temurin 25.0.4). The `kern.proc` and `KERN_ARGMAX` calls, which throw
+  the same message, therefore succeeded in that run.
 
-**Expected:** treat `EPERM` as `EINVAL` and `EIO` are treated, leaving the arguments empty.
+**Expected:** treat `EPERM` as `EINVAL` and `EIO` are treated, leaving the arguments empty. The
+sandboxed command then prints the parent's start time, as the control does.
 
 - The `ProcessHandle.Info` Javadoc says the information "is limited by the operating system
   privileges of the process making the request", and `info()` declares no exception.
@@ -407,15 +425,9 @@ java.lang.RuntimeException: Operation not permitted
   exceptions so there is little risk changing the behavior by quietly returning in the case of
   EINVAL or EIO".
 
-**Not verified:** the reproducer was not run.
-
-- The stack trace comes from Mill 1.3.0's daemon under this project's command profile, which has
-  the same three rules.
-- Allowing `kern.procargs2.<pid>` after those rules makes `info()` of that process succeed
-  (`seatbelt.md`, "Processes", has the measurement).
-- The source, not a run, shows that the start time survives the fix.
-- A search of bugs.openjdk.org found no report of `EPERM` (searched for `ProcessHandle` with
-  `EPERM`, "Operation not permitted" and `KERN_PROCARGS2`, 2026-10-19).
+**Prior reports:** a search of bugs.openjdk.org found no report of `EPERM` (summaries,
+descriptions and comments mentioning `ProcessHandle` with `EPERM`, "Operation not permitted" or
+`KERN_PROCARGS2`, 2026-11-19).
 
 ## com-lihaoyi/mill
 
