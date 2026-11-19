@@ -353,8 +353,14 @@ without a daemon (`run-on-host-internals.md`, "Mill 1.2 and later: no daemon").
 
 ### `ProcessHandle.info()` throws on macOS when `KERN_PROCARGS2` returns `EPERM`
 
+**Submitted:** bugreport.java.com, 2026-11-19. Oracle posts a JDK bug or asks for more information.
+
 **Title:** On macOS, `ProcessHandle.info()` throws `RuntimeException: Operation not permitted` for
 a process whose arguments the caller may not read, and drops the start time it already read
+
+**Impact:** Mill 1.3.0's daemon calls `info()` for each launcher, so every Mill command fails when
+the daemon runs under a sandbox that refuses reading other processes' arguments and the launcher
+runs outside it.
 
 **Versions:** Temurin 25.0.4+7 and OpenJDK 28-ea+24 on macOS 27.2, Apple silicon.
 `src/java.base/macosx/native/libjava/ProcessHandleImpl_macosx.c` read at jdk-25+36 (2026-10-19)
@@ -385,7 +391,7 @@ public class Info {
 ```
 
 ```sh
-"$JAVA_HOME/bin/java" Info.java
+"$JAVA_HOME/bin/java" Info.java                           # a control without the sandbox
 sandbox-exec -f info.sb "$JAVA_HOME/bin/java" Info.java
 ```
 
@@ -404,9 +410,9 @@ Exception in thread "main" java.lang.RuntimeException: Operation not permitted
 
 - `info0` stores the start time from `kern.proc`, then calls `os_getCmdlineAndUserInfo`
   (`ProcessHandleImpl_unix.c`).
-- When that function's `sysctl` of `{CTL_KERN, KERN_PROCARGS2, pid}` fails with an errno other than
-  `EINVAL` or `EIO`, the function throws. The caller then loses the start time along with the
-  arguments.
+- In `ProcessHandleImpl_macosx.c`, when that function's `sysctl` of
+  `{CTL_KERN, KERN_PROCARGS2, pid}` fails with an errno other than `EINVAL` or `EIO`, the function
+  throws. The caller then loses the start time along with the arguments.
 - Linux's `os_getCmdlineAndUserInfo` returns quietly when it cannot open `/proc/<pid>/cmdline`.
 - A sandbox refuses the read with `EPERM`. The profile above has the rule of agent-safehouse's
   `profiles/10-system-runtime.sb`.
