@@ -100,7 +100,7 @@ class SandboxLifecycleTest extends munit.FunSuite:
       s"""#!/bin/sh
          |echo "$$*" >> "$log"
          |case "$$*" in
-         |  "rm --force gone-sandbox") exit 125 ;;
+         |  "rm --force --volumes gone-sandbox") exit 125 ;;
          |  "network exists "*) exit 0 ;;
          |esac
          |""".stripMargin
@@ -110,7 +110,7 @@ class SandboxLifecycleTest extends munit.FunSuite:
     assertEquals(
       java.nio.file.Files.readAllLines(log).toArray.toVector,
       Vector(
-        "rm --force gone-sandbox",
+        "rm --force --volumes gone-sandbox",
         "rm --force --time 2 proxy-container",
         "network exists net-sandbox", "network rm net-sandbox",
         "network exists net-egress", "network rm net-egress",
@@ -157,7 +157,7 @@ class SandboxLifecycleTest extends munit.FunSuite:
   test("the reaper ignores terminal signals and removes only this run's resources"):
     // The trap comes before any command that a signal could interrupt; only the PATH assignment precedes it.
     assertEquals(ReaperScript.linesIterator.drop(1).next(), "trap '' INT HUP TERM")
-    assert(ReaperScript.contains("\"$3\" rm --force \"$1\""))
+    assert(ReaperScript.contains("\"$3\" rm --force --volumes \"$1\""))
     assert(ReaperScript.contains("\"$3\" rm --force --time 2 \"$2\""))
     assert(ReaperScript.contains("for net in \"$4\" \"$5\""))
     assert(ReaperScript.contains("\"$3\" network rm \"$net\""))
@@ -206,7 +206,7 @@ class SandboxLifecycleTest extends munit.FunSuite:
     assert(process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS), "the reaper did not exit within 30s")
     val lines = java.nio.file.Files.readAllLines(calls).toArray.toVector.map(_.toString)
     val waited = lines.indexOf("wait sandbox")
-    val sandboxRemoved = lines.indexOf("rm --force --time 2 sandbox")
+    val sandboxRemoved = lines.indexOf("rm --force --volumes --time 2 sandbox")
     val proxyRemoved = lines.indexOf("rm --force --time 2 proxy")
     assert(waited >= 0 && sandboxRemoved > waited && proxyRemoved > sandboxRemoved, lines.mkString("\n"))
 

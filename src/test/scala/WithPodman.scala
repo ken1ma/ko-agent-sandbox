@@ -333,6 +333,14 @@ object WithPodman extends munit.Assertions:
     finally deleteRecursively(workspace)
 
   /** Where the session has its workspace: the workspace root's own path, as the launcher spells it. */
+  /** The kernel writes a space, tab, newline or backslash in a mountinfo path as `\NNN` octal (`show_mountinfo`,
+    * `mangle_path`). A workspace path that holds such a character therefore matches only after decoding. */
+  def unescapeMountinfo(field: String): String =
+    "\\\\([0-7]{3})".r.replaceAllIn(
+      field,
+      found => java.util.regex.Matcher.quoteReplacement(Integer.parseInt(found.group(1), 8).toChar.toString),
+    )
+
   def mountPath(session: Session): String =
     val workspaceRoot = SandboxWorkspace.canonicalWorkspaceRoot(session.workspaceRoot, currentOs)
     SandboxWorkspace.mountPathOf(currentOs, workspaceRoot).fold(reason => throw AssertionError(reason), identity)

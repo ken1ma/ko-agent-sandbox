@@ -137,3 +137,46 @@ where the share answers `Inappropriate ioctl for device`.
 1. A tool that needs to set an attribute fails at that call. Report the failure, since the rule is
    the launcher's. The workspace's protections need the rule (`SECURITY.md`, "No containers inside
    the sandbox by default", the profile's attribute rule, explains why).
+
+## sbt in a build made during a session
+
+A host sbt can stop at `starting a new server` after the session ran sbt in a build that did not
+exist at launch. On Windows it then prints `Could not create lock for
+\\.\pipe\sbt-server-<hash>_lock, error 5` and waits.
+
+1. Press Ctrl-C, run `sbt shutdownall` on the host, and run the command again.
+1. The next launch gives that build its own `project/target` in the container, and the hang does
+   not recur there.
+
+What the launcher does in a `--workspace=live` session:
+
+1. Before the start prompt, it finds each directory holding `build.sbt` or
+   `project/build.properties`, shallow ones first. It does not enter `.git`, `.ko-agent-sandbox`,
+   `node_modules`, `target`, `src/sbt-test`, a symlink or a junction, and it does not count a
+   build's own `project` directory.
+1. It skips a build, and names it in a warning, when the build's `project` or `project/target` is
+   a symlink or junction, or when the last file rule naming either of them or an ancestor is
+   `read-only`.
+1. Once you start the session, it creates each build's missing `project` and `project/target` on
+   the host, as sbt does at its first run, so that the directory exists for podman to mount over.
+   A build that no longer holds a build at the path found, or whose directories became symlinks,
+   is skipped instead.
+1. It mounts an empty volume over that `project/target` in the container. The host keeps its own
+   `project/target`, and the volume is removed with the container.
+1. On Windows, it leaves out the volumes that would push the `podman` command line past 32,767
+   characters, and says how many.
+
+`target/` stays shared. The image moves sbt 2's compiled output out of the workspace, so host and
+session builds write their own. A build that names its own output path under `target/` writes the
+same files from both sides: run its host and session builds one at a time
+([run-on-host-internals.md](run-on-host-internals.md) has why two servers cannot share outputs).
+
+Why: sbt's client and server keep the server's address in `<build>/project/target/active.json`,
+and no option moves that file (sbt's `NetworkClient.portfile` and `CommandExchange.portfile`).
+
+- The session's sbt cannot reach a host server, so it deletes the file, starts a server of its own
+  and writes that server's address there. The host's sbt cannot reach that server either.
+- The host's sbt then starts another server and leaves its earlier one running. On Windows the two
+  servers' named pipes collide, so the new server never starts, and the client waits for it.
+- In the session, sbt compiles the build definition into its own `project/target`, once per
+  session.

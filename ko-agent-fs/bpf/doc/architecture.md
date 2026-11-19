@@ -478,6 +478,9 @@ The program classifies by object and position, never by a path string:
     is bound under `~`, the volume and the share are other mounts, and `rename` across mounts
     answers `EXDEV` before any hook (`fs/namei.c`, `do_renameat2`). Beneath the volume no socket
     comes to be in the first place.
+  - The launcher's anonymous volume over each sbt build's `project/target`
+    (`SbtBuildVolumes`) is a mount of its own as well, so a rename out of it answers `EXDEV` by
+    the same rule.
   - A version that binds another mount into the container reopens this.
   - `unix-socket` lifts the rule, and keeps a socket out of a gitdir by the same three hooks ("The
     hooks", `file_receive`, has the channel each closes).
@@ -605,10 +608,14 @@ The program classifies by object and position, never by a path string:
   `RESOLVE_NO_XDEV`). Here:
   - The first version refuses the launch when the VM shows a mount under the bind source, and names
     the mount.
-    - The session makes none ("Mounts"). The launcher binds nothing under the workspace
+    - The session makes none ("Mounts"). The launcher binds no host directory under the workspace
       (`SandboxWorkspace.linkedGitdirBind` refuses a target inside the workspace mount or holding
       it). A mount the host adds mid-session does not propagate into the container under podman's
       default `rprivate`. What remains is the share.
+    - The launcher mounts an anonymous volume over each sbt build's `project/target`
+      (`SbtBuildVolumes`). The volume is on a superblock of another type than the share's, so the
+      policy allows every write beneath it, as beneath `~`, and none of those writes reaches the
+      host.
     - The every-hook suite measures whether the macOS and Windows virtiofs servers present a
       host-side mount as one tree or as a nested superblock, both for one present at launch and for
       one the host makes after attach. The macOS server presents an attached disk image as a

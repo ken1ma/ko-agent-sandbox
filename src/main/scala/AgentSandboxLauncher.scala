@@ -1692,6 +1692,13 @@ object AgentSandboxLauncher:
     val launchLogFile = runLogs.resolve("launch.log")
 
     val git = timings.timed("read the workspace's Git layout")(gitAccess(settings, workspace, images, rules, os))
+    // Only a live session writes the workspace, so only a live session's sbt can replace the host's server address file
+    // (SbtBuildVolumes). The walk runs beside the run's files and the proxy's start, and writes nothing.
+    val awaitSbtVolumes = Option.when(parsed.workspaceMode == "live"):
+      val started = System.nanoTime()
+      inBackground("sbt build walk"):
+        try SbtBuildVolumes.plan(workspaceRoot, sessionRuleLines, os)
+        finally timings.since("found the workspace's sbt builds", started)
     val sandboxFiles = timings.timed("prepared the run's files"):
       prepareRunFiles(
         parsed, settings, workspace, images, rules, names, git, tlsDir, runFiles, logDir, runLogs, hostLogFile,
@@ -1718,7 +1725,10 @@ object AgentSandboxLauncher:
 
     val mount =
       LaunchMount(fuseWorkspace, bpfFacts, effectiveSettings, joinedRules, sessionRuleLines, sessionRulesText)
+    val sbtVolumes = awaitSbtVolumes.map: await =>
+      timings.timed("waited for the sbt build walk")(await())
     printLaunchLines(parsed, settings, workspace, rules, mount, git, hostLogFile, os)
+    sbtVolumes.flatMap(planned => SbtBuildVolumes.skippedWarning(planned.skipped, os)).foreach(warn)
     val createCommand = sandboxCreateCommand(
       parsed, settings, workspace, images, rules, names, mount, git, proxyIp, sandboxFiles, machineMemory, os,
     )
@@ -1756,8 +1766,20 @@ object AgentSandboxLauncher:
       heldLineClosed = true
       sys.exit(0)
 
+    // The launch creates the sbt builds' mount points only once the user has chosen to start, and just before the
+    // create, so that a directory has the least time to change between the check and podman's mount. A build that
+    // changed since the walk keeps sharing project/target; the TUI clears the note with the rest.
+    val sbtVolumeMounts = sbtVolumes.toVector.flatMap: planned =>
+      val (mounts, changed) = SbtBuildVolumes.prepare(planned, os)
+      SbtBuildVolumes.skippedWarning(changed, os).foreach(warn)
+      mounts
+    val createWithVolumes = createCommand.copy(
+      sbtVolumes = sbtVolumeMounts,
+      commandLineLimit = Option.when(os == Os.Windows)(SbtBuildVolumes.WindowsCommandLineLimit),
+    )
+
     startSandbox(
-      parsed, settings, workspace, rules, names, mount, git, createCommand, fuseReap, runFiles, channelLogFile,
+      parsed, settings, workspace, rules, names, mount, git, createWithVolumes, fuseReap, runFiles, channelLogFile,
       micLogFile, backendLogFile, launchLogFile, timings, cleanup, os,
     )
 
@@ -2656,9 +2678,28 @@ object AgentSandboxLauncher:
       System.err.println(s"note: ${EgressCredentials.SubstitutionNote}")
 
   /** The sandbox container's `podman create`: the options, then the image and the command. The split lets the start
-    * add the options that are known only once the backend's steps ran (KoAgentBpf). */
-  final case class CreateCommand(options: Vector[String], imageAndCommand: Vector[String]):
-    def withOptions(more: Vector[String]): Vector[String] = options ++ more ++ imageAndCommand
+    * add the options that are known only once the backend's steps ran (KoAgentBpf).
+    * - `sbtVolumes` are the container paths of the sbt builds' volumes. Where `commandLineLimit` caps the command
+    *   line, `withOptions` keeps the volumes that fit the complete command (SbtBuildVolumes.fitting). */
+  final case class CreateCommand(
+    options: Vector[String],
+    imageAndCommand: Vector[String],
+    sbtVolumes: Vector[String] = Vector.empty,
+    commandLineLimit: Option[Int] = None,
+  ):
+    def withOptions(more: Vector[String]): Vector[String] =
+      options ++ more ++ SbtBuildVolumes.arguments(fittingVolumes(more)) ++ imageAndCommand
+
+    def fittingVolumes(more: Vector[String]): Vector[String] =
+      SbtBuildVolumes.fitting(options ++ more ++ imageAndCommand, sbtVolumes, commandLineLimit)
+
+    /** The launch's warning when the command line leaves volumes out, naming each. */
+    def leftOutWarning(more: Vector[String]): Option[String] =
+      val leftOut = sbtVolumes.drop(fittingVolumes(more).size)
+      Option.when(leftOut.nonEmpty):
+        val heading = s"the podman command line has no room for these ${leftOut.size} sbt builds' project/target " +
+          "volumes (doc/limitations.md, \"sbt in a build made during a session\"):"
+        (heading +: leftOut.map(path => s"  $path")).mkString("\n")
 
   /** The sandbox container's `podman create`. The method prints each loosening that the command carries. */
   private def sandboxCreateCommand(
@@ -2874,6 +2915,7 @@ object AgentSandboxLauncher:
         Vector(s"--cgroup-parent=${done.parent}", "--restart=no", s"--label=${KoAgentBpf.CgroupLabel}=${done.cgroup}")
     if os == Os.Linux then
       val labels = KoAgentBpf.labelArguments(settings, persistentVolume, Vector.empty, None)
+      createCommand.leftOutWarning(labels).foreach(warn)
       val created = timings.timed("created the container"):
         runWithEnvironment(environment, createCommand.withOptions(labels)*)
       return (None, created)
@@ -2892,6 +2934,7 @@ object AgentSandboxLauncher:
       KoAgentBpf.refusalBeside(settings, persistentVolume, mine, live, path => known.get(path).filter(_ != "gone"))
         .foreach(reason => fail(reason))
       val labels = KoAgentBpf.labelArguments(settings, persistentVolume, mine, None)
+      createCommand.leftOutWarning(labels ++ bpfOptions(launched)).foreach(warn)
       val created = timings.timed("created the container"):
         runWithEnvironment(environment, createCommand.withOptions(labels ++ bpfOptions(launched))*)
       (launched, created)

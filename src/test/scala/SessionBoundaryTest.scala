@@ -19,6 +19,7 @@ import scala.jdk.CollectionConverters.*
 
 import HostCommands.*
 import FileHelper.*
+import WithPodman.unescapeMountinfo
 
 class SessionBoundaryTest extends munit.FunSuite:
 
@@ -87,14 +88,6 @@ class SessionBoundaryTest extends munit.FunSuite:
       .find(_.startsWith(name))
       .map(_.split("\\s+").last)
       .getOrElse(s"($name absent from $status)")
-
-  /** The kernel writes a space, tab, newline or backslash in a mountinfo path as `\NNN` octal (`show_mountinfo`,
-    * `mangle_path`). A workspace path that holds such a character therefore matches only after decoding. */
-  private def unescapeMountinfo(field: String): String =
-    "\\\\([0-7]{3})".r.replaceAllIn(
-      field,
-      found => java.util.regex.Matcher.quoteReplacement(Integer.parseInt(found.group(1), 8).toChar.toString),
-    )
 
   private def mountPoints: Vector[String] =
     procLines("/proc/self/mountinfo").map(line => unescapeMountinfo(line.split(" ")(4)))

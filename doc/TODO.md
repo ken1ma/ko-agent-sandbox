@@ -477,6 +477,18 @@ only the container-launching suites. That document's command returns to
   - for `CAP_SYS_CHROOT`, the `same-uid` launch line (`LaunchMessages.scala`, `nestingLine`) and
     `README.md`'s `--nesting` entry, which name the capability as what `same-uid` adds.
 
+## The guard's read-only paths in the sbt build volumes
+
+- [ ] Under the BPF backend, skip an sbt build whose `project` or `project/target` lies under a path
+  the workspace policy's guard makes read-only, before creating either directory.
+  `SbtBuildVolumes.plan` consults only the rule lines, so a build inside a hook directory the
+  repository keeps, or inside a listed symlink's target, gets an empty `project/target` created on
+  the host and hidden in the session.
+  - `KoAgentBpf.Launched.resolved` holds the guard's `read-only-path` and `read-only-under` entries
+    in `createUnderLaunchLock`, before `podman create`, so `SbtBuildVolumes.prepare` can move there
+    and consult them.
+  - The FUSE backend resolves those entries at its mount, after the create, and keeps the gap.
+
 ## Japanese names in file rules
 
 - [ ] Let `read-only` and `writable` lines name Japanese directories and files; `file-rules.md`
@@ -1161,3 +1173,16 @@ instead, as it builds ko-review's (`ko-review/doc/design.md`, "Where the parts a
   (`ImageBuilds.buildCommands`).
 - Once CI builds the proxy's native binary per architecture and publishes it, the image build
   fetches the binary instead, and the build stage goes.
+
+## Deferred — the sbt build volumes' host creation, pinned to the checked directories
+
+- [ ] Create each sbt build's missing `project` and `project/target` relative to directory handles
+  that `SbtBuildVolumes.prepare` checked, so that a parent changed after the check cannot redirect
+  the creation. Low priority: the window is milliseconds after the start prompt, and the result is
+  an empty directory.
+  - On Linux and macOS, through FFM (`FFMHelper`): `openat` each component with `O_DIRECTORY |
+    O_NOFOLLOW` from the workspace root, then `mkdirat` under the open parent.
+  - On Windows, through `ntdll`'s `NtCreateFile` with the parent's handle as `RootDirectory` and
+    `FILE_OPEN_REPARSE_POINT`.
+  - podman resolves the mount's destination by path afterwards, so the mount stays redirectable,
+    inside the container only.

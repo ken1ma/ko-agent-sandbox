@@ -289,7 +289,9 @@ object LauncherState:
    */
   def resetRemoved(podman: String, kind: String, name: String): Boolean =
     val rm =
-      if kind == "container" then Vector(podman, "rm", "--force", name) else Vector(podman, kind, "rm", name)
+      // --volumes, as in SandboxLifecycle.removeRunResources.
+      if kind == "container" then Vector(podman, "rm", "--force", "--volumes", name)
+      else Vector(podman, kind, "rm", name)
     stepOk(rm*) || {
       val gone = existsAnswer(run(podman, kind, "exists", name).exit).contains(false)
       if gone then System.err.println(s"note: the $kind $name was already gone")

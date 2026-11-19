@@ -28,7 +28,9 @@ The sections below describe the limits and costs of each.
     entrypoint also runs `unshare -U`, which the launcher's profile refuses and podman's default
     profile allows ("No containers inside the sandbox by default").
 - The session's writes to `$HOME` and `/tmp` outside the persistent volume are discarded when the
-  session ends.
+  session ends. So are its writes to the `project/target` of each sbt build that the launch hid
+  from the host behind a volume; the launch warns about the builds it gave none
+  ([limitations.md](doc/limitations.md#sbt-in-a-build-made-during-a-session)).
 - The launcher mounts no host container-runtime socket. Access to such a socket would let a session
   control containers outside its confinement. `SessionBoundaryTest` checks both the Docker and the
   Podman socket paths.

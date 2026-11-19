@@ -2217,7 +2217,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
           "network rm net-a", "network exists net-a",
           "network rm net-a", "network exists net-a",
           "volume rm vol-a", "volume exists vol-a",
-          "rm --force box-a", "container exists box-a",
+          "rm --force --volumes box-a", "container exists box-a",
         ),
       )
     finally FileHelper.deleteRecursively(dir)

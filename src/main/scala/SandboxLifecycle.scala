@@ -254,7 +254,7 @@ object SandboxLifecycle:
       |while [ "$("$3" container inspect --format '{{.State.Running}}' "$1" 2>/dev/null)" != true ]; do
       |  "$3" container exists "$1" 2>/dev/null || break
       |  i=$((i + 1))
-      |  [ "$i" -gt 600 ] && { "$3" rm --force "$1"; break; }
+      |  [ "$i" -gt 600 ] && { "$3" rm --force --volumes "$1"; break; }
       |  sleep 1
       |done
       |
@@ -291,7 +291,8 @@ object SandboxLifecycle:
       |# ended the wait, and --rm then fails on the running container, which
       |# would run on without its proxy. This removal ends the session either
       |# way; after an ordinary exit the container is gone and it does nothing.
-      |"$3" rm --force --time 2 "$1" >/dev/null 2>&1
+      |# --volumes, as in removeRunResources.
+      |"$3" rm --force --volumes --time 2 "$1" >/dev/null 2>&1
       |
       |# Unconditional: the proxy is this run's own. --time 2, because it
       |# holds no state worth draining; its audit log is a host file.
@@ -391,11 +392,13 @@ object SandboxLifecycle:
    *   refusal or a Ctrl-C. There --rm never fires, and the container would hold its network.
    * - After a run, the sandbox container is already gone, and the rm is a no-op.
    * - After a `podman restart`, the rm ends the session, for the reason the reaper gives.
+   * - `--volumes` removes the sandbox's anonymous volumes, its home and each sbt build's `project/target`, which a
+   *   removal without it leaves behind once --rm has not fired. Named volumes, the persistent one among them, stay.
    */
   def removeRunResources(
     podman: String, sandboxContainer: String, proxyContainer: String, networks: Seq[String],
   ): Unit =
-    run(podman, "rm", "--force", sandboxContainer)
+    run(podman, "rm", "--force", "--volumes", sandboxContainer)
     run(podman, "rm", "--force", "--time", "2", proxyContainer)
     networks.foreach: network =>
       @tailrec

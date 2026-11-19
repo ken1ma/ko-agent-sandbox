@@ -128,6 +128,36 @@ object FileRules:
   def resolve(workspaceLines: Vector[Line]): Vector[Line] = Defaults ++ workspaceLines
 
   /**
+   * Whether the last of `lines` that names the entry at `relative` (its components below the workspace root) or an
+   * ancestor of it is a `read-only` line. A line's name matches at any depth, `*` within one component, against each
+   * component as `fold` spells it. The guard's additions, such as a hook directory or a symlink's target, are not
+   * consulted.
+   */
+  def readOnlyByLines(relative: Vector[String], lines: Vector[Line]): Boolean =
+    val folded = relative.map(fold)
+    val entries = (1 to folded.size).map(folded.take)
+    def names(line: Line, entry: Vector[String]): Boolean =
+      val pattern = line.name.split("/").toVector
+      entry.size >= pattern.size && entry.takeRight(pattern.size).zip(pattern).forall: (component, glob) =>
+        glob.split("\\*", -1).map(java.util.regex.Pattern.quote).mkString("(?s)", ".*", "").r.matches(component)
+    lines.findLast(line => entries.exists(names(line, _))).exists(_.word == Word.ReadOnly)
+
+  /**
+   * A name component as the workspace policy compares it with a rule line: the code points a filesystem may ignore
+   * dropped, four letters folded to ASCII, trailing `.` and space stripped, ASCII lowercased. A deliberate copy of
+   * `fold` in ko-agent-fs/policy/src/policy.rs, whose comments give each step's reason; the launcher has no binding to
+   * that crate.
+   */
+  def fold(name: String): String =
+    val ignorable = Set(0x00ad, 0x200b, 0x200c, 0x200d, 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e,
+      0x2060, 0x206a, 0x206b, 0x206c, 0x206d, 0x206e, 0x206f, 0xfeff)
+    val toAscii = Map(0x0130 -> 'i', 0x0131 -> 'i', 0x212a -> 'k', 0x017f -> 's')
+    val kept = name.codePoints.toArray.toVector.filterNot(ignorable).map: codePoint =>
+      toAscii.get(codePoint).map(_.toString).getOrElse(String(Character.toChars(codePoint)))
+    kept.mkString.reverse.dropWhile(ch => ch == '.' || ch == ' ').reverse
+      .map(ch => if ch >= 'A' && ch <= 'Z' then (ch + 32).toChar else ch)
+
+  /**
    * The directories whose objects the FUSE backend's daemon sees as the host does, for the daemon's guard
    * (`guard.rs`, `resolve`).
    * - On native Linux, the daemon sees the whole filesystem as the host does.
