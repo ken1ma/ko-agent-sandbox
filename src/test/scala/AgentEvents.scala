@@ -188,19 +188,19 @@ object AgentEvents:
   def copilotSucceeded(run: Vector[Json]): Boolean =
     run.exists(event => event.is("type", "result") && event.at("exitCode").contains(Zero))
 
+  /** The shell calls that succeeded, as whole events: a subagent's events carry the subagent's `agentId` beside
+    * `data`, and the main agent's carry none (copilot 1.0.113). */
   private def copilotShellCalls(run: Vector[Json]): Vector[Json] =
-    run.filter(_.is("type", "tool.execution_complete")).flatMap(_.at("data"))
-      .filter(data => data.at("success").contains(True) && data.at("shellExecution", "exitCode").contains(Zero))
+    run.filter: event =>
+      event.is("type", "tool.execution_complete") && event.at("data").exists: data =>
+        data.at("success").contains(True) && data.at("shellExecution", "exitCode").contains(Zero)
 
   /** What the run lacks of a shell call, a subagent that completed, and that subagent's own shell call. A failed call
     * is a tool.execution_complete too, so its success and exit code decide. */
   def copilotLacks(run: Vector[Json]): Vector[String] =
     val shells = copilotShellCalls(run)
-    val agents = run.filter(_.is("type", "subagent.completed")).flatMap(_.text("data", "toolCallId")).toSet
-    lacking(
-      shells.exists(_.at("parentToolCallId").isEmpty), agents.nonEmpty,
-      shells.exists(_.text("parentToolCallId").exists(agents)),
-    )
+    val agents = run.filter(_.is("type", "subagent.completed")).flatMap(_.text("agentId")).toSet
+    lacking(shells.exists(_.at("agentId").isEmpty), agents.nonEmpty, shells.exists(_.text("agentId").exists(agents)))
 
   def copilotRanShell(run: Vector[Json]): Boolean = copilotShellCalls(run).nonEmpty
 

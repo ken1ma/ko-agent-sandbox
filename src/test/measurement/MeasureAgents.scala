@@ -43,12 +43,15 @@ object MeasureAgents:
 
   private var failed = false
   private var mode = ""
+  private var firstStart: Option[String] = None
 
   private def stamp: String = Instant.now.truncatedTo(ChronoUnit.SECONDS).toString
 
   private def start(name: String): Unit =
     mode = name
-    println(s"measure: $mode start $stamp")
+    val now = stamp
+    if firstStart.isEmpty then firstStart = Some(now)
+    println(s"measure: $mode start $now")
 
   private def finish(problem: Option[String]): Unit = problem match
     case None => println(s"measure: $mode end $stamp")
@@ -351,7 +354,8 @@ object MeasureAgents:
     println()
     println("Manual items, in this session, before the reader runs on the host:")
     agents.foreach(agent => println(ManualItems(agent)))
-    println("Then on the host: sbt \"Test/runMain agentsandbox.launcher.MeasurementReport\"")
+    val since = firstStart.fold("")(time => s" --since=$time")
+    println(s"Then on the host: sbt \"Test/runMain agentsandbox.launcher.MeasurementReport$since\"")
     if failed then 1 else 0
 
 @main def measure(arguments: String*): Unit = sys.exit(MeasureAgents.run(arguments))

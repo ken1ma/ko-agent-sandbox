@@ -28,6 +28,21 @@ class MeasurementReportTest extends munit.FunSuite:
 
   private def reportOf(lines: String*): Report = report(lines.toVector.map(stamped), Vector(record))
 
+  test("since keeps the lines stamped at its time or later, and drops the unstamped ones"):
+    val log = Vector(
+      "2026-11-14T08:59:59Z error repo.example GET /a.pom relay: client: Broken pipe",
+      "egress profile: deny-unless-allowed",
+      "2026-11-14T09:00:00Z allow api.example GET /v1/models id=1 -> 1.2.3.4",
+      "2026-11-14T09:00:01Z deny other.example CONNECT host not allowed",
+    )
+    assertEquals(since(log, "2026-11-14T09:00:00Z"), log.drop(2))
+
+  test("a time after the log's last audit line selects nothing and is refused, rather than read as a clean run"):
+    val log = Vector("2026-11-14T09:00:00Z allow api.example GET /v1/models id=1 -> 1.2.3.4")
+    assertEquals(selected(log, None), Right(log))
+    assertEquals(selected(log, Some("2026-11-14T09:00:00Z")), Right(log))
+    assert(selected(log, Some("2026-11-14T09:00:01Z")).swap.exists(_.contains("no audit line at or after")))
+
   test("a record's lines give its hosts, paths, refusals and errors"):
     assertEquals(record.hosts, Set("api.example", "login.example"))
     assertEquals(

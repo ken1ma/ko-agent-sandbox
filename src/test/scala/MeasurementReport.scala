@@ -2,10 +2,11 @@
 // (doc/agent-measurement.md, "The measurement suite"). src/test/measurement/MeasureAgents.scala runs the modes that
 // need no person; the manual items add to the same run. On the host:
 //
-//     sbt "Test/runMain agentsandbox.launcher.MeasurementReport [<proxy.log>]"
+//     sbt "Test/runMain agentsandbox.launcher.MeasurementReport [--since=<UTC time>] [<proxy.log>]"
 //
-// Without an argument, the report reads the latest run of the workspace that sbt runs in. It prints the report and
-// writes it to log/measurement-report.log, and exits 1 when a line matches no record.
+// Without a log, the report reads the latest run of the workspace that sbt runs in. --since, which the driver prints,
+// reads only the lines from the first mode's start: the driver's own compile downloads come before it. The report is
+// printed and written to log/measurement-report.log, and the exit code is 1 when a line matches no record.
 
 package agentsandbox.launcher
 
@@ -151,6 +152,21 @@ object MeasurementReport:
   /** What the reader found. `findings` are the lines that no record accepts; the rest is for a person to read. */
   final case class Report(text: String, findings: Vector[String], probes: Vector[Probe])
 
+  /** The log's lines stamped at `from` or later, a time as the proxy stamps its lines (`2026-11-19T10:40:54Z`). The
+    * stamps have a fixed width, so their text order is their time order. */
+  def since(log: Vector[String], from: String): Vector[String] =
+    log.filter(line => StampPrefix.matches(line.take(20)) && line.take(20) >= from)
+
+  private val StampPrefix = raw"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z".r
+
+  /** The lines to judge: all of them, or those from `from` on. A window with no audit line is refused, since it would
+    * read as a clean run: the log is an older run's, or the time is not this run's. */
+  def selected(log: Vector[String], from: Option[String]): Either[String, Vector[String]] =
+    from.fold(Right(log)): time =>
+      val kept = since(log, time)
+      if kept.exists(line => parseLine(line).nonEmpty) then Right(kept)
+      else Left(s"the proxy log has no audit line at or after $time: the log or the time is another run's")
+
   def report(log: Vector[String], all: Vector[Record]): Report =
     val lines = log.flatMap(parseLine)
     val requests = lines.filter(line => line.action == "allow" && line.target.nonEmpty)
@@ -239,10 +255,22 @@ object MeasurementReport:
     EgressRules.runLogDirs(logDir).lastOption.map(_.resolve("proxy.log")).filter(Files.isRegularFile(_))
 
   def main(args: Array[String]): Unit =
-    val log = args.headOption.map(Paths.get(_)).orElse(latestProxyLog()).getOrElse:
+    val (sinceArgs, paths) = args.toVector.partition(_.startsWith("--since="))
+    val from = sinceArgs.lastOption.map(_.stripPrefix("--since="))
+    if from.exists(!StampPrefix.matches(_)) then
+      System.err.println(
+        "measurement report: --since takes a UTC time such as 2026-11-19T10:40:54Z, as the driver prints it",
+      )
+      sys.exit(2)
+    val log = paths.headOption.map(Paths.get(_)).orElse(latestProxyLog()).getOrElse:
       System.err.println("measurement report: no proxy log; name one, or run sbt in a workspace that ran a session")
       sys.exit(2)
-    val result = report(Files.readAllLines(log, UTF_8).asScala.toVector, records())
+    val lines = selected(Files.readAllLines(log, UTF_8).asScala.toVector, from) match
+      case Right(kept) => kept
+      case Left(reason) =>
+        System.err.println(s"measurement report: $reason ($log)")
+        sys.exit(2)
+    val result = report(lines, records())
     val text = s"proxy log: $log\n${result.text}"
     println(text)
     println(s"report: ${saved(ReportFile, text)}")

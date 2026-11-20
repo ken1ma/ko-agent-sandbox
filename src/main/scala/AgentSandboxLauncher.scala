@@ -66,6 +66,11 @@
 //    |                                        opencode's XDG directories are symlinks
 //    |                                        into it)
 //    |
+//    +-- --cache-overlay (opt-in): a host cache --> its kind's directory, ~/.cache/coursier/v1,
+//    |      through podman's `:O` overlay. The session reads the cache, and its writes go to an
+//    |      upper layer that podman removes with the container (CacheOverlay.scala; SECURITY.md,
+//    |      "Cache overlay")
+//    |
 //    +-- --run-on-host (macOS only): ko-sandbox-run-on-host relays a command
 //    |      request to a host-side supervisor, which runs a build tool under a
 //    |      Seatbelt profile. The profile grants the workspace (`.git` and
@@ -1505,6 +1510,8 @@ object AgentSandboxLauncher:
     val machineMemory = timings.timed("checked podman and the machine's memory"):
       requirePodman(os, requireLimits = true, beside = reads)
     val LaunchReads(awaitImage, awaitProxyImage, startedBpfChecks, startedKoAgentFsChecks) = reads.started
+    val cacheOverlays = timings.timed("resolved the cache overlays"):
+      resolveCacheOverlays(parsed, settings, workspace, os)
 
     // One suffix ties this run's containers, networks and log directory together in podman output and the retained
     // logs.
@@ -1727,10 +1734,11 @@ object AgentSandboxLauncher:
       LaunchMount(fuseWorkspace, bpfFacts, effectiveSettings, joinedRules, sessionRuleLines, sessionRulesText)
     val sbtVolumes = awaitSbtVolumes.map: await =>
       timings.timed("waited for the sbt build walk")(await())
-    printLaunchLines(parsed, settings, workspace, rules, mount, git, hostLogFile, os)
+    printLaunchLines(parsed, settings, workspace, rules, mount, git, cacheOverlays, hostLogFile, os)
     sbtVolumes.flatMap(planned => SbtBuildVolumes.skippedWarning(planned.skipped, os)).foreach(warn)
     val createCommand = sandboxCreateCommand(
-      parsed, settings, workspace, images, rules, names, mount, git, proxyIp, sandboxFiles, machineMemory, os,
+      parsed, settings, workspace, images, rules, names, mount, git, cacheOverlays, proxyIp, sandboxFiles,
+      machineMemory, os,
     )
 
     // Before the hold, the launch offers the run that provisions each executable whose absence would make the first
@@ -1800,6 +1808,7 @@ object AgentSandboxLauncher:
       Option.when(settings.runOnHost.nonEmpty)("--run-on-host"),
       Option.when(parsed.persistentVolume.nonEmpty)(PersistentVolumeOption),
       Option.when(parsed.claudePlugins.nonEmpty)(ClaudePlugins.OptionName),
+      Option.when(parsed.cacheOverlays.nonEmpty)(CacheOverlay.OptionName),
     ).flatten
 
   /** The `podman create` arguments of a nesting mode: the profile for `none`, and the loosenings for `same-uid`.
@@ -1996,6 +2005,70 @@ object AgentSandboxLauncher:
       homeProtection, mainWorktree, mountPath, selinuxEnforcing, workspaceSlug, workspaceId, persistentVolume,
       claudePlugins,
     )
+
+  /**
+   * The `--cache-overlay` caches, checked before any resource exists (CacheOverlay.resolve). The protected directories:
+   * - the workspace and the directories that `--run-on-host` commands write, which the session changes;
+   * - the launcher's state, which holds the inspection CA's key;
+   * - podman's storage: the client's `containers` directory, which holds a machine's disk images, and on native Linux
+   *   the roots that `podman info` reports. A machine keeps its own roots in the machine, where no host path names
+   *   them.
+   *   - podman finds the client's directory under a non-empty `XDG_DATA_HOME`, else under the home that a non-empty
+   *     `HOME` names (go.podman.io/storage's `homedir`), which can differ from the JVM's `user.home`. Each candidate
+   *     is protected.
+   */
+  private def resolveCacheOverlays(
+    parsed: ParsedCommandLine,
+    settings: LaunchSettings,
+    workspace: LaunchWorkspace,
+    os: Os,
+  ): Vector[CacheOverlay.Resolved] =
+    if parsed.cacheOverlays.isEmpty then Vector.empty
+    else
+      val homes = (Vector("HOME", "USERPROFILE").flatMap(env) :+ System.getProperty("user.home")).filter(_.nonEmpty)
+      val dataHomes = (env("XDG_DATA_HOME").filter(_.nonEmpty).toVector ++ homes.map(_ + "/.local/share"))
+        .flatMap(text => scala.util.Try(Paths.get(text)).toOption).distinct
+      val podmanRoots =
+        if os != Os.Linux then Vector.empty
+        else
+          val answer = run(podman, "info", "--format", PodmanStorageFormat)
+          (if answer.ok then podmanStorageRoots(answer.text) else Left(answer.err)).fold(
+            reason =>
+              fail(
+                s"error: ${CacheOverlay.OptionName} needs podman's storage roots, which podman info did not give\n" +
+                  reason,
+              ),
+            identity,
+          )
+      val sessionWritten = hostCommandWrites(os).fold(fail(_), identity)
+        .map(written => CacheOverlay.Protected(written.directory, written.what))
+      // On Linux a bind mount can show a protected directory's contents at another path (CacheOverlay.refusal).
+      val mounts =
+        if os != Os.Linux then Vector.empty
+        else CacheOverlay.parseMountInfo(Files.readString(Paths.get("/proc/self/mountinfo")))
+      val protectedDirectories =
+        (CacheOverlay.Protected(settings.workspaceRoot, "the workspace, which the session writes") +: sessionWritten)
+          ++ Vector(CacheOverlay.Protected(stateRoot(os), "the launcher's state, which holds the inspection CA's key"))
+          ++ (dataHomes.map(_.resolve("containers")) ++ podmanRoots).map(CacheOverlay.Protected(_, "podman's storage"))
+      parsed.cacheOverlays.map: request =>
+        CacheOverlay.resolve(
+          request, os, name => Option(System.getenv(name)), workspace.homeProtection, protectedDirectories,
+          directory => !workspace.selinuxEnforcing || selinuxContainerReadable(directory),
+          directory => os != Os.Linux || CacheOverlay.sessionCanCreateOnLinux(directory),
+          mounts,
+        ).fold(fail(_), identity)
+
+  /** The store as JSON, whose strings keep every character of a path, a trailing space or a newline included. */
+  val PodmanStorageFormat = "{{json .Store}}"
+
+  /** The graph root, run root and volume path of `podman info --format {{json .Store}}`. */
+  def podmanStorageRoots(json: String): Either[String, Vector[Path]] =
+    JsonText.parse(json.trim).flatMap: store =>
+      val roots = Vector("graphRoot", "runRoot", "volumePath").map: key =>
+        store.field(key).collect { case JsonText.Json.Str(value) if value.nonEmpty => value }.toRight(key)
+      roots.collect { case Left(key) => key } match
+        case Vector() => Right(roots.collect { case Right(value) => Paths.get(value) })
+        case missing  => Left(s"the store names no ${missing.mkString(", ")}")
 
   /**
    * The directories outside the workspace that `--run-on-host` commands write (SeatbeltProfile.render's grants):
@@ -2605,6 +2678,7 @@ object AgentSandboxLauncher:
     rules: LaunchRules,
     mount: LaunchMount,
     git: GitAccess,
+    cacheOverlays: Vector[CacheOverlay.Resolved],
     hostLogFile: Path,
     os: Os,
   ): Unit =
@@ -2676,6 +2750,11 @@ object AgentSandboxLauncher:
       val sourceOf = (credential: BrokeredCredential) => if fromFile(credential.binding.spelled) then source else ""
       EgressCredentials.bannerLines(credentials, sourceOf).foreach(System.err.println)
       System.err.println(s"note: ${EgressCredentials.SubstitutionNote}")
+    // The line is loud as a loosening: the session reads a host directory outside the workspace.
+    cacheOverlays.foreach: overlay =>
+      val fromFile = options.fileValues(CacheOverlay.OptionName).exists(_.takeWhile(_ != '=') == overlay.kind.name)
+      val source = if fromFile then options.from(CacheOverlay.OptionName, os) else ""
+      System.err.println(CacheOverlay.line(overlay, source, os))
 
   /** The sandbox container's `podman create`: the options, then the image and the command. The split lets the start
     * add the options that are known only once the backend's steps ran (KoAgentBpf).
@@ -2711,6 +2790,7 @@ object AgentSandboxLauncher:
     names: RunNames,
     mount: LaunchMount,
     git: GitAccess,
+    cacheOverlays: Vector[CacheOverlay.Resolved],
     proxyIp: String,
     sandboxFiles: Vector[String],
     machineMemory: Option[Long],
@@ -2873,6 +2953,7 @@ object AgentSandboxLauncher:
 
       // The home volume is anonymous and removed on exit, so caches work without becoming cross-session attack state.
       "--mount", s"type=volume,dst=$ContainerHome",
+    ) ++ cacheOverlays.map(_.volumeArg) ++ Vector(
 
       // This volume persists auth and config: ~/.claude, ~/.codex, ~/.gemini, ~/.kiro, ~/.copilot,
       // ~/.local/share/kiro-cli and opencode's XDG directories are symlinks into it. The volume is podman-owned

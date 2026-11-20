@@ -887,6 +887,39 @@ RUN --mount=type=bind,target=/mnt/context \
 
 
 # ---------------------------------------------------------------------------
+# The image's home
+# ---------------------------------------------------------------------------
+#
+# podman copies the image's /home/nonroot into every session's new home volume at `podman init`, and deletes the copy
+# at `podman rm -v`. With 750 MB of Coursier content in the home, `init` took 3.0 to 9.6s and `rm -v` 3.7 to 4.7s on
+# Windows (doc/plan-coursier.md, "Evidence and target"). The home therefore holds only seeds, links and empty
+# directories, and a program installs under /opt or /usr/local. This step fails the build when a step above breaks that.
+# - The limits sit far above the home's few dozen entries and few kilobytes.
+# - ~/.cache/coursier stays empty and nonroot's (debian-coursier's Containerfile).
+RUN set -euo pipefail; \
+    home=/home/nonroot; \
+    allowed='.bash_logout .bashrc .profile .cache .claude .codex .config .copilot .gemini .kiro .local .m2 .rustup'; \
+    allowed="$allowed persistent-volume"; \
+    failures=''; \
+    for entry in $(find $home -mindepth 1 -maxdepth 1 -printf '%f\n'); do \
+        case " $allowed " in *" $entry "*) ;; *) failures="$failures\n$home/$entry is not an allowed entry";; esac; \
+    done; \
+    bytes=$(find $home -type f -printf '%s\n' | awk '{ total += $1 } END { print total + 0 }'); \
+    entries=$(find $home -mindepth 1 | wc -l); \
+    [ "$bytes" -le 1048576 ] || failures="$failures\nthe files under $home hold $bytes bytes, above 1 MiB"; \
+    [ "$entries" -le 256 ] || failures="$failures\n$home holds $entries entries, above 256"; \
+    [ "$(stat -c %u:%g $home/.cache/coursier)" = 65532:65532 ] \
+        || failures="$failures\n$home/.cache/coursier is not owned by nonroot"; \
+    [ -z "$(ls -A $home/.cache/coursier)" ] || failures="$failures\n$home/.cache/coursier is not empty"; \
+    [ ! -e $home/.local/share/coursier ] || failures="$failures\n$home/.local/share/coursier exists"; \
+    if [ -n "$failures" ]; then \
+        printf "%s%b\n" "the image's home must stay small:" "$failures" >&2; \
+        echo "Install the program under /opt or /usr/local, or redirect its cache out of $home." >&2; \
+        exit 1; \
+    fi
+
+
+# ---------------------------------------------------------------------------
 # Unprivileged runtime user
 # ---------------------------------------------------------------------------
 

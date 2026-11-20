@@ -23,6 +23,9 @@ class AgentMeasurementTest extends munit.FunSuite:
 
   private val workspace: Path = Paths.get("").toAbsolutePath
 
+  /** The driver's line for a mode's start: `measure: <mode> start <UTC time>`. */
+  private val DriverStart = raw"measure: .* start (\S+)".r
+
   private def measured(agent: String, signedIn: Session => Boolean, host: String): Unit =
     requireTestWithPodman()
     val logs = Files.createTempDirectory("agent-measurement")
@@ -41,14 +44,20 @@ class AgentMeasurementTest extends munit.FunSuite:
         mountPath(session), agent,
       )
       val proxy = run(podman, "logs", session.proxy)
-      val result = MeasurementReport.report((proxy.text + "\n" + proxy.err).linesIterator.toVector,
-        MeasurementReport.records())
-      // Before the assertions, so that a failed run's report stays without repeating the turns.
+      val log = (proxy.text + "\n" + proxy.err).linesIterator.toVector
+      // From the first mode's start: Scala CLI's compile of the driver downloads its tools before it, and a dropped
+      // download there is no agent's.
+      val firstStart = driver.text.linesIterator.collectFirst { case DriverStart(stamp) => stamp }
+      val reported =
+        MeasurementReport.selected(log, firstStart).map(MeasurementReport.report(_, MeasurementReport.records()))
+      // Before the assertions, so that a failed run's report, or why it has none, stays without repeating the turns.
       MeasurementReport.saved(
         Paths.get(s"log/measurement-report-$agent.log"),
-        s"the driver:\n${driver.text}\n${driver.err}\n\nthe proxy log of ${session.proxy}:\n${result.text}",
+        s"the driver:\n${driver.text}\n${driver.err}\n\nthe proxy log of ${session.proxy}:\n" +
+          reported.fold(reason => s"$reason\n${proxy.err}", _.text),
       )
       assert(driver.ok, s"a mode did not complete:\n${driver.text}\n${driver.err}")
+      val result = reported.fold(reason => fail(reason), identity)
       assert(result.findings.isEmpty, s"lines that no record accepts:\n${result.text}\n\nthe driver:\n${driver.text}")
       val probes = result.probes.filter(_.host == host)
       assert(probes.exists(_.framing.startsWith("content-length=")), s"no whole upload to $host:\n${result.text}")

@@ -1655,6 +1655,49 @@ has these properties:
 - **Without `--audio=mic`** no daemon runs and no FIFO exists. The image's PulseAudio clients start
   no daemon of their own, and the image has no other capture path.
 
+## Cache overlay
+
+`--cache-overlay=<kind>[=<directory>]` is off by default. The option lets the session read one host
+cache through podman's `:O` overlay, and the launch prints the cache (`CacheOverlay`;
+`doc/plan-coursier.md` has the design). The one kind is `coursier`, Coursier's `v1` download cache.
+
+- **The session reads every file under the directory.** The cache can hold private artifacts,
+  repository URLs and their metadata, and any file stored there by accident.
+  - Where the egress rules allow a destination, the session can send those files there.
+  - The option is that permission. The launcher recognizes no cache contents and blocks no
+    credential-like name, since such a list would always be incomplete.
+- **The session cannot change the host cache.** Every write through the mount, a rename or a
+  deletion included, goes to an upper layer private to the container, which podman removes with the
+  container. No later session and no host program reads what a session wrote there.
+  `CacheOverlayLifecycleTest`, under `sbt testWithPodman`, observes this on the host.
+- **The cache cannot open a path around another boundary.** Before anything is created, the
+  launcher refuses:
+  - a filesystem root, a home, a directory holding a home, and another user's home, each of which
+    exposes credentials;
+  - an overlap in either direction with the workspace or a directory that `--run-on-host` commands
+    write, through which a session would change what host programs read;
+  - an overlap with the launcher's state, which holds the inspection CA's key ("Who holds the CA
+    key");
+  - an overlap with podman's storage;
+  - on Linux, each refusal above through a bind mount, which shows a directory at a second path.
+    The launcher reads the directory behind each path from `/proc/self/mountinfo`, as path lookup
+    resolves it;
+  - a path with a `,`, which podman's overlay would split into mount options that the launcher did
+    not choose;
+  - a POSIX path with a `\`, which overlayfs reads as an escape, so the mount would read another
+    directory than the one checked.
+- **A host change to the cache during a session leaves the session's view undefined.** The kernel
+  forbids changing an overlay's lower layer while it is mounted, and promises only no crash or
+  deadlock (`Documentation/filesystems/overlayfs.rst`, "Changes to underlying filesystems").
+  - A host Coursier that writes the cache meanwhile can make a session's command fail, download
+    again or read a file in an inconsistent state. The host cache itself stays unchanged.
+  - Locks in the upper layer do not coordinate with the host's Coursier, and the overlay gives no
+    offline guarantee.
+- **The launcher never relabels or chowns the cache.** On an SELinux-enforcing host, the launcher
+  refuses a cache whose context does not already allow container reads.
+- **Without the option**, the session reads no host Coursier path. Its Coursier downloads into the
+  anonymous home, and the downloads disappear with the session.
+
 ## Run on host
 
 `--run-on-host=<programs>` (`sbt`, `mill`, `gradle`, `mvn`) is off by default and available only on
@@ -1942,7 +1985,8 @@ commands execute outside the container, so the profile provides their confinemen
     discards those caches alone.
   - The separation is by root, because Seatbelt has no mount namespace to overlay with. One
     directory holds the caches (`doc/run-on-host.md`, "The run-on-host cache").
-    `doc/plan-coursier.md` reaches the same property for the container by a podman `:O` upper.
+    `--cache-overlay` reaches the same property for the container by a podman `:O` upper layer
+    ("Cache overlay").
 - **The command's output names host paths**, as every session's does: the workspace root is mounted
   at its own path ("The workspace", above).
 - **`--workspace=read-only` composes, and the workspace is then no longer read-only to the

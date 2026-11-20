@@ -277,6 +277,11 @@ object SandboxWorkspace:
         ),
       )
 
+  /** Whether `dir` is a home directory, holds one, or sits directly in a directory of homes such as /home, where it is
+    * another user's home. */
+  def homeOrHolder(dir: Path, homes: HomeProtection): Boolean =
+    homes.paths.exists(_.startsWith(dir)) || Option(dir.getParent).exists(homes.containers.contains)
+
   /**
    * Why dir must not be mounted as the workspace root, or None if it may.
    * - The reason is user-facing and names the rule that fired. Telling someone inside ~/.config to
@@ -307,8 +312,7 @@ object SandboxWorkspace:
               "directories and run this again.",
           )
         case None =>
-          val insideAContainer = Option(candidate.getParent).exists(homes.containers.contains)
-          if homes.paths.exists(_.startsWith(candidate)) || insideAContainer then
+          if homeOrHolder(candidate, homes) then
             Some(
               "It is a home directory, or a directory containing one: anything like .aws, .ssh or\n" +
                 ".config beneath it would be exposed to the agent.\n" +

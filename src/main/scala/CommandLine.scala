@@ -286,6 +286,7 @@ object CommandLine:
     audio: Option[Vector[String]] = None,
     claudePlugins: Vector[String] = Vector.empty,
     modelProviders: Vector[String] = Vector.empty,
+    cacheOverlays: Vector[CacheOverlay.Request] = Vector.empty,
     nesting: Option[String] = None,
     sessionStart: Option[String] = None,
     memory: Option[String] = None,
@@ -402,6 +403,9 @@ object CommandLine:
       ModelProviderOption, _.modelProviders, (p, v) => p.copy(modelProviders = v), identity,
       name => s"$ModelProviderOption=$name",
     ),
+    Repeated[CacheOverlay.Request](
+      CacheOverlay.OptionName, _.cacheOverlays, (p, v) => p.copy(cacheOverlays = v), _.kind.name, _.spelled,
+    ),
   )
 
   /** Every option the options file can hold, by name. */
@@ -474,6 +478,7 @@ object CommandLine:
     "--session-start" -> "pause|immediate", "--memory" -> "<size>", PersistentVolumeOption -> "<name>",
     "--image" -> "<reference>", ProxyImageOption -> "<reference>", "--env" -> "<name>[=<value>]",
     "--egress-cred" -> "<name>@<host>", "--run-on-host" -> "<programs>", ClaudePlugins.OptionName -> "<dir>",
+    CacheOverlay.OptionName -> "<kind>[=<directory>]",
   )
 
   private val SpelledOptions: String =
@@ -481,8 +486,8 @@ object CommandLine:
       "--workspace", "--egress", ModelProviderOption, "--clipboard", AudioOption, "--nesting", "--session-start",
       "--memory", PersistentVolumeOption, "--image", ProxyImageOption, "--env",
     ).map(option => s"$option=${ValuedOptions(option)}").mkString(", ") +
-      s", ${AwsCredential.OptionName}[=<profile>], --egress-cred=<name>@<host>, --run-on-host=<programs> and " +
-      s"${ClaudePlugins.OptionName}=<dir>"
+      s", ${AwsCredential.OptionName}[=<profile>], --egress-cred=<name>@<host>, --run-on-host=<programs>, " +
+      s"${CacheOverlay.OptionName}=${ValuedOptions(CacheOverlay.OptionName)} and ${ClaudePlugins.OptionName}=<dir>"
 
   /**
    * One source's arguments, as given.
@@ -578,6 +583,16 @@ object CommandLine:
             case directory if parsed.claudePlugins.contains(directory) =>
               Left(s"error: ${ClaudePlugins.OptionName}=$directory is given twice")
             case directory => update(parsed.copy(claudePlugins = parsed.claudePlugins :+ directory))
+          },
+        // The parser keeps a directory as spelled. CacheOverlay.resolve reads it against the host at launch.
+        () =>
+          valueOf(CacheOverlay.OptionName).map {
+            case "" => drop(CacheOverlay.OptionName)(_.copy(cacheOverlays = Vector.empty))
+            case value =>
+              CacheOverlay.parse(value).flatMap: request =>
+                if parsed.cacheOverlays.exists(_.kind == request.kind) then
+                  Left(s"error: ${CacheOverlay.OptionName}=${request.kind.name} is given twice")
+                else update(parsed.copy(cacheOverlays = parsed.cacheOverlays :+ request))
           },
         () =>
           valueOf(ModelProviderOption).map {

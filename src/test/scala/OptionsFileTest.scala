@@ -226,12 +226,13 @@ class OptionsFileTest extends munit.FunSuite:
         |--proxy-image=proxy:mine
         |--env=A=1
         |--egress-cred=X@a.example
-        |--claude-plugin-dir=/mods/band""".stripMargin
+        |--claude-plugin-dir=/mods/band
+        |--cache-overlay=coursier""".stripMargin
     val defaults = Vector(
       "--workspace=live,bpf,no-unix-socket", "--egress=deny-unless-allowed", "--clipboard=off", "--audio=off",
       "--nesting=none", "--session-start=pause", "--env-aws-cred=", "--run-on-host=", "--model-provider=",
       "--persistent-volume=", "--memory=", "--image=", "--proxy-image=", "--env=", "--egress-cred=",
-      "--claude-plugin-dir=",
+      "--claude-plugin-dir=", "--cache-overlay=",
     )
     // Each option the file can hold has its default value here.
     assertEquals(defaults.map(_.takeWhile(_ != '=')).toSet, FileOptionNames.toSet)
@@ -251,8 +252,8 @@ class OptionsFileTest extends munit.FunSuite:
     )
     assertEquals((reset.image, reset.proxyImage), (None, None))
     assertEquals(
-      (reset.env, reset.credentialBindings, reset.claudePlugins, reset.modelProviders),
-      (Vector.empty, Vector.empty, Vector.empty, Vector.empty),
+      (reset.env, reset.credentialBindings, reset.claudePlugins, reset.modelProviders, reset.cacheOverlays),
+      (Vector.empty, Vector.empty, Vector.empty, Vector.empty, Vector.empty),
     )
     // --env-aws-cred alone keeps reading AWS_PROFILE.
     assertEquals(inForce("--env-aws-cred=team", "--env-aws-cred").awsCredential, Some(AwsCredential.Request(None)))

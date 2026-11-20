@@ -29,23 +29,37 @@ Add an opt-in launch option, `--cache-overlay`, which may repeat and whose kinds
   sandbox container.
 - Extracted archives and JVMs stay session-local, because their cache entries can be specific to
   the host OS.
-- The installed Coursier launchers stay in the image, outside `$HOME`.
+- The installed Coursier launchers, and the sbt and Scala distributions that three of them run,
+  stay in the image, outside `$HOME`.
 
 The option widens what the sandbox can read on the host, so it is off by default. The option never
 widens egress: a cache miss still succeeds only when the selected `--egress` profile allows the
 artifact host.
 
-The image relocation and the optional host overlay ship as one increment. Implementation commits
-may come in sequence, but the increment is complete only when the whole acceptance checklist
-passes.
+The image relocation and the optional host overlay ship as one commit, once the whole acceptance
+checklist passes.
 
 ## Evidence and target
 
 A session's copy of the image's `/home/nonroot` holds 750 MB in 1,128 files (2026-11-17):
 
 - 659 MB under `.cache/coursier`;
-- 91 MB under `.local/share/coursier/bin`;
+- 91 MB under `.local/share/coursier/bin`, nearly all of it the native `cs` in `.cs.aux`;
 - the remaining agent-state seeds, shell files and other program state.
+
+The Coursier content falls into three parts (2026-11-18):
+
+| part | size | read at run time by |
+| --- | --- | --- |
+| `arc/`: the unpacked sbt 2.0.12 and Scala 3.10.0 distributions | 360 MB | `sbt`, `sbtn`, `scala` |
+| `v1/`: the release archives of those distributions and of `cs` | 180 MB | nothing |
+| `v1/`: Maven jars, 88 MB of them `scalac`'s and `scalafmt`'s | 90 MB | `scalac`, `scalafmt` |
+
+- `sbt`, `sbtn` and `scala` are shell scripts that `exec` a fixed path into `arc`, with no
+  download fallback. Deleting `arc` breaks them.
+- `scalac` and `scalafmt` are JVM bootstrap launchers, which fetch their jars into `v1` when absent.
+- The image never ran sbt: `v1` holds no sbt jars beyond `compiler-interface` and
+  `util-interface`, so container sbt already downloads sbt itself in every session.
 
 Podman copies the image directory into the session's new home volume in `podman init`, and deletes
 the copy when the launcher removes the container with `podman rm -v`. The launcher runs `init` as a
@@ -67,23 +81,26 @@ files.
 
 - Do not add `nocopy` to the home volume in this increment: `nocopy` also hides the agents' symlinks
   into `persistent-volume`.
-- Copying only the remaining home seed keeps those symlinks. Its cost in `init` and `rm -v` is
-  unmeasured; "Tests" measures it.
+- Copying only the remaining home seed keeps those symlinks.
+- The seed's copy goes unmeasured: the home shrinks from 750 MB to a few kilobytes, a clear win
+  without numbers.
 
 ## Cold default
 
-The launchers that `cs setup` installs are bootstraps. Without a cache overlay:
+`sbt`, `sbtn` and `scala` start from the image's distributions and download nothing to start.
+Without a cache overlay:
 
-- the first `sbt`, `scala`, `scalafmt` or other Scala program in every session can download a
-  substantial part of the removed 659 MB again;
-- that first run can fail when a narrow egress profile does not allow the repositories it needs.
+- the first `scalac` and `scalafmt` in every session download their jars, about 90 MB, again;
+- sbt and the other Scala programs download what they fetch today, since the image never cached it;
+- such a first run fails when a narrow egress profile does not allow the repositories it needs.
 
 This cost is accepted: host artifacts stay unexposed unless the user opts in, and every download
 that is not shared stays disposable.
 
 Do not add a default cache image or keep an image-owned cache in this increment. Either would keep
 the image size and add another cache lifecycle, while the chosen default deliberately allows a cold
-session.
+session. The image's `/opt/coursier/arc` is not such a cache: it holds installed distributions,
+and run-time Coursier neither reads nor writes it ("Image layout").
 
 If that decision is revisited, first prototype a root-owned cache under the selected sandbox image,
 and mount its subpath with `type=image,rw=true`. That prototype must prove ownership, the final
@@ -92,7 +109,8 @@ nested-mount topology and each supported platform. The prototype is not part of 
 ## Guarantees
 
 1. The sandbox image keeps the launchers that the `cs setup --apps` line in
-   `container/debian-coursier/Containerfile` selects, and no others.
+   `container/debian-coursier/Containerfile` selects, and no others. Each of them starts with an
+   empty session cache.
 2. Image `/home/nonroot` stores no Coursier installation artifact or cache content. Only the empty,
    nonroot-owned `.cache/coursier` parent remains, as writable home structure.
 3. No hidden lower layer of the image holds a Coursier download cache: one Containerfile `RUN` step
@@ -123,9 +141,11 @@ future reviewed cache kinds need no comma-list grammar.
 ```
 
 - No option: the overlay is off.
-- `coursier`: when `COURSIER_CACHE` is non-empty, the launcher uses and validates its exact value.
+- `coursier`: when `COURSIER_CACHE` is set, the launcher uses and validates its exact value.
   The launcher neither appends `v1` nor mounts the parent. Otherwise the launcher selects the
   platform's conventional Coursier `v1` cache directory.
+  - Coursier takes a set variable as it is, an empty one included. The launcher refuses an empty
+    or relative value, as `RunOnHostPrereqs.coursierUnpacked` does for the archive and JVM caches.
 - `coursier=<directory>`: the launcher uses that exact `v1` directory and appends no
   platform-dependent component.
 - An explicit directory requires the equals form. Under the launcher's existing first-non-option
@@ -154,8 +174,15 @@ Without `COURSIER_CACHE`, a bare `coursier` discovers this directory:
 | host | `v1` directory |
 | --- | --- |
 | Linux | `${XDG_CACHE_HOME:-$HOME/.cache}/coursier/v1` |
-| macOS | `$HOME/Library/Caches/Coursier/v1` |
 | Windows | `%LOCALAPPDATA%\Coursier\Cache\v1` |
+
+macOS refuses the option ("Platform contract"). `RunOnHostPrereqs.coursierCacheBase`, which
+run-on-host also uses, computes the parent of `v1`.
+
+On Windows, the option supports only the cache of Coursier run on Windows itself. A cache inside a
+WSL distribution has only a UNC path on Windows (`\\wsl.localhost\<distribution>\...`), which
+"Cache-path boundary" refuses. `TODO.md`, "Deferred — a WSL distribution's Coursier cache as the
+overlay", evaluates supporting it.
 
 The launcher does not create a missing host cache. The user explicitly asked for reuse, so a
 missing or unusable directory is a launch error. The error names the expected path and the
@@ -174,9 +201,13 @@ resolver handles each path relationship after canonicalization:
   - a cache above the workspace root exposes unrelated host files.
 - The resolver refuses any overlap with the launcher state root, in either direction. That root
   holds the inspection CA key and audit state.
-- The resolver refuses any overlap with the launcher's install directory, in either direction.
-- The resolver refuses overlap with host-visible rootless storage: the storage that `storage.conf`
-  configures, and anything under `$XDG_DATA_HOME/containers` or `~/.local/share/containers`.
+- The resolver refuses any overlap with the workspace's other written directories: those that
+  `--run-on-host` commands write.
+- The resolver allows an overlap with the launcher's install directory. The overlay never writes
+  the host, so reading the launcher's files exposes nothing, and a launcher installed through
+  Coursier lies inside the very cache that the option reads.
+- The resolver refuses overlap with the client's rootless storage: anything under
+  `$XDG_DATA_HOME/containers` or `~/.local/share/containers`, which holds a machine's disk images.
 - On native Linux, the launcher asks podman for its active graph root, run root and volume path
   before it creates any resource. The resolver refuses overlap with each of them, in either
   direction.
@@ -184,7 +215,9 @@ resolver handles each path relationship after canonicalization:
   - A podman machine keeps its graph in the VM, not in the client's path namespace. For a machine,
     the resolver rejects the client-side storage paths above and does not compare unrelated path
     spellings from the two namespaces.
-- On macOS, the resolver compares both spellings of the data volume, as `SandboxWorkspace` does.
+- On native Linux, the resolver also compares the directories behind the paths, read from
+  `/proc/self/mountinfo`: a bind mount can show the cache inside the workspace, or a protected
+  directory at the cache's path, where no comparison of paths finds it.
 - On Windows, the resolver rejects UNC paths unless the existing podman-volume path handling has an
   independently tested mapping for them. Do not guess a mapping.
 - The resolver accepts a narrower directory inside the user's home, including each default above,
@@ -206,10 +239,18 @@ Change `container/debian-coursier/Containerfile`, the Containerfile that install
 toolchain for the images built on it:
 
 1. Install the launchers that the existing `cs setup --apps` line selects into `/opt/coursier/bin`.
+   - Set `COURSIER_ARCHIVE_CACHE=/opt/coursier/arc` for this step alone, so that the distributions
+     that `sbt`, `sbtn` and `scala` `exec` stay in the image.
+   - `cs install --install-dir <bin> sbt` under that variable writes an `sbt` that `exec`s
+     `<arc>/https/github.com/sbt/sbt/releases/download/v2.0.12/sbt-2.0.12.zip/sbt/bin/sbt`
+     (cs 2.1.26, 2026-11-18).
 2. Make the installed tree root-owned and not writable by UID 65532.
 3. Run setup with a temporary `HOME`, then delete that home and every Coursier download cache in
    the same `RUN` instruction. A later `RUN rm` leaves the bytes in an earlier image layer, so it
    does not satisfy this step.
+   - The download cache includes the release archives that `/opt/coursier/arc` unpacked, about
+     180 MB that nothing reads at run time.
+   - Keep `/opt/coursier/arc`.
 4. Set `PATH` in this order:
 
    ```text
@@ -300,20 +341,45 @@ Cache overlay: coursier; host cache <path> is readable; sandbox writes are disca
 podman implements `:O` in the Linux engine. Whether a host path is available is a separate
 contract, which the machine provider keeps.
 
-- macOS/libkrun: require the exact `$HOME/Library/Caches/Coursier/v1` topology. The recorded probe
-  of the parent cache root establishes `:O` support, but not the final nested target.
-- Native Linux without enforcing SELinux: require the same read, write, discard and timing probes.
-- SELinux-enforcing Linux: record labels, ownership, modes and timestamps before and after normal
-  exit and forced cleanup.
+- macOS: the option is refused (`CacheOverlay.MacRefusal`). Through `:O`, the session can read the
+  cache but cannot create or replace an entry in any existing directory, which is how Coursier adds
+  a version of an artifact it already holds. `CacheOverlayLifecycleTest` failed so on podman 6.1.4:
+  the session saw the lower entries as `0:0`, and replacing a file under `https/...` failed with
+  `Permission denied`.
+  - podman 6's default provider, libkrun through krunkit, shares host folders in libkrun's
+    simplified permission semantics, which "report ownership as the requesting guest process's uid
+    and gid" (libkrun's `PermissionSemantics::LinuxSimplified`, krunkit's default).
+  - The overlay accesses the lower layer with the credentials it stashed at mount time
+    (`Documentation/filesystems/overlayfs.rst`, "Permission model"). The container's root mounts
+    it, so every lower file reports root as its owner.
+  - Only the overlay's root is the session's: podman chowns the upper root to the source's owner
+    (buildah's `pkg/overlay`). Plain binds, such as the workspace's, show the session's own uid,
+    because the session itself asks.
+  - podman 6.1.4, 6.2.0 and `main` give the machine's share no semantics
+    (`VirtioFsNew(sharedDir, mountTag)` in the vendored vfkit config), so requiring a newer podman
+    does not help. krunkit accepts `permissionSemantics=complete` from 1.3.0, and libkrun's
+    fixed-owner semantics is on its `main` branch only.
+  - Other routes stay out: the Apple Virtualization.framework provider, since podman 6 made libkrun
+    the default; and a design without an overlay on macOS, such as a read-only bind that Coursier
+    reads as a local repository, since `--run-on-host` already keeps build caches there.
+  - `upstream-issues.md`, containers/podman, has the request; `TODO.md`, "Deferred —
+    `--cache-overlay` on macOS", lists what allowing the option takes.
+- Native Linux without enforcing SELinux: unverified, and the option stays enabled there. No run of
+  `CacheOverlayLifecycleTest` on such a host exists yet; it is the read, write and discard probe.
+- SELinux-enforcing Linux: unverified too. Record labels, ownership, modes and timestamps before
+  and after normal exit and forced cleanup, which `CacheOverlayLifecycleTest`'s snapshot covers.
   - If podman changes host metadata, or requires disabling container labels, refuse the option on
     that host.
   - Do not weaken SELinux separation for a cache optimization.
-- Windows/WSL2: translate or pass the source through the same tested path mechanism as existing
-  podman bind mounts. Then run the probe against `%LOCALAPPDATA%\Coursier\Cache\v1` on NTFS through
-  `/mnt/<drive>`. Do not claim Windows support until the probe passes.
+- Windows/WSL2: podman translates the `C:\...` source to `/mnt/<drive>/...`, as for the other
+  binds. `CacheOverlayLifecycleTest` passes on Windows with podman 6.2.0, its fixture on NTFS
+  under `%TEMP%`: reads, writes inside existing directories, renames and deletions, and the host
+  snapshot after a stop, a forced removal and `--reset`.
 - Other remote podman connections: the source is a server path, not necessarily a client path.
-  - Refuse automatic discovery unless the launcher can prove that the discovered client directory
-    is the directory podman will mount.
+  - The overlay adds no connection check of its own. The workspace bind and the launcher's file
+    binds pass client paths the same way, so a remote connection already mounts the server's
+    directories in their place. `doc/TODO.md`, "Deferred — remote podman connections", holds the
+    launcher-wide check.
   - A later version may support an explicit server-visible directory, under a separately stated
     contract.
 
@@ -328,13 +394,17 @@ The sandbox cannot poison the lower layer through the cache mount: every write t
 enters the sandbox's private upper layer. Keep this claim with a host-observed suite under
 `sbt testWithPodman`, not only with an argument test.
 
-The host can change the lower layer while a session runs. `:O` is not a snapshot, and podman warns
-against changing the lower layer. The accepted behavior:
+The host can change the lower layer while a session runs, which the kernel does not allow: "If the
+underlying filesystem is changed, the behavior of the overlay is undefined, though it will not
+result in a crash or deadlock" (`Documentation/filesystems/overlayfs.rst`, "Changes to underlying
+filesystems"). Podman's `:O` documentation warns that such a change "can cause unexpected
+failures". The accepted behavior:
 
-- redundant downloads and inconsistent cache misses are acceptable;
-- a concurrent host change can make the current Coursier command fail and need a retry;
+- inside the session, whatever the kernel leaves undefined, such as a failed Coursier command, a
+  redundant download or a file read in an inconsistent state;
+- a new session mounts the overlay again, and starts from the host's current cache;
+- the host cache stays unchanged, since every session write enters the upper layer;
 - no consistency or offline guarantee is made;
-- a host change may or may not become visible at a sandbox path the sandbox has not touched;
 - sandbox locks in the upper layer do not coordinate with host Coursier locks.
 
 `plan-staged.md` rejects kernel OverlayFS over a mutable lower tree, because staged workspace
@@ -351,27 +421,27 @@ acceptable. This plan does not change the workspace decision.
 - Update the file's boundary diagram, the authoritative one, and its statement about the home
   volume.
 
-If testing the complete set of mounts requires extracting the builder of the sandbox create
-command, extract it once and make every launch use it. Do not leave a tested cache helper beside an
-inline command that can omit or reorder the overlay.
+The create command appends each overlay's volume right after the anonymous home. The lifecycle
+suite under `testWithPodman` launches through that command, so a launch that omits the overlay
+fails it; podman mounts a destination's parent before the destination, whatever the order.
 
 ### Tests
 
 `src/test/scala/AgentSandboxLauncherTest.scala`:
 
 - parse the disabled, auto-discovered and explicit-directory modes;
-- prove that the option repeats, through a parser helper given two fixture kinds;
+- prove that the option merges by kind, through the repeatable-option code it shares with
+  `--env` and `--egress-cred`;
 - reject duplicate and unknown kinds, empty values, relative paths and separated-value spellings;
 - prove first-non-option and `--` forwarding;
 - prove that every management action rejects the launch-only option;
-- test `COURSIER_CACHE` precedence and default `v1` discovery for Linux, macOS and Windows, without
-  depending on the test host;
-- test canonical path overlap against the workspace root, the launcher state and install
-  directories, podman storage, filesystem roots, home and the macOS aliases;
+- test `COURSIER_CACHE` precedence and default `v1` discovery for Linux and Windows, without
+  depending on the test host, and the refusal on macOS;
+- test canonical path overlap against the workspace root, the launcher state, podman storage,
+  filesystem roots and home;
 - test that an explicit cache outside home is accepted when it overlaps no protected root;
-- assert that the complete create command has one anonymous home, one persistent volume, and
-  exactly the selected cache overlays in the order the registry defines;
-- assert that a custom sandbox image does not change how the host mount behaves.
+- assert that a resolved cache adds exactly one `--volume` ending in `:O` at its kind's
+  destination.
 
 `src/test/scala/SessionBoundaryTest.scala`:
 
@@ -400,9 +470,14 @@ directory, never the developer's real cache:
 Add image and toolchain checks:
 
 - the advertised Coursier-installed commands resolve from `/opt/coursier/bin` with a fresh home;
-- a runtime `cs install` writes under `~/.local/share/coursier/bin` and wins `PATH` precedence;
-- an ordinary `cs update` does not modify `/opt/coursier/bin`, and explicitly selecting that
-  directory fails without changing the image launchers;
+- with egress denied and a fresh home, `sbt --script-version` and `scala --version` succeed, and
+  the file that `sbtn` `exec`s exists and is executable;
+  - `sbtn` cannot be checked by running it: even `sbtn --help` starts an sbt server in the
+    current directory.
+- `COURSIER_BIN_DIR` is unset, and `PATH` puts `~/.local/share/coursier/bin` before
+  `/opt/coursier/bin`, so a runtime `cs install` lands in the session and wins;
+- root owns everything under `/opt/coursier`, and no other user can write it, so no `cs update`
+  from a session changes the image launchers;
 - on the default cold cache, the advertised Scala programs launch when egress allows the hosts they
   need;
 - the allowlist, size limit and inode limit of image home hold;
@@ -410,21 +485,11 @@ Add image and toolchain checks:
   installed launcher remains under image home;
 - a newly created persistent volume still receives every agent seed, and each home link works.
 
-Run the exact final mount topology on macOS, native Linux and Windows/WSL2. Record the times of
-`create`, `init`, `start` and `rm -v` separately, in each mode:
+Run the exact final mount topology on native Linux and Windows/WSL2, with and without the overlay.
 
-- for the first container of a series, which is the slowest on Windows ("Evidence and
-  target");
-- for three further runs on a warm machine.
+Performance acceptance rests on removing the copy-up regression, not on a wall-clock threshold:
 
-Performance acceptance rests on removing the copy-up regression, not on a brittle CI wall-clock
-threshold:
-
-- image `/home/nonroot` stays below the chosen size and inode limits;
-- `init` and `rm -v` with the small home seed stay in the same order of magnitude as without the
-  home volume;
-- sandbox start time does not scale with the byte or inode count of the host cache;
-- overlay startup stays in the same order of magnitude as the measured empty-volume baseline;
+- image `/home/nonroot` stays below the home check's size and inode limits;
 - no timing attributed to an interactive command's lifetime includes `podman create`.
 
 ### Documentation
@@ -436,27 +501,18 @@ Update each claim in the place that records it:
 | option syntax, defaults and exact `v1` meaning | README Reference/`--help` | parser tests |
 | complete host-readable boundary | launcher diagram | README diagram, `SECURITY.md` |
 | private artifacts and mutable-lower risk | `SECURITY.md` | README option warning |
-| installed programs and session cache behavior | `AGENTS-SANDBOX.md` | Containerfile tests |
+| installed programs and session caches | `debian-coursier` Containerfile | `SessionBoundaryTest` |
 | mount and cleanup mechanism | launcher source | `testWithPodman` lifecycle suites |
 | platform qualification | README option text | platform verification record |
 
-The README's opening list states its claims as defaults.
+The README's opening list and diagram stay as they are. The list states its claims as defaults,
+and neither shows an opt-in host grant, `--claude-plugin-dir` included. The option's help text
+names the exposure and points to `SECURITY.md`.
 
-- The list's claim that the programs reach no host files outside the workspace must name the opt-in
-  cache exception.
-- The README diagram must show a one-way optional host-cache lower layer and a disposable per-run
-  upper layer.
-- Do not repeat the full threat analysis in the README; point to `SECURITY.md`.
-
-At the existing `cs install PROGRAM` instruction, `AGENTS-SANDBOX.md` should tell an acting agent
-these facts:
-
-- session installs and an ordinary `cs update` use `~/.local/share/coursier/bin`;
-- the image-managed launchers under `/opt/coursier/bin` change only when the image is rebuilt;
-- a missing Scala artifact is downloaded into disposable session state, and a narrow egress profile
-  can prevent the download.
-
-`AGENTS-SANDBOX.md` does not need to teach how podman implements overlay mounts.
+`AGENTS-SANDBOX.md` stays as it is. Its `cs install` line remains true, and neither the image
+layout nor the overlay changes what an agent does: a project's build picks its sbt and Scala
+versions, a `cs install` lands first on `PATH`, and a refused download names its URL, which the
+egress instructions cover.
 
 ## Acceptance checklist
 
@@ -474,13 +530,12 @@ these facts:
   is created; a safe explicit cache outside home is accepted.
 - [ ] On SELinux, the option either keeps host metadata without weakening labels or refuses
   clearly.
-- [ ] The macOS, native Linux and Windows claims match completed platform probes.
+- [ ] The native Linux and Windows claims match completed platform probes; macOS refuses the
+  option.
 - [ ] The persistent volume is seeded correctly after reset, and every agent state path works.
 - [ ] Help, README, the security model, the sandbox instructions and the launcher boundary diagram
   agree.
 - [ ] `sbt testFull` and `sbt testWithPodman` pass.
-- [ ] Measurements of `init` and `rm -v`, on the first launch and on warm ones, show that copying
-  and deleting the image's home is not the dominant delay at a session's start or end.
 
 ## Deliberate exclusions
 

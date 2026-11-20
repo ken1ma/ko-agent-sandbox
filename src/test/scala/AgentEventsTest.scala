@@ -179,28 +179,32 @@ class AgentEventsTest extends munit.FunSuite:
     assertEquals(kiroLacks(kiroSubagentRun(agent = "failed")), Vector("a subagent", "the subagent's shell call"))
     assert(!kiroSucceeded(kiroRun("v3", Vector.empty, status = "error")))
 
-  private def copilotEvent(kind: String, data: String) = s"""{"type":"$kind","data":{$data}}"""
+  /** One event; `agent` is the subagent whose event it is, which copilot gives beside `data`. */
+  private def copilotEvent(kind: String, data: String, agent: Option[String] = None) =
+    s"""{"type":"$kind","data":{$data}${agent.fold("")(id => s""","agentId":"$id"""")}}"""
 
-  private def shellDone(id: String, success: Boolean = true, exitCode: Int = 0, parent: Option[String] = None) =
+  private def shellDone(id: String, success: Boolean = true, exitCode: Int = 0, agent: Option[String] = None) =
     copilotEvent(
       "tool.execution_complete",
-      s""""toolCallId":"$id","success":$success,"shellExecution":{"exitCode":$exitCode}""" +
-        parent.fold("")(id => s""","parentToolCallId":"$id""""),
+      s""""toolCallId":"$id","success":$success,"shellExecution":{"exitCode":$exitCode}""",
+      agent,
     )
 
   private def copilotResult(exitCode: Int = 0) =
     s"""{"type":"result","sessionId":"s-1","exitCode":$exitCode}"""
 
   /** A run whose first subagent fails on its model call, as 1.0.111's task agent did, and whose second completes. */
-  private def copilotRun(shell: String = shellDone("c1"), childShell: String = shellDone("c4", parent = Some("c3")),
+  private def copilotRun(shell: String = shellDone("c1"), childShell: String = shellDone("c4", agent = Some("a3")),
       second: String = "subagent.completed", end: String = copilotResult()) =
     parseLines(
       Vector(
         shell,
-        copilotEvent("subagent.failed", """"toolCallId":"c2","error":"400 The requested model is not supported.""""),
+        copilotEvent(
+          "subagent.failed", """"toolCallId":"c2","error":"400 The requested model is not supported."""", Some("a2"),
+        ),
         copilotEvent("session.error", """"errorCode":"model_not_supported""""),
         childShell,
-        copilotEvent(second, """"toolCallId":"c3""""),
+        copilotEvent(second, """"toolCallId":"c3"""", Some("a3")),
         end,
       ).mkString("\n"),
     )
@@ -215,12 +219,12 @@ class AgentEventsTest extends munit.FunSuite:
     assertEquals(copilotLacks(copilotRun(shell = shellDone("c1", exitCode = 1))), Vector("a shell call"))
     assertEquals(copilotLacks(copilotRun(shell = shellDone("c1", success = false))), Vector("a shell call"))
     assertEquals(
-      copilotLacks(copilotRun(childShell = shellDone("c4", exitCode = 2, parent = Some("c3")))),
+      copilotLacks(copilotRun(childShell = shellDone("c4", exitCode = 2, agent = Some("a3")))),
       Vector("the subagent's shell call"),
     )
     // A shell call of the failed subagent stands for none.
     assertEquals(
-      copilotLacks(copilotRun(childShell = shellDone("c4", parent = Some("c2")))),
+      copilotLacks(copilotRun(childShell = shellDone("c4", agent = Some("a2")))),
       Vector("the subagent's shell call"),
     )
     assertEquals(

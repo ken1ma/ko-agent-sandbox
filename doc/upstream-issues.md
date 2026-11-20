@@ -285,6 +285,57 @@ machine", has the decision):
 - The BPF backend's hooks refuse the same two operations, and any open of a FIFO, by the inode's
   type (`../ko-agent-fs/bpf/doc/architecture.md`, "The policy").
 
+## containers/podman
+
+Found when `CacheOverlayLifecycleTest` ran `--cache-overlay` on the macOS podman machine. This
+project refuses the option on macOS until the fix (`plan-coursier.md`, "Platform contract").
+
+### A macOS machine cannot select its virtio-fs permission semantics
+
+**Title:** podman machine (libkrun) shares host folders only with krunkit's default `simplified`
+permission semantics, so an `:O` overlay of a host folder shows every lower file as the container
+root's
+
+**Versions:** podman 6.1.4 with the libkrun provider (krunkit), macOS on Apple silicon; podman
+6.2.0 and `main`, libkrun `main` and krunkit `main` read on 2026-11-18.
+
+**Reproducer (the steps of the failing test; not run in this form):** with a directory `~/lower`
+that holds `sub/f`, owned and writable by the macOS user:
+
+```sh
+podman run --rm --userns=keep-id:uid=1000,gid=1000 --user 1000:1000 \
+    -v "$HOME/lower:/data:O" alpine sh -c 'ls -ln /data /data/sub; echo y > /data/sub/f'
+```
+
+**What happens:** `/data` itself is owned by 1000, but `sub` and `f` show as `0 0` with modes 755
+and 644, and the write fails with `Permission denied`. A plain `-v "$HOME/lower:/data"` shows the
+same entries as 1000.
+
+**Why:**
+
+- krunkit passes `permissionSemantics=simplified` unless told otherwise (krunkit's
+  `docs/usage.md`), and libkrun's macOS server then reports every file as owned by the requesting
+  guest process (`PermissionSemantics::LinuxSimplified`, `src/devices/src/virtio/fs/mod.rs`).
+- The overlay accesses its lower layer with the credentials it stashed at mount time
+  (`Documentation/filesystems/overlayfs.rst`, "Permission model"). The OCI runtime mounts it as the
+  container's root, so the share reports root as the owner of every lower entry.
+- buildah's `pkg/overlay` chowns the upper root to the source's owner, so only the mount point
+  belongs to the container user.
+- podman builds the device with `VirtioFsNew(sharedDir, mountTag)` (vendored
+  `github.com/crc-org/vfkit/pkg/config/virtio.go`), so neither a user nor podman can pick other
+  semantics.
+
+**Expected:** let podman machine choose the share's permission semantics, so a host folder keeps
+one owner whoever asks:
+
+- krunkit's `permissionSemantics=complete`, available from krunkit 1.3.0; or
+- libkrun's `LinuxSimplifiedFixedOwner` with the machine user as the owner, once krunkit exposes
+  it. libkrun's commit `f816259419` adds it and measures a faster share than `simplified`: a
+  63,224-file tree walks in 3.1s instead of 17s, because attributes stay cacheable.
+
+**This project's guard until the fix:** `--cache-overlay` refuses on macOS
+(`CacheOverlay.MacRefusal`).
+
 ## openai/codex, anthropic-experimental/sandbox-runtime, google-gemini/gemini-cli
 
 This entry is one report for each project's macOS Seatbelt profile. This project's own profile

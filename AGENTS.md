@@ -1,7 +1,8 @@
 # Top priorities
 
 Be concise and easy to reason about: the reader's attention is the scarcest budget, but don't
-under-report. Add only what you would still defend if the user asked whether it earns its place.
+under-report. Add or keep only what you would still defend if the user asked whether it earns its
+place. Ask the user for work only when you would still defend it as worth their time.
 
 For every reported or discovered problem, however small:
 
@@ -60,9 +61,9 @@ Use concrete subject–verb–object wording. Use a term that leaves the reader 
 stands for (such as "invariant", "venue", "prose", the verb "mint") only when concrete wording
 loses meaning or precision; name what it stands for in the same sentence. Report existing names
 and wording that fail this, and rewrite rather than imitate it in the passage you edit. Describe
-what a tool or service does with the verb its own documentation uses. Read each sentence alone:
-compared nouns must be the same kind, and `only` or `every` must match behavior. Rewrite the
-sentence rather than mechanically replacing words.
+what a tool or service does with the verb its own documentation uses. Read each sentence alone,
+knowing only what the reader has read. Rewrite the sentence rather than mechanically replacing
+words.
 
 Write for an experienced developer reading at speed. Terse means fewer claims, not fewer words per
 claim: keep articles and verbs, and give each sentence one main clause.

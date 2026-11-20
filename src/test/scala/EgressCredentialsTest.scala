@@ -55,7 +55,7 @@ class EgressCredentialsTest extends munit.FunSuite:
           "--session-start=pause|immediate, " +
           "--memory=<size>, --persistent-volume=<name>, --image=<reference>, --proxy-image=<reference>, " +
           "--env=<name>[=<value>], --env-aws-cred[=<profile>], --egress-cred=<name>@<host>, " +
-          "--run-on-host=<programs> and --claude-plugin-dir=<dir>"),
+          "--run-on-host=<programs>, --cache-overlay=<kind>[=<directory>] and --claude-plugin-dir=<dir>"),
     )
     refusals.foreach: (args, refusal) =>
       assertEquals(parseCommandLine(args), Left(refusal), args.take(2).mkString(" "))

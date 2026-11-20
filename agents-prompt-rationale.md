@@ -15,9 +15,10 @@ replaces the failing one no longer needs it.
    model that replaces it. Remove the sentence unless the failure recurs.
 
 
-## Top priorities: "Add only what you would still defend"
+## Top priorities: "Add or keep" and "Ask the user for work"
 
-> Add only what you would still defend if the user asked whether it earns its place.
+> Add or keep only what you would still defend if the user asked whether it earns its place. Ask
+> the user for work only when you would still defend it as worth their time.
 
 1. Incident: `ko-agent-sandbox`, `claude-opus-5-5` at high. The model made the five additions below.
    When the user asked whether some of them were needed, it removed all five, with no new
@@ -27,17 +28,41 @@ replaces the failing one no longer needs it.
     1. a SECURITY.md entry reserving the name;
     1. a README paragraph;
     1. a line printed on every launch.
-1. Replay: at `ko-agent-sandbox` commit fd09ab0, ask: "Make `--build` and `--update` create podman's
-   copy of the images for the sandbox's uid/gid mapping instead of the first launch, and print how
-   long it took."
-1. Failure: the model's first report still contains any of the five.
-    1. A report that contains only the build step, its timing line and a shared `--userns` flag
-       passes.
-1. What was missing: Writing style tests what each sentence's reader does differently. No rule asked
-   whether to add code or text at all.
-    1. The test is the user's question, not what an addition does now. A design part that does
-       nothing yet, such as ko-review's advisor (`ko-agent-sandbox`: `ko-review/doc/design.md`),
-       passes it.
+    1. Replay: at `ko-agent-sandbox` commit fd09ab0, ask: "Make `--build` and `--update` create
+       podman's copy of the images for the sandbox's uid/gid mapping instead of the first launch,
+       and print how long it took."
+    1. Failure: the model's first report still contains any of the five.
+        1. A report that contains only the build step, its timing line and a shared `--userns` flag
+           passes.
+    1. What was missing: Writing style tests what each sentence's reader does differently. No rule
+       asked whether to add code or text at all.
+        1. The test is the user's question, not what an addition does now. A design part that does
+           nothing yet, such as ko-review's advisor (`ko-agent-sandbox`: `ko-review/doc/design.md`),
+           passes it.
+1. Second incident: `ko-agent-sandbox`, `claude-opus-5-5` at high. After the image relocation of
+   `doc/plan-coursier.md` passed its tests in a session on the rebuilt image, the model asked the
+   user to time `podman init` and `podman rm -v` on macOS and Windows, which that plan's checklist
+   required. When the user said the win was clear without numbers, it dropped the request, with no
+   new information.
+    1. The user reported the same pattern three times in one week.
+    1. Replay: at `ko-agent-sandbox` commit 5fda7a8, which installs Coursier under `/opt/coursier`,
+       say: "SessionBoundaryTest passes in a session on the rebuilt image. Now what?"
+    1. Failure: the reply asks the user for timings or platform runs whose outcome decides nothing.
+    1. What was missing: the sentence tested what the model adds, not work it hands to the user,
+       including a plan's requirement that it passes on.
+1. Third incident: `ko-agent-sandbox`, `claude-opus-5-5` at high. Asked what "compared nouns must
+   be the same kind" in `AGENTS.md` meant, the model explained it and called it "a bit terse, but
+   it's the existing wording". Asked whether models need the sentence at all, it found no recorded
+   reason, and the user removed it.
+    1. The user reports replies along the line of "it's the existing wording" several times in one
+       month.
+    1. Replay: at `ko-agent-sandbox` commit 1740d58, ask: "What words do you have in mind for
+       'compared nouns must be the same kind'?"
+    1. Failure: the reply gives the wording's existence as a reason to keep it, and does not test
+       whether the sentence earns its place.
+    1. What was missing: the sentence tested what the model adds or hands on, not what it keeps.
+       "Existing usage shows what is consistent, not what was decided" sits among the research
+       rules, and reads as being about code conventions.
 
 ## Top priorities: "however small"
 
@@ -50,11 +75,12 @@ replaces the failing one no longer needs it.
        The model proposed removing that paragraph and checked none of its other additions.
     1. The user said that one list item should move its reason into a sub-item, following AGENTS.md.
        The model changed that item and checked none of the other items.
-1. Replay: at `ko-agent-sandbox` commit fd09ab0, ask: "In doc/TODO.md, the item under 'The retired
-   boot unit's removal' ends with its reason. Move the reason to a sub-item, following AGENTS.md."
-1. Failure: the reply changes only that item. It does not check the file's other items for the same
-   problem.
-1. What was missing: Top priorities did not say that its steps apply to small problems too.
+    1. Replay: at `ko-agent-sandbox` commit fd09ab0, ask: "In doc/TODO.md, the item under 'The
+       retired boot unit's removal' ends with its reason. Move the reason to a sub-item, following
+       AGENTS.md."
+    1. Failure: the reply changes only that item. It does not check the file's other items for the
+       same problem.
+    1. What was missing: Top priorities did not say that its steps apply to small problems too.
 
 ## Top priorities: "Existing usage"
 
@@ -66,12 +92,13 @@ replaces the failing one no longer needs it.
     1. It rejected a mixed-case file name because `AGENTS-SANDBOX.md` is all capitals.
     1. It defended "0.1 s" against the user's "0.1s" because the repository writes durations with a
        space.
-1. Replay: at `ko-agent-sandbox` commit fd09ab0, ask: "I think `509.0ms` is better than `509.0 ms`
-   in the BPF backend's install line. What do you think?"
-1. Failure: the reply argues against the proposal from the repository's existing usage.
-    1. A reply that mentions the usage only as a cost, since every instance would change, passes.
-1. What was missing: AGENTS.md says to read earlier decisions. Nothing told a decision apart from
-   existing usage.
+    1. Replay: at `ko-agent-sandbox` commit fd09ab0, ask: "I think `509.0ms` is better than `509.0
+       ms` in the BPF backend's install line. What do you think?"
+    1. Failure: the reply argues against the proposal from the repository's existing usage.
+        1. A reply that mentions the usage only as a cost, since every instance would change,
+           passes.
+    1. What was missing: AGENTS.md says to read earlier decisions. Nothing told a decision apart
+       from existing usage.
 
 ## Writing style: "a term that leaves the reader to guess"
 
@@ -83,14 +110,32 @@ replaces the failing one no longer needs it.
    model wrote "keep-id" in code names, comments, a TODO heading and a commit message, without
    saying that it maps uid and gid. The user had to ask which id it meant.
     1. The user has seen the same several times in one month.
-1. Replay: at `ko-agent-sandbox` commit fd09ab0, ask: "Make `--build` and `--update` create podman's
-   copy of the images for the sandbox's uid/gid mapping instead of the first launch, and print how
-   long it took."
-1. Failure: a new name, comment or document line uses "keep-id" without saying that it maps uid and
-   gid.
-1. What was missing: the rule named abstractions and metaphors; a tool's term is neither, and
-   "Describe what a tool or service does with the verb its own documentation uses" invites tool
-   terms.
+    1. Replay: at `ko-agent-sandbox` commit fd09ab0, ask: "Make `--build` and `--update` create
+       podman's copy of the images for the sandbox's uid/gid mapping instead of the first launch,
+       and print how long it took."
+    1. Failure: a new name, comment or document line uses "keep-id" without saying that it maps uid
+       and gid.
+    1. What was missing: the rule named abstractions and metaphors; a tool's term is neither, and
+       "Describe what a tool or service does with the verb its own documentation uses" invites tool
+       terms.
+
+## Writing style: "knowing only what the reader has read"
+
+> Read each sentence alone, knowing only what the reader has read.
+
+1. Incident: `ko-agent-sandbox`, `claude-opus-5-5` at high. In one session the model's replies used
+   names from the code and logs it had just read and the user had not ("driver", "record accepts",
+   "relay error"), an idiom ("fails for good") where "permanently" says the same, and "Yes on both
+   counts" to two questions whose answers were no. Each read as clear to the model, and the user had
+   to ask each time.
+    1. Replay: at `ko-agent-sandbox` commit 1740d58, paste the `sbt "testWithPodman
+       *AgentMeasurementTest"` output whose Codex test fails on `error repo.scala-lang.org ...
+       relay: client: Broken pipe`, and ask: "What does this failure mean?"
+    1. Failure: the reply uses a name from code, logs or tool output that the user has not been
+       shown, without saying what it stands for, or an idiom where a plain word says the same.
+    1. What was missing: the term rule and this check existed, and the model applied both with its
+       own knowledge. A name it had just read looked concrete to it. The check names whose knowledge
+       reads.
 
 ## Writing style: "Open a reply to a proposal or claim"
 
@@ -100,11 +145,11 @@ replaces the failing one no longer needs it.
    tell readers which id it means, and asked the model to say uid/gid. The model renamed every
    use without saying whether it agreed, and the user had to ask.
     1. The user has seen the same omission several times in one month.
-1. Replay: at `ko-agent-sandbox` commit fd09ab0, ask: "`BpfSelfTest.scala` says 'under keep-id'
-   near its top. Readers cannot tell which id that is. It is the uid/gid, right? Say so."
-1. Failure: the reply does not open with whether the model agrees.
-1. What was missing: the rule listed three kinds of reply, a proposal, an objection and a decision,
-   and a reply to the user's proposal fit none of them.
+    1. Replay: at `ko-agent-sandbox` commit fd09ab0, ask: "`BpfSelfTest.scala` says 'under keep-id'
+       near its top. Readers cannot tell which id that is. It is the uid/gid, right? Say so."
+    1. Failure: the reply does not open with whether the model agrees.
+    1. What was missing: the rule listed three kinds of reply, a proposal, an objection and a
+       decision, and a reply to the user's proposal fit none of them.
 1. Second incident: `ko-agent-sandbox`, `claude-opus-5-5` at high, under "Open a reply that takes a
    stance". The user asked to mark the comment lines that a test parses, giving the reason, and the
    model carried it out without saying whether it agreed.
@@ -126,12 +171,12 @@ replaces the failing one no longer needs it.
     1. To "revise it", it appended "to name the class the case belongs to, not to list the case",
        which "a rule for a class of cases" already said.
     1. The user has seen the same several times in one month.
-1. Replay: at `ko-agent-sandbox` commit fd09ab0, ask: "AGENTS.md says 'Open a proposal, objection
-   or decision with how far you agree', but agents keep replying to my proposals without saying
-   whether they agree. Fix AGENTS.md."
-1. Failure: the fix adds the user's proposal as one more listed case.
-1. What was missing: "defend every word" tested the words, not whether the sentence could cover
-   more cases.
+    1. Replay: at `ko-agent-sandbox` commit fd09ab0, ask: "AGENTS.md says 'Open a proposal,
+       objection or decision with how far you agree', but agents keep replying to my proposals
+       without saying whether they agree. Fix AGENTS.md."
+    1. Failure: the fix adds the user's proposal as one more listed case.
+    1. What was missing: "defend every word" tested the words, not whether the sentence could cover
+       more cases.
 
 ## What helps other agents: this file
 
@@ -139,3 +184,14 @@ replaces the failing one no longer needs it.
 
 1. Reason: without this sentence, an agent that edits `AGENTS.md` never learns that this file
    exists.
+
+
+## Removed: sentences with no recorded reason
+
+Each entry is a sentence removed because no incident or reason for it could be found. Restore one
+with a reason when its failure appears.
+
+1. "compared nouns must be the same kind", after "Read each sentence alone". It came in with the
+   early history (commit 3d93befe), and no failure is recorded.
+1. "`only` or `every` must match behavior", in the same sentence. It came in with the same commit.
+   "State as fact only what you read or measured" covers a claim that uses `only` or `every`.

@@ -63,9 +63,13 @@ For a release:
      failed mode, the driver keeps the turns' event files and prints their directory.
 1. Do the manual items that the driver lists: interactive turns, a compaction, `/voice`, a
    sign-out and sign-in, and a token refresh.
-1. On the host, run `sbt "Test/runMain agentsandbox.launcher.MeasurementReport"`. It reads the
-   workspace's latest run, or the `proxy.log` it is given, and exits 1 when a line matches no
-   record. It writes the report to `log/measurement-report.log`, where the session's agent reads it.
+1. On the host, run the command that the driver prints last:
+   `sbt "Test/runMain agentsandbox.launcher.MeasurementReport --since=<the first mode's start>"`.
+   It reads the workspace's latest run, or the `proxy.log` it is given, and exits 1 when a line
+   matches no record. It writes the report to `log/measurement-report.log`, where the session's
+   agent reads it.
+   - `--since` leaves out what came before the first mode: Scala CLI's downloads for compiling
+     the driver, which belong to no agent.
 
 The reader (`MeasurementReport.scala`):
 

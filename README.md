@@ -460,6 +460,20 @@ restore permission prompts and set the Claude Code status line.
                          --run-on-host program's. Repeatable, each name once.
                          See doc/egress-proxy.md "Brokered credentials" and SECURITY.md
                          "Who holds a brokered value".
+      --cache-overlay=<kind>[=<directory>]
+                         let the session read a host cache through a podman overlay. Its
+                         writes there go to a private layer that podman discards with the
+                         container, so the host cache never changes. Without the option, each
+                         session downloads what it needs again, which a narrow egress profile
+                         can block. The kind coursier reads COURSIER_CACHE, else Coursier's v1
+                         directory: ~/.cache/coursier/v1, or %LOCALAPPDATA%\Coursier\Cache\v1 on
+                         Windows (not a WSL distribution's). <directory> names the v1 directory
+                         instead. The session can read every file there and send it wherever
+                         egress allows (SECURITY.md "Cache overlay"). Refused on macOS, where
+                         the session could not add to the cache (doc/plan-coursier.md,
+                         "Platform contract"); for a missing directory, a home or a directory
+                         holding one; and for an overlap with the workspace, the launcher's
+                         state or podman's storage. Repeatable, each kind once.
 
     Claude Code options, selected on every launch like the session options and configuring
     the session's claude rather than the sandbox:
@@ -594,13 +608,14 @@ command line:
 
     1. `--workspace` replaces the parts it states: `--workspace=read-only` keeps the file's
        `fuse`.
-    1. `--env` and `--egress-cred` replace the file's entry of the same name;
-       `--claude-plugin-dir` loads a directory both spell alike once, and `--model-provider` adds
-       its names to the file's.
+    1. `--env` and `--egress-cred` replace the file's entry of the same name, and
+       `--cache-overlay` the file's entry of the same kind; `--claude-plugin-dir` loads a directory
+       both spell alike once, and `--model-provider` adds its names to the file's.
     1. An empty value returns an option to its default: `--memory=`, `--run-on-host=`. A closed
        choice names its default instead: `--clipboard=off`, `--nesting=none`.
-    1. The empty value of `--env`, `--egress-cred`, `--claude-plugin-dir` or `--model-provider`
-       drops the file's entries of that option; those after it on the command line still add.
+    1. The empty value of `--env`, `--egress-cred`, `--cache-overlay`, `--claude-plugin-dir` or
+       `--model-provider` drops the file's entries of that option; those after it on the command
+       line still add.
 
 1. `--no-options-file`, before the command, skips the file for one launch or action.
 1. Three actions also read the file, to match what a launch would do; the other actions read

@@ -4,8 +4,6 @@
 ARG IMG_TAG_VER
 FROM debian-graalvm:${IMG_TAG_VER} AS build
 
-# Build as nonroot: cs setup's cache is under /home/nonroot, and a build as root would fill a second, cold cache
-# every time.
 RUN set -euxo pipefail; \
     install -d -o nonroot -g nonroot /build
 USER nonroot

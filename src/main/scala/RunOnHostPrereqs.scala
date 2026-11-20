@@ -345,19 +345,25 @@ object RunOnHostPrereqs:
       jvm <- located("COURSIER_JVM_CACHE", "jvm")
     yield CoursierUnpacked(archive, jvm)
 
-  /** The platform's Coursier cache directory, which holds `v1`, `arc` and `jvm` unless a variable moves them. Off
-    * macOS, Coursier takes any non-empty `XDG_CACHE_HOME` (directories-jvm's `ProjectDirectories`). */
+  /** The platform's Coursier cache directory, which holds `v1`, `arc` and `jvm` unless a variable moves them. On Linux,
+    * Coursier takes any non-empty `XDG_CACHE_HOME` (directories-jvm's `ProjectDirectories`). The Windows directory is
+    * the one https://get-coursier.io/docs/cache gives. */
   def coursierCacheBase(os: Os, env: String => Option[String]): Either[String, Path] =
     def home = env("HOME").filter(_.nonEmpty).toRight("HOME is not set").flatMap(absolute("HOME", _))
     os match
       case Os.Mac => home.map(_.resolve("Library/Caches/Coursier"))
-      case _ =>
+      case Os.Windows =>
+        env("LOCALAPPDATA").filter(_.nonEmpty).toRight("LOCALAPPDATA is not set")
+          .flatMap(absolute("LOCALAPPDATA", _)).map(_.resolve("Coursier").resolve("Cache"))
+      case Os.Linux =>
         env("XDG_CACHE_HOME").filter(_.nonEmpty) match
           case Some(value) => absolute("XDG_CACHE_HOME", value).map(_.resolve("coursier"))
           case None        => home.map(_.resolve(".cache/coursier"))
 
-  private def absolute(variable: String, value: String): Either[String, Path] =
-    parsePath(value).filter(_.isAbsolute).map(_.normalize()).toRight(s"$variable is not an absolute path: '$value'")
+  /** `value` as an absolute path, spelled as given. Normalizing would drop a `..` after a symbolic link as text, where
+    * Coursier's file system lookup follows the link first, so the path would name another directory. */
+  private[launcher] def absolute(variable: String, value: String): Either[String, Path] =
+    parsePath(value).filter(_.isAbsolute).toRight(s"$variable is not an absolute path: '$value'")
 
   /** Where `cs install` puts what it installs. The macOS spelling contains a space. */
   def coursierInstallDir(os: Os, env: String => Option[String]): Option[Path] =

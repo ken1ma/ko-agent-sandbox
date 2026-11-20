@@ -114,6 +114,7 @@ allow https://packages.adoptium.net/ read  # Temurin: Linux package repository, 
 allow https://maven.apache.org/      read  # docs
 allow https://repo.maven.apache.org/ read  # artifacts
 allow https://repo1.maven.org/       read  # artifacts
+allow https://repo.scala-lang.org/   read  # artifacts: Scala CLI looks up its compiler bridge and REPL there first
 
 allow https://javadoc.io/          read  # hosts scaladocs too
 allow https://slf4j.org/           read

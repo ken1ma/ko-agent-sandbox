@@ -498,6 +498,18 @@ only the container-launching suites. That document's command returns to
     NTFS").
   - The run-on-host profile spells each name as a regex (`SeatbeltProfile.fileRuleFilters`).
 
+## A sandbox removed with a plain `podman rm -f` leaves its home volume
+
+The sandbox's home is an anonymous volume (`--mount type=volume,dst=/home/nonroot`). Every launcher
+removal passes `--volumes` (`SandboxLifecycle.scala`, `LauncherState.scala`), and a normal exit
+removes the volume through `--rm`. A user's `podman rm -f` without `--volumes` keeps it:
+`CacheOverlayLifecycleTest` left one on Windows (podman 6.2.0) before it passed `--volumes` itself.
+
+- [ ] Let `--reset` find such a volume. An anonymous volume carries no link to its workspace, so
+  the sweep cannot attribute it. One candidate: create the home as a volume named and labeled per
+  run, which the sweep removes like the run's networks, and check that podman still copies the
+  image's home into it.
+
 ## Deferred — executable agent configuration in the persistent volume
 
 - [ ] Carry out `plan-executable-agent-configuration.md` in its two phases:
@@ -1096,6 +1108,41 @@ The build:
   - whether exposing a directory also records it as trusted for each agent and loads its
     instructions and skills, as Copilot's `--add-dir` loads the directory's `.github/skills`.
     `ko-sandbox-entrypoint` records trust for the workspace root only.
+
+## Deferred — a WSL distribution's Coursier cache as the overlay
+
+- [ ] Evaluate letting `--cache-overlay=coursier` on Windows use the Coursier cache inside a WSL
+  distribution, which `plan-coursier.md` leaves unsupported. podman runs in its own distribution,
+  `podman-machine-default`, which sees Windows drives at `/mnt/<drive>` but not another
+  distribution's files. The candidates:
+  - run the launcher inside that distribution as a Linux program with its own podman, so that the
+    Linux discovery finds `~/.cache/coursier/v1`. "The workspace root mounted at its own path"
+    lists that setup as untested;
+  - point the distribution's Coursier at the Windows cache with `COURSIER_CACHE=/mnt/<drive>/...`,
+    which needs no launcher change; builds in WSL then read their cache from the Windows drive, at
+    an unmeasured speed;
+  - accept a directory inside the podman machine, under the server-visible-directory contract that
+    `plan-coursier.md`, "Platform contract", defers for remote podman connections.
+
+## Deferred — `--cache-overlay` on macOS
+
+`plan-coursier.md`, "Platform contract", has the decision and its evidence.
+
+- [ ] File the podman report (`upstream-issues.md`, "A macOS machine cannot select its virtio-fs
+  permission semantics").
+- [ ] Once a podman release shares host folders with one owner whoever asks, allow the option on
+  macOS:
+  - remove `CacheOverlay.MacRefusal`;
+  - give the cache the data volume's single spelling, as `SandboxWorkspace.canonicalWorkspaceRoot`
+    gives the workspace root, since the machine does not share `/System/Volumes/Data`;
+  - run `CacheOverlayLifecycleTest` on macOS.
+
+## Deferred — remote podman connections
+
+- [ ] Refuse a launch whose podman connection is neither native podman on this host nor the local
+  machine's, or state a contract for a remote server. Every `--volume` source is a client path: the
+  workspace and gitdir binds, the launcher's file binds and the `--cache-overlay` directory. Over a
+  remote connection, podman mounts the server's directories at those paths.
 
 ## Before the first release — the former records directory
 

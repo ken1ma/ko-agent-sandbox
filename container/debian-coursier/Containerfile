@@ -2,24 +2,43 @@ ARG IMG_TAG_VER
 FROM debian-temurin:${IMG_TAG_VER}
 
 # Coursier, from https://get-coursier.io/docs/cli-installation. The download is the latest launcher rather than the
-# stable one, on purpose. Coursier installs to the default ~/.local/share path, because this image is a development
-# environment.
-USER nonroot
+# stable one, on purpose.
+#
+# The image's launchers, and the distributions they run, live under /opt/coursier, outside the home that podman copies
+# into every session's volume (ko-agent-sandbox's Containerfile, "The image's home"). A session's `cs install` and
+# `cs update` use Coursier's default ~/.local/share/coursier/bin, in the writable home. PATH puts that directory first,
+# so a version that a session installs overrides the image's launcher of the same name.
 RUN set -euxo pipefail; \
-    curl -fsSL "https://github.com/coursier/launchers/raw/master/cs-$(uname -m)-pc-linux.gz" | gzip -d > /tmp/cs; \
-    chmod 0755 /tmp/cs; \
+    setup_home=$(mktemp -d); \
+    curl -fsSL "https://github.com/coursier/launchers/raw/master/cs-$(uname -m)-pc-linux.gz" \
+        | gzip -d > "$setup_home/cs"; \
+    chmod 0755 "$setup_home/cs"; \
     # cs setup detects the Temurin that the parent image installed, and `--env` keeps it from updating `.profile`.
     # The app list is coursier's default apps except two redundant launchers:
     # - `scala-cli` stays out, because the Scala distribution behind `scala` bundles the same Scala CLI native image.
     # - `coursier` stays out, because it is the JAR-based fallback, and both architecture builds install a native `cs`.
-    /tmp/cs setup --yes --env --apps cs,scala,scalac,sbt,sbtn,scalafmt; \
-    rm /tmp/cs
-
-# root makes `apt-get install` usable again. Descendant images set `USER nonroot` themselves.
-USER root
+    #
+    # The caches:
+    # - sbt, sbtn and scala are scripts that exec a fixed path into the archive cache, with no download fallback, so the
+    #   archive cache is /opt/coursier/arc. A session's Coursier unpacks into ~/.cache/coursier/arc, as by default.
+    # - scalac and scalafmt fetch their jars into a session's download cache on their first run.
+    # - The download cache also holds the archives that /opt/coursier/arc unpacked. It lives in the throwaway home, and
+    #   this RUN deletes it, so no layer keeps its bytes.
+    HOME="$setup_home" COURSIER_CACHE="$setup_home/v1" COURSIER_ARCHIVE_CACHE=/opt/coursier/arc \
+        "$setup_home/cs" setup --yes --env --install-dir /opt/coursier/bin \
+        --apps cs,scala,scalac,sbt,sbtn,scalafmt; \
+    rm -rf "$setup_home"; \
+    # A session must not replace a launcher it runs, even on a root that is not read-only.
+    if find /opt/coursier \( ! -user root -o ! -type l -perm /022 \) -print | grep .; then \
+        echo "these entries under /opt/coursier are writable by a user other than root" >&2; \
+        exit 1; \
+    fi; \
+    # The session's Coursier creates its v1, arc and jvm directories here.
+    install -d -o nonroot -g nonroot /home/nonroot/.cache /home/nonroot/.cache/coursier
 
 # The image sets `PATH` here, because `podman run --rm -it image bash` does not source `$HOME/.profile`.
-ENV PATH="/home/nonroot/.local/share/coursier/bin:$PATH"
+# COURSIER_BIN_DIR stays unset: it would move a session's `cs install` into the image's directory.
+ENV PATH="/home/nonroot/.local/share/coursier/bin:/opt/coursier/bin:$PATH"
 
 
 # Known problem: `cs java --installed` runs out of memory (memory.events shows oom_kill). The cause is a problem in

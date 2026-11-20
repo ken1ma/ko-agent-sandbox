@@ -33,10 +33,11 @@ class SessionBoundaryTest extends munit.FunSuite:
   private val ProxyVariables = Vector("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
 
   /** HostCommands.run with variables removed from the environment, which HostCommands.run deliberately does not
-    * offer. */
-  private def runWithout(removed: Seq[String], command: String*): Run =
+    * offer, and others set. */
+  private def runEdited(removed: Seq[String], set: Map[String, String], command: String*): Run =
     val builder = ProcessBuilder(command*)
     removed.foreach(builder.environment().remove)
+    set.foreach(builder.environment().put(_, _))
     val process = builder.start()
     process.getOutputStream.close()
     var err: Array[Byte] = Array.emptyByteArray
@@ -254,8 +255,8 @@ class SessionBoundaryTest extends munit.FunSuite:
 
   test("unsetting the proxy variables restores nothing"):
     inSession()
-    assert(!runWithout(ProxyVariables, "curl", "-sS", "--max-time", "10", "https://pypi.org/").ok)
-    assert(!runWithout(ProxyVariables, "curl", "-sS", "--max-time", "10", "https://1.1.1.1/").ok)
+    assert(!runEdited(ProxyVariables, Map.empty, "curl", "-sS", "--max-time", "10", "https://pypi.org/").ok)
+    assert(!runEdited(ProxyVariables, Map.empty, "curl", "-sS", "--max-time", "10", "https://1.1.1.1/").ok)
 
     // The stricter check: the connection fails at once for a structural reason, not by a timeout.
     val reached =
@@ -470,6 +471,73 @@ class SessionBoundaryTest extends munit.FunSuite:
     val settings = Files.readString(Paths.get(env("RUSTUP_HOME").get, "settings.toml"))
     assert(settings.contains("auto_self_update = \"disable\""), settings)
 
+  /** Where debian-coursier's Containerfile installs the image's Scala launchers and the distributions they run. */
+  private val ImageCoursier = Paths.get("/opt/coursier")
+
+  /** The `--apps` list of debian-coursier's `cs setup`, which names every launcher the image keeps. */
+  private def imageCoursierApps: Set[String] =
+    val Apps = """--apps\s+([\w,-]+)""".r.unanchored
+    Files.readString(Paths.get("container/debian-coursier/Containerfile")) match
+      case Apps(list) => list.split(',').toSet
+      case _          => fail("debian-coursier's Containerfile has no --apps list")
+
+  test("the image's Scala launchers are root's, and a session's own `cs install` comes first on PATH"):
+    inSession()
+    val bin = ImageCoursier.resolve("bin")
+    val installed = directoryEntries(bin).map(_.getFileName.toString).filterNot(_.startsWith(".")).toSet
+    assertEquals(installed, imageCoursierApps)
+    val writable = scala.util.Using.resource(Files.walk(ImageCoursier)): entries =>
+      entries.iterator.asScala.filter: entry =>
+        val owner = Files.getOwner(entry, java.nio.file.LinkOption.NOFOLLOW_LINKS).getName
+        val permissions = Files.getPosixFilePermissions(entry, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+        import java.nio.file.attribute.PosixFilePermission.{GROUP_WRITE, OTHERS_WRITE}
+        owner != "root" ||
+          !Files.isSymbolicLink(entry) && (permissions.contains(GROUP_WRITE) || permissions.contains(OTHERS_WRITE))
+      .toVector
+    assert(writable.isEmpty, s"writable by a user other than root: ${writable.take(5).mkString(", ")}")
+    assert(env("COURSIER_BIN_DIR").isEmpty, "COURSIER_BIN_DIR moves a session's `cs install` into the image's bin")
+    val path = env("PATH").get.split(':').toVector
+    val sessionBin = path.indexOf("/home/nonroot/.local/share/coursier/bin")
+    assert(sessionBin >= 0 && sessionBin < path.indexOf(bin.toString), s"PATH is ${path.mkString(":")}")
+
+  test("the image's archive-backed launchers start with a fresh home and no egress"):
+    inSession()
+    // cs writes sbt, sbtn and scala as scripts that exec a fixed path into the archive cache, with no download
+    // fallback (debian-coursier's Containerfile).
+    val Fixed = """(?s)#!/usr/bin/env sh\nexec "(/[^"$]+)".*""".r
+    val targets = imageCoursierApps.toVector.sorted.flatMap: app =>
+      val head = Files.readAllBytes(ImageCoursier.resolve("bin").resolve(app)).take(1024)
+      String(head, StandardCharsets.ISO_8859_1) match
+        case Fixed(target) => Some(app -> Paths.get(target))
+        case _             => None
+    assertEquals(targets.map(_._1), Vector("sbt", "sbtn", "scala"))
+    targets.foreach: (app, target) =>
+      assert(target.startsWith(ImageCoursier.resolve("arc")) && isExecutableFile(target), s"$app execs $target")
+    // sbtn is checked by its target alone: even `sbtn --help` starts an sbt server in the current directory.
+    val home = Files.createTempDirectory("fresh-home")
+    try
+      for command <- Vector(Vector("sbt", "--script-version"), Vector("scala", "--version")) do
+        val answer = runEdited(ProxyVariables, Map("HOME" -> home.toString), command*)
+        assert(answer.ok, s"${command.mkString(" ")} failed offline: ${answer.err}")
+    finally deleteRecursively(home)
+
+  test("scalac and scalafmt start from an empty download cache, fetching their jars through the proxy"):
+    inSession()
+    // The image keeps no download cache, so these two bootstrap launchers start cold in every session, writing into
+    // the home's Coursier directory.
+    val sessionCache = Paths.get(env("HOME").get, ".cache", "coursier")
+    assertEquals(Files.getOwner(sessionCache).getName, "nonroot")
+    assert(Files.isWritable(sessionCache), s"$sessionCache is not writable")
+    // The cache sits in the home, because the jars take about 90 MB and /tmp is RAM.
+    val cache = Files.createTempDirectory(Paths.get(env("HOME").get), "cold-coursier-cache")
+    try
+      for command <- Vector(Vector("scalac", "-version"), Vector("scalafmt", "--version")) do
+        val answer = runWithEnvironment(Map("COURSIER_CACHE" -> cache.toString), command*)
+        assert(answer.ok, s"${command.head} could not start from an empty cache: ${answer.err}")
+      val jars = scala.util.Using.resource(Files.walk(cache))(_.iterator.asScala.count(_.toString.endsWith(".jar")))
+      assert(jars > 0, s"nothing was fetched into $cache")
+    finally deleteRecursively(cache)
+
   test("the image JDK's trust store holds this workspace's CA beside every root it shipped"):
     inSession()
     // A store can be prepared wrong in two ways, and a dropped shipped root is the silent one: the sandbox keeps
@@ -586,10 +654,14 @@ class SessionBoundaryTest extends munit.FunSuite:
            "/var/run/docker.sock", "/run/podman/podman.sock")
       .foreach(path => assert(!mountPoints.contains(path), s"$path is mounted into the session"))
 
-    // The expected mounts include the workspace root at its own path and the guard mounts beneath it.
+    // The expected mounts include the workspace root at its own path and the guard mounts beneath it. Under the home,
+    // each mount is named: the anonymous home, the persistent volume, and each --cache-overlay destination, whose host
+    // directory is an overlay's lower layer.
     val quotedWorkspace = java.util.regex.Pattern.quote(workspace.toString)
+    val homeMounts = (Vector(home, s"$home/persistent-volume") ++ CacheOverlay.Kind.values.map(_.destination))
+      .map(java.util.regex.Pattern.quote).mkString("|")
     val expected =
-      raw"^/$$|^/(proc|sys|dev|run|tmp|var/tmp|home/nonroot)($$|/)|^$quotedWorkspace($$|/)".r.unanchored
+      raw"^/$$|^/(proc|sys|dev|run|tmp|var/tmp)($$|/)|^($homeMounts)$$|^$quotedWorkspace($$|/)".r.unanchored
     // `/etc/ssl/certs` covers two mounts, not one:
     // - the PEM bundle;
     // - the merged JDK trust store. The launcher mounts the store at `$JAVA_HOME/lib/security/cacerts` (JdkTrust), but
