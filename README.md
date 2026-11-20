@@ -470,10 +470,11 @@ restore permission prompts and set the Claude Code status line.
                          Windows (not a WSL distribution's). <directory> names the v1 directory
                          instead. The session can read every file there and send it wherever
                          egress allows (SECURITY.md "Cache overlay"). Refused on macOS, where
-                         the session could not add to the cache (doc/plan-coursier.md,
-                         "Platform contract"); for a missing directory, a home or a directory
-                         holding one; and for an overlap with the workspace, the launcher's
-                         state or podman's storage. Repeatable, each kind once.
+                         the session could not add to the cache (doc/design.md, "A cold
+                         Coursier cache, and the host's as an opt-in overlay"); for a missing
+                         directory, a home or a directory holding one; and for an overlap with
+                         the workspace, the launcher's state or podman's storage. Repeatable,
+                         each kind once.
 
     Claude Code options, selected on every launch like the session options and configuring
     the session's claude rather than the sandbox:

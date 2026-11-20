@@ -9,8 +9,7 @@ A launch runs its independent steps beside each other:
 
 The steps left on either side of the start prompt could also overlap the reader's time at the
 prompt. This plan sets out the two ways to do that, A and B, against taking neither.
-- The user decides after `plan-coursier.md` is implemented, from launches measured with it
-  ("Recommendation").
+- The user decides from launches measured with the image's small home ("Recommendation").
 - Both ways change recorded behavior, so each section below lists what the way gains and costs.
 
 ## Baseline
@@ -28,8 +27,9 @@ Two Windows launches under `bpf`, with the image's caches warm, measured these t
 
 - With the overlaps, this path is left before the prompt: the settings, `podman info`, the rules,
   the run's files and the proxy.
-- Most of `podman init` is podman copying the image's home into the session's volume, 3.0 to 9.6s
-  on Windows. `plan-coursier.md` removes that copy, and is deferred.
+- In these launches, most of `podman init` was podman copying the image's 750 MB home into the
+  session's volume, 3.0 to 9.6s on Windows. Commit 9c7d838 shrinks the home to a few kilobytes.
+  Without the copy, `init` took about 0.2s on macOS and 0.36s on Windows (2026-11-17).
 - Either decision below gains only while the reader stays at the prompt. A reader who presses Enter
   at once gains nothing; the two launches' readers took 14s and 4s.
 - Under `--session-start=immediate`, nobody waits at a prompt, and neither decision gains anything.
@@ -73,8 +73,7 @@ the relays, mount the FUSE backend, spawn the runner and start the container.
 What it gains:
 
 - Up to the 8.5 to 12.6s after the prompt, as far as the reader's time at the prompt covers it.
-- After `plan-coursier.md`, the time after the prompt would shrink to about 3s, and so would this
-  gain.
+- With the small home, the time after the prompt would be about 3s, and so would this gain.
 
 What it costs:
 
@@ -105,7 +104,7 @@ What it costs:
 | | A | B | neither |
 | --- | --- | --- | --- |
 | largest gain now | about 2.8s | 8.5 to 12.6s | none |
-| largest gain after `plan-coursier.md` | about 2.8s | about 3s | none |
+| largest gain with the small home | about 2.8s | about 3s | none |
 | refusals that move after Enter | run files, networks, proxy | expired AWS credentials | none |
 | left by a launcher killed at the prompt | nothing new | container, cgroup and pins | nothing new |
 | recorded order changed | no | the hold before the container | no |
@@ -113,11 +112,8 @@ What it costs:
 
 ## Recommendation
 
-1. Implement `plan-coursier.md` first. It shortens `podman init` on every launch, including those
-   under `immediate` and those whose reader presses Enter at once. Without the home copy, `init`
-   takes 0.36s on Windows ("Evidence and target" there).
-2. Measure two warm launches with it, and replace "Baseline" with them.
-3. Choose between A and neither. After `plan-coursier.md`, B gains about as much as A, and changes
-   far more.
+1. Measure two warm launches with the small home, and replace "Baseline" with them.
+1. Choose between A and neither. With the small home, B gains about as much as A, and changes far
+   more.
    - The strongest objection to A: it gains at most 2.8s, and a refusal can come after the reader
      agreed. Neither is the choice when that trade is not worth it.

@@ -1112,21 +1112,22 @@ The build:
 ## Deferred — a WSL distribution's Coursier cache as the overlay
 
 - [ ] Evaluate letting `--cache-overlay=coursier` on Windows use the Coursier cache inside a WSL
-  distribution, which `plan-coursier.md` leaves unsupported. podman runs in its own distribution,
-  `podman-machine-default`, which sees Windows drives at `/mnt/<drive>` but not another
-  distribution's files. The candidates:
+  distribution, which the option refuses (`design.md`, "A cold Coursier cache, and the host's as an
+  opt-in overlay"). podman runs in its own distribution, `podman-machine-default`, which sees
+  Windows drives at `/mnt/<drive>` but not another distribution's files. The candidates:
   - run the launcher inside that distribution as a Linux program with its own podman, so that the
     Linux discovery finds `~/.cache/coursier/v1`. "The workspace root mounted at its own path"
     lists that setup as untested;
   - point the distribution's Coursier at the Windows cache with `COURSIER_CACHE=/mnt/<drive>/...`,
     which needs no launcher change; builds in WSL then read their cache from the Windows drive, at
     an unmeasured speed;
-  - accept a directory inside the podman machine, under the server-visible-directory contract that
-    `plan-coursier.md`, "Platform contract", defers for remote podman connections.
+  - accept a directory inside the podman machine, under the contract for a server's directory that
+    "Deferred — remote podman connections" would state.
 
 ## Deferred — `--cache-overlay` on macOS
 
-`plan-coursier.md`, "Platform contract", has the decision and its evidence.
+`design.md`, "A cold Coursier cache, and the host's as an opt-in overlay", has the decision, and
+`upstream-issues.md`, containers/podman, the evidence.
 
 - [ ] File the podman report (`upstream-issues.md`, "A macOS machine cannot select its virtio-fs
   permission semantics").
@@ -1136,6 +1137,14 @@ The build:
   - give the cache the data volume's single spelling, as `SandboxWorkspace.canonicalWorkspaceRoot`
     gives the workspace root, since the machine does not share `/System/Volumes/Data`;
   - run `CacheOverlayLifecycleTest` on macOS.
+
+## `--cache-overlay` on native Linux
+
+The option is enabled on native Linux, and no run there has verified it yet.
+
+- [ ] Run `sbt "testWithPodman *CacheOverlayLifecycleTest"` on native Linux, and on an
+  SELinux-enforcing host, whose snapshot then covers the labels. Refuse the option on a host where
+  podman changes the cache's metadata or needs container labels disabled.
 
 ## Deferred — remote podman connections
 

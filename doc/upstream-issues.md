@@ -288,7 +288,8 @@ machine", has the decision):
 ## containers/podman
 
 Found when `CacheOverlayLifecycleTest` ran `--cache-overlay` on the macOS podman machine. This
-project refuses the option on macOS until the fix (`plan-coursier.md`, "Platform contract").
+project refuses the option on macOS until the fix (`design.md`, "A cold Coursier cache, and the
+host's as an opt-in overlay").
 
 ### A macOS machine cannot select its virtio-fs permission semantics
 

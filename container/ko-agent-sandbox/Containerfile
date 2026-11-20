@@ -892,8 +892,9 @@ RUN --mount=type=bind,target=/mnt/context \
 #
 # podman copies the image's /home/nonroot into every session's new home volume at `podman init`, and deletes the copy
 # at `podman rm -v`. With 750 MB of Coursier content in the home, `init` took 3.0 to 9.6s and `rm -v` 3.7 to 4.7s on
-# Windows (doc/plan-coursier.md, "Evidence and target"). The home therefore holds only seeds, links and empty
-# directories, and a program installs under /opt or /usr/local. This step fails the build when a step above breaks that.
+# Windows. The home therefore holds only seeds, links and empty directories, and a program installs under /opt or
+# /usr/local. This step fails the build when a step above breaks that.
+# - The home volume keeps podman's copy: `nocopy` would also drop the agents' links into persistent-volume.
 # - The limits sit far above the home's few dozen entries and few kilobytes.
 # - ~/.cache/coursier stays empty and nonroot's (debian-coursier's Containerfile).
 RUN set -euo pipefail; \

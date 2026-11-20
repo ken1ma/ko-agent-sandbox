@@ -37,7 +37,7 @@ class CacheOverlayLifecycleTest extends munit.FunSuite:
       findOnPath("getenforce", Os.Linux).exists(path => run(path.toString).text.trim == "Enforcing")
 
   /** Every entry under `root` with its type, size, modification time, mode, owner, group, extended attributes, SELinux
-    * label and content: what plan-coursier.md promises a session cannot change. */
+    * label and content: what SECURITY.md, "Cache overlay", says a session cannot change. */
   private def snapshot(root: Path): Map[String, String] =
     // GNU find fails where SELinux supplies no label, so the labels are read only where selinuxfs is mounted.
     val selinuxfs = currentOs == Os.Linux &&
@@ -148,6 +148,11 @@ class CacheOverlayLifecycleTest extends munit.FunSuite:
       assert(stopped.output.contains(s"cache overlay: coursier"), stopped.output)
       val read = execSh(stopped, """cat "$1/marker" "$1/https/repo1.maven.org/artifact.jar"""", Target)
       assertEquals(read.text.linesIterator.toVector, Vector("lower", "fixture"), read.err)
+      // The mount at v1 leaves its parent the session's, so Coursier can add the arc and jvm directories beside it.
+      val parent = s"${SandboxWorkspace.ContainerHome}/.cache/coursier"
+      val siblings = execSh(stopped, """stat -c %u:%g "$1" && mkdir "$1/arc" "$1/jvm"""", parent)
+      assert(siblings.ok, s"the session could not add arc and jvm beside the overlay: ${siblings.err}")
+      assertEquals(siblings.text.trim, "65532:65532", s"$parent is not the session's")
       writeThrough(stopped)
       stop(stopped)
       assertEquals(snapshot(cache), before, "a stopped session changed the host cache")

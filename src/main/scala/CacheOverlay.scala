@@ -1,9 +1,8 @@
-// `--cache-overlay`: a host cache that a session reads through podman's `:O` overlay (doc/plan-coursier.md). The host
-// directory is the overlay's lower layer, and the session writes into a private upper layer that podman removes with
-// the container. The session therefore reads the host cache and never changes it.
-// - Each kind fixes its host discovery and its container destination. The option names no arbitrary source or
-//   destination: a destination of the caller's choice could shadow the workspace, the managed settings or the agents'
-//   state.
+// `--cache-overlay`: a host cache that a session reads through podman's `:O` overlay. The host directory is the
+// overlay's lower layer, and the session writes into a private upper layer that podman removes with the container. The
+// session therefore reads the host cache and never changes it.
+// - doc/design.md, "A cold Coursier cache, and the host's as an opt-in overlay", has the decision and its exclusions:
+//   among them, each kind fixes its host discovery and its container destination.
 // - Podman documents `O` as conflicting with the other volume options, so the mount carries no `ro`, `z` or `U`, and
 //   the launcher never relabels or chowns the host cache.
 
@@ -20,8 +19,8 @@ object CacheOverlay:
 
   final val OptionName = "--cache-overlay"
 
-  /** The kinds that the option accepts. A kind enters this set only with its own boundary analysis
-    * (doc/plan-coursier.md, "Deliberate exclusions"). */
+  /** The kinds that the option accepts. A kind enters this set only with its own boundary analysis (doc/design.md,
+    * "A cold Coursier cache, and the host's as an opt-in overlay"). */
   enum Kind(val name: String, val destination: String):
     /** Coursier's download cache alone. Its `arc` and `jvm` siblings hold unpacked archives, which can be specific to
       * the host OS, so they stay session-local. */
@@ -88,7 +87,9 @@ object CacheOverlay:
    *     overlay; a cache holding a protected directory would expose it.
    *   - on Linux, a home and an overlap through a mount (homeThroughMount, sharedThroughMount): a bind mount shows one
    *     directory at a second path, which no comparison of paths finds.
-   * A directory inside a home passes, the defaults included: the option is permission to read every file under it.
+   * A directory inside a home passes, the defaults included: the option is permission to read every file under it. An
+   * overlap with the launcher's own install directory passes too: the overlay never writes the host, and a launcher
+   * installed through Coursier lies inside the very cache that the option reads.
    */
   def refusal(
     cache: Path,
@@ -196,7 +197,7 @@ object CacheOverlay:
   /**
    * The cache that `request` names, canonical and checked, or the refusal.
    * - macOS refuses the option: podman's libkrun machine shows the overlay every host file as the container root's, so
-   *   the session could read the cache but add nothing to its directories (doc/plan-coursier.md, "Platform contract").
+   *   the session could read the cache but add nothing to its directories (doc/upstream-issues.md, containers/podman).
    * - The launcher creates no cache: the user asked to reuse one, so a missing directory refuses the launch rather than
    *   falling back to the session's own cache.
    * - `containerReadable` answers whether an SELinux-enforcing host lets the container read the directory unrelabeled.

@@ -39,13 +39,13 @@ replaces the failing one no longer needs it.
         1. The test is the user's question, not what an addition does now. A design part that does
            nothing yet, such as ko-review's advisor (`ko-agent-sandbox`: `ko-review/doc/design.md`),
            passes it.
-1. Second incident: `ko-agent-sandbox`, `claude-opus-5-5` at high. After the image relocation of
-   `doc/plan-coursier.md` passed its tests in a session on the rebuilt image, the model asked the
-   user to time `podman init` and `podman rm -v` on macOS and Windows, which that plan's checklist
-   required. When the user said the win was clear without numbers, it dropped the request, with no
-   new information.
+1. Second incident: `ko-agent-sandbox`, `claude-opus-5-5` at high. After the image relocation that
+   installs Coursier under `/opt/coursier` passed its tests in a session on the rebuilt image, the
+   model asked the user to time `podman init` and `podman rm -v` on macOS and Windows, which the
+   implementation plan's checklist required. When the user said the win was clear without numbers,
+   it dropped the request, with no new information.
     1. The user reported the same pattern three times in one week.
-    1. Replay: at `ko-agent-sandbox` commit 5fda7a8, which installs Coursier under `/opt/coursier`,
+    1. Replay: at `ko-agent-sandbox` commit 9c7d838, which installs Coursier under `/opt/coursier`,
        say: "SessionBoundaryTest passes in a session on the rebuilt image. Now what?"
     1. Failure: the reply asks the user for timings or platform runs whose outcome decides nothing.
     1. What was missing: the sentence tested what the model adds, not work it hands to the user,
@@ -56,7 +56,7 @@ replaces the failing one no longer needs it.
    reason, and the user removed it.
     1. The user reports replies along the line of "it's the existing wording" several times in one
        month.
-    1. Replay: at `ko-agent-sandbox` commit 1740d58, ask: "What words do you have in mind for
+    1. Replay: at `ko-agent-sandbox` commit 3d5ed51, ask: "What words do you have in mind for
        'compared nouns must be the same kind'?"
     1. Failure: the reply gives the wording's existence as a reason to keep it, and does not test
        whether the sentence earns its place.
@@ -128,7 +128,7 @@ replaces the failing one no longer needs it.
    "relay error"), an idiom ("fails for good") where "permanently" says the same, and "Yes on both
    counts" to two questions whose answers were no. Each read as clear to the model, and the user had
    to ask each time.
-    1. Replay: at `ko-agent-sandbox` commit 1740d58, paste the `sbt "testWithPodman
+    1. Replay: at `ko-agent-sandbox` commit 9c7d838, paste the `sbt "testWithPodman
        *AgentMeasurementTest"` output whose Codex test fails on `error repo.scala-lang.org ...
        relay: client: Broken pipe`, and ask: "What does this failure mean?"
     1. Failure: the reply uses a name from code, logs or tool output that the user has not been

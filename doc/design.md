@@ -942,6 +942,52 @@ Every launch prints each grant and each option the file supplies.
   - A script's unset variable produces an empty value: `--workspace=$MODE` would otherwise launch
     `live`.
 
+### A cold Coursier cache, and the host's as an opt-in overlay
+
+The image installs its Coursier launchers, and the sbt and Scala distributions that three of them
+run, under root-owned `/opt/coursier` (`container/debian-coursier/Containerfile`). A session's
+Coursier downloads into the anonymous home, and the downloads go with the session.
+`--cache-overlay=coursier` lets a session read the host's `v1` cache through podman's `:O`
+overlay, whose writes podman discards (SECURITY.md, "Cache overlay").
+
+- The cold default costs each session its first `scalac` and `scalafmt` downloads, about 90 MB,
+  and fails a first run that a narrow egress profile blocks. sbt downloads what it always did: the
+  image never ran sbt, so its cache held no sbt jars. In return, host artifacts stay unexposed
+  until the user opts in, and every download stays disposable.
+- No cache in the image: an image-owned cache, or a default cache image, would keep the image's
+  size and add another cache lifecycle. Revisit by prototyping a root-owned cache in the selected
+  image, mounted as a subpath with `type=image,rw=true`; the prototype must prove ownership, the
+  nested mount and each platform.
+- No automatic overlay: private host artifacts stay unexposed without the option.
+- No persistent upper layer: a session gets no write access to executable cache state that later
+  sessions read.
+- No host-cache mutation, synchronization, eviction or repair, and no sharing of `.sbt`, `.ivy2`,
+  Maven or Gradle caches.
+- No mount of a caller's source at a caller's destination: such a destination could shadow the
+  workspace, the managed settings or the agents' state. Each kind fixes its discovery and its
+  destination, and enters `CacheOverlay.Kind` only with a boundary analysis of its own.
+- The launch checks the cache before the start prompt, and creates nothing there to test podman's
+  `:O`. A podman that refuses it fails `podman create` with its own error, and the launch cleans up
+  as after any failed create.
+- A host change to the cache during a session is accepted, though the kernel leaves the overlay's
+  behavior undefined then (SECURITY.md, "Cache overlay"). `plan-staged.md` rejects OverlayFS over a
+  mutable lower tree for the workspace, whose contents must stay coherent. A cache's contents are
+  disposable, and a miss downloads them again.
+- macOS refuses the option. podman 6's default machine, libkrun through krunkit, reports a shared
+  file's owner as the process that asks, and the overlay reads its lower layer as the container's
+  root, so the session cannot add a file to an existing directory of the cache.
+  `upstream-issues.md`, containers/podman, has the evidence and the request; `TODO.md`, "Deferred —
+  `--cache-overlay` on macOS", lists what allowing it takes.
+  - Two other routes stay out: the Apple Virtualization.framework provider, since podman 6 made
+    libkrun the default; and a design without an overlay on macOS, such as a read-only bind that
+    Coursier reads as a local repository, since `--run-on-host` already keeps build caches there.
+- On Windows, the option reads the cache of Coursier run on Windows,
+  `%LOCALAPPDATA%\Coursier\Cache\v1`. A WSL distribution's cache has only a UNC path on Windows,
+  which the launcher refuses; `TODO.md`, "Deferred — a WSL distribution's Coursier cache as the
+  overlay", weighs supporting it.
+- The README's opening list and diagram show no opt-in host grant, `--claude-plugin-dir` included.
+  The option's help names what the session can read.
+
 ### The launcher's text is ASCII
 
 Every string in the launcher's sources is ASCII, except characters it matches or writes into a

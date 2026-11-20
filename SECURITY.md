@@ -1658,18 +1658,24 @@ has these properties:
 ## Cache overlay
 
 `--cache-overlay=<kind>[=<directory>]` is off by default. The option lets the session read one host
-cache through podman's `:O` overlay, and the launch prints the cache (`CacheOverlay`;
-`doc/plan-coursier.md` has the design). The one kind is `coursier`, Coursier's `v1` download cache.
+cache through podman's `:O` overlay, and the launch prints the cache (`CacheOverlay`; `design.md`,
+"A cold Coursier cache, and the host's as an opt-in overlay", has the decision). The one kind is
+`coursier`, Coursier's `v1` download cache.
 
 - **The session reads every file under the directory.** The cache can hold private artifacts,
   repository URLs and their metadata, and any file stored there by accident.
   - Where the egress rules allow a destination, the session can send those files there.
+  - The option widens no egress rule: a cache miss downloads only from a host the rules allow.
   - The option is that permission. The launcher recognizes no cache contents and blocks no
     credential-like name, since such a list would always be incomplete.
 - **The session cannot change the host cache.** Every write through the mount, a rename or a
   deletion included, goes to an upper layer private to the container, which podman removes with the
   container. No later session and no host program reads what a session wrote there.
-  `CacheOverlayLifecycleTest`, under `sbt testWithPodman`, observes this on the host.
+  - The cache's contents, owners, modes, modification times, extended attributes and SELinux
+    labels stay as they were; reading the cache can still change access times.
+  - `CacheOverlayLifecycleTest`, under `sbt testWithPodman`, compares them on the host after a
+    stop, a forced removal and `--reset`. It passes on Windows with podman 6.2.0. Native Linux has
+    no run yet (`doc/TODO.md`, "`--cache-overlay` on native Linux"), and macOS refuses the option.
 - **The cache cannot open a path around another boundary.** Before anything is created, the
   launcher refuses:
   - a filesystem root, a home, a directory holding a home, and another user's home, each of which
