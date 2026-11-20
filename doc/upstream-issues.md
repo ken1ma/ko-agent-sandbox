@@ -1,7 +1,8 @@
 # Issues to report upstream
 
-Each entry is written as the report to submit and holds only what upstream needs. Each group says
-where this project handles the issue.
+Each entry is written as the report to submit and holds only what upstream needs. A submitted
+entry keeps only the link and what the posted report lacks. Each group says where this project
+handles the issue.
 
 ## sbt/sbt
 
@@ -353,76 +354,10 @@ without a daemon (`run-on-host-internals.md`, "Mill 1.2 and later: no daemon").
 
 ### `ProcessHandle.info()` throws on macOS when `KERN_PROCARGS2` returns `EPERM`
 
-**Submitted:** bugreport.java.com, 2026-11-19. Oracle posts a JDK bug or asks for more information.
-
-**Title:** On macOS, `ProcessHandle.info()` throws `RuntimeException: Operation not permitted` for
-a process whose arguments the caller may not read, and drops the start time it already read
-
-**Impact:** Mill 1.3.0's daemon calls `info()` for each launcher, so every Mill command fails when
-the daemon runs under a sandbox that refuses reading other processes' arguments and the launcher
-runs outside it.
-
-**Versions:** Temurin 25.0.4+7 and OpenJDK 28-ea+24 on macOS 27.2, Apple silicon.
-`src/java.base/macosx/native/libjava/ProcessHandleImpl_macosx.c` read at jdk-25+36 (2026-10-19)
-and `master` (2026-11-19).
-
-**Reproducer:** `Info.java`:
-
-```java
-public class Info {
-    public static void main(String[] args) {
-        // sandbox-exec execs java, so the parent is the shell outside the sandbox.
-        var parent = ProcessHandle.current().parent().orElseThrow();
-        System.out.println(parent.info().startInstant());
-    }
-}
-```
-
-`info.sb`:
-
-```scheme
-(version 1)
-(allow default)
-; KERN_PROCARGS2 succeeds while either operation below is allowed.
-(deny sysctl-read (sysctl-name-regex #"procargs"))
-(deny process-info-pidinfo)
-; Without this rule, java dies on SIGTRAP.
-(allow process-info-pidinfo (target same-sandbox))
-```
-
-```sh
-"$JAVA_HOME/bin/java" Info.java                           # a control without the sandbox
-sandbox-exec -f info.sb "$JAVA_HOME/bin/java" Info.java
-```
-
-**What happens:** the first command prints `Optional[2026-11-19T01:51:21.470Z]`. The second
-throws:
-
-```text
-Exception in thread "main" java.lang.RuntimeException: Operation not permitted
-    at java.base/java.lang.ProcessHandleImpl$Info.info0(Native Method)
-    at java.base/java.lang.ProcessHandleImpl$Info.info(ProcessHandleImpl.java:562)
-    at java.base/java.lang.ProcessHandleImpl.info(ProcessHandleImpl.java:479)
-    at Info.main(Info.java:5)
-```
-
-**Why:**
-
-- `info0` stores the start time from `kern.proc`, then calls `os_getCmdlineAndUserInfo`
-  (`ProcessHandleImpl_unix.c`).
-- In `ProcessHandleImpl_macosx.c`, when that function's `sysctl` of
-  `{CTL_KERN, KERN_PROCARGS2, pid}` fails with an errno other than `EINVAL` or `EIO`, the function
-  throws. The caller then loses the start time along with the arguments.
-- Linux's `os_getCmdlineAndUserInfo` returns quietly when it cannot open `/proc/<pid>/cmdline`.
-- A sandbox refuses the read with `EPERM`. The profile above has the rule of agent-safehouse's
-  `profiles/10-system-runtime.sb`.
-- In a larger profile with the same three rules, adding
-  `(allow sysctl-read (sysctl-name "kern.procargs2.<pid>"))` for another JDK's pid made `info()` of
-  that JDK succeed (macOS 26, Temurin 25.0.4). The `kern.proc` and `KERN_ARGMAX` calls, which throw
-  the same message, therefore succeeded in that run.
+**Submitted:** [JDK-8397824](https://bugs.openjdk.org/browse/JDK-8397824)
 
 **Expected:** treat `EPERM` as `EINVAL` and `EIO` are treated, leaving the arguments empty. The
-sandboxed command then prints the parent's start time, as the control does.
+sandboxed command of the bug's reproducer then prints the parent's start time, as the control does.
 
 - The `ProcessHandle.Info` Javadoc says the information "is limited by the operating system
   privileges of the process making the request", and `info()` declares no exception.
@@ -430,10 +365,6 @@ sandboxed command then prints the parent's start time, as the control does.
   review, openjdk/jdk#9946, reads: "The spec for `ProcessHandle.info()` does not declare any
   exceptions so there is little risk changing the behavior by quietly returning in the case of
   EINVAL or EIO".
-
-**Prior reports:** a search of bugs.openjdk.org found no report of `EPERM` (summaries,
-descriptions and comments mentioning `ProcessHandle` with `EPERM`, "Operation not permitted" or
-`KERN_PROCARGS2`, 2026-11-19).
 
 ## com-lihaoyi/mill
 
@@ -449,7 +380,8 @@ when the daemon may not read the launcher's process information
 2.0.0-M2 and `main` (read on 2026-10-19). The code came with #6955 and is absent from 1.1.10.
 
 **Reproducer:** start the daemon inside a Seatbelt sandbox that refuses reading other processes'
-arguments, then run a launcher outside it. `info.sb` is the openjdk/jdk entry's profile.
+arguments, then run a launcher outside it. `info.sb` is the profile in
+[JDK-8397824](https://bugs.openjdk.org/browse/JDK-8397824).
 
 ```sh
 sandbox-exec -f info.sb ./mill version     # the daemon inherits the sandbox and stays
@@ -470,8 +402,8 @@ java.lang.RuntimeException: Operation not permitted
 
 **Why:**
 
-- `processStartMillis` calls `info()` outside any `try`, and the JDK on macOS throws there (the
-  openjdk/jdk entry).
+- `processStartMillis` calls `info()` outside any `try`, and the JDK on macOS throws there
+  (JDK-8397824).
 - `liveProcess` in `readActiveRecord` calls `info()` the same way for a record with a start time.
   A launcher waiting for `out/mill-out-lock` reaches that call while it words its wait message
   (`SharedOutLockManager.activeOtherProcessPrefix`).
