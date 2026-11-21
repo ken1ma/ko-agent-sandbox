@@ -12,6 +12,7 @@
 package agentsandbox.launcher
 
 import java.io.IOException
+import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path, Paths}
 
 import HostCommands.*
@@ -499,8 +500,117 @@ object KoAgentFs:
       //   (LauncherImages.BundleLabelTemplate has the same problem).
       // - macOS does not need the encoding but uses it too, so daily macOS runs detect a broken
       //   wrapper before it is used on Windows.
+      //
+      // Not the faster `wsl.exe -d <machine>`, whose commands run outside the machine's login
+      // session (design-win.md, "Machine scripts go through `podman machine ssh`, not `wsl.exe`").
       case Os.Mac | Os.Windows =>
         Vector(podman, "machine", "ssh", s"${printingCommand(script)} | sh")
+
+  /**
+   * Runs machine scripts as koAgentFsScriptCommand does, the first of them through a `podman machine
+   * ssh` started before the script is known, so the connection's setup overlaps the launch's other
+   * steps. A cold `podman machine ssh` on WSL takes 0.7 to 1.1s, and a started one runs a short
+   * script in 0.13s.
+   * - The script crosses on stdin as its base64 length, a newline and its base64 text
+   *   (EarlyShellCommand). The machine then runs it as koAgentFsScriptCommand's `| sh` does.
+   * - A started shell that has already ended gives way to koAgentFsScriptCommand, and so does one
+   *   whose machine side refused the script before running any of it. An ssh configured with
+   *   `StdinNull yes` passes the shell no input, and podman runs the user's ssh.
+   * - `close` lets an unused shell's machine side read the end of its input and exit. A launcher
+   *   that exits closes the input too.
+   * - Linux runs its scripts on the host and starts nothing.
+   */
+  final class MachineShell private[launcher] (
+    earlyCommand: Option[Vector[String]],
+    coldRun: String => Run,
+  ):
+    // A shell that does not start leaves the error to the cold run, which reports it.
+    private var unused: Option[StartedShell] = earlyCommand.flatMap: command =>
+      try Some(StartedShell(command))
+      catch case _: IOException => None
+
+    def run(script: String): Run =
+      val early = synchronized:
+        val taken = unused
+        unused = None
+        taken
+      early.filter(_.alive).flatMap(_.send(script)).getOrElse(coldRun(script))
+
+    def close(): Unit =
+      synchronized:
+        unused.foreach(_.close())
+        unused = None
+
+  object MachineShell:
+    def start(podman: String, os: Os): MachineShell =
+      MachineShell(
+        Option.when(os != Os.Linux)(Vector(podman, "machine", "ssh", EarlyShellCommand)),
+        script => HostCommands.run(koAgentFsScriptCommand(podman, os, script)*),
+      )
+
+  // Defined before EarlyShellCommand, since an object initializes its vals in order.
+  private val EarlyShellRefusal = "ko-agent-sandbox: the launcher sent no complete script"
+  private val EarlyShellRunning = "ko-agent-sandbox: running the script"
+
+  /**
+   * The machine side of a MachineShell. The command contains no double quote, for the reason
+   * koAgentFsScriptCommand states.
+   * - The script runs only once all of it has arrived. A launcher killed during the write leaves a
+   *   short read, and a script cut at a line break would otherwise run its first lines.
+   * - `$x` holds base64 text, whose alphabet has no character that word splitting or a glob acts on.
+   * - The line EarlyShellRunning on stdout comes before `sh` starts. A refusal's exit status arrives
+   *   after all of the stdout before it, so a refusal without that line is one before `sh` ran, and
+   *   nothing a script prints can fake it (StartedShell.send).
+   *   - ssh itself may print before the line, such as through a LocalCommand, without ending its
+   *     own line. The wrapper therefore prints a newline before the line too, and the launcher
+   *     removes both.
+   */
+  private[launcher] val EarlyShellCommand =
+    "read n && x=$(head -c $n) && [ ${#x} = $n ] " +
+      s"|| { echo $EarlyShellRefusal >&2; exit 2; }; " +
+      s"echo; echo $EarlyShellRunning; printf %s $$x | base64 -d | sh"
+
+  /** A started MachineShell process, its stdout and stderr drained from the start, since either can
+    * fill its pipe before the script arrives. */
+  private final class StartedShell(command: Vector[String]):
+    private val process = ProcessBuilder(command*).start()
+    private def drained(stream: java.io.InputStream) =
+      val task = java.util.concurrent.FutureTask(() => stream.readAllBytes())
+      val reader = Thread(task)
+      reader.setDaemon(true)
+      reader.start()
+      task
+    private val out = drained(process.getInputStream)
+    private val err = drained(process.getErrorStream)
+
+    def alive: Boolean = process.isAlive
+
+    /** The script's run, or None when the machine side refused the script before `sh` started, so a
+      * cold run cannot run it twice. */
+    def send(script: String): Option[Run] =
+      val encoded = java.util.Base64.getEncoder.encodeToString(script.getBytes(StandardCharsets.UTF_8))
+      val writeFailure =
+        try
+          val stdin = process.getOutputStream
+          stdin.write(s"${encoded.length}\n$encoded".getBytes(StandardCharsets.US_ASCII))
+          stdin.close()
+          ""
+        // The process ended between `alive` and the write. The script did not run, since it did not
+        // arrive whole.
+        catch case ex: IOException => s"\n${ex.getMessage}"
+      val exit = process.waitFor()
+      val stderr = String(err.get(), StandardCharsets.UTF_8).stripLineEnd
+      val running = s"\n$EarlyShellRunning\n".getBytes(StandardCharsets.US_ASCII)
+      val stdout = out.get()
+      // The wrapper's marker comes before any script output, so the first one is the wrapper's.
+      Some(stdout.indexOfSlice(running)).filter(_ >= 0) match
+        case Some(start) => Some(Run(exit, stdout.patch(start, Nil, running.length), stderr + writeFailure))
+        case None if exit == 2 && stderr.linesIterator.contains(EarlyShellRefusal) => None
+        case None => Some(Run(exit, stdout, stderr + writeFailure))
+
+    def close(): Unit =
+      try process.getOutputStream.close()
+      catch case _: IOException => ()
 
   /**
    * Makes the mountpoint ready for a `podman create` that binds it.

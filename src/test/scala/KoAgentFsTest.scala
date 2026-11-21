@@ -293,6 +293,62 @@ class KoAgentFsTest extends munit.FunSuite:
       Vector("/bin/sh", "-c", "script"),
     )
 
+  test("a machine shell runs its first script through the shell started ahead, whole, and the rest cold"):
+    assume(!isWindows, "the machine side runs under /bin/sh here")
+    var cold = Vector.empty[String]
+    val shell = MachineShell(
+      Some(Vector("/bin/sh", "-c", EarlyShellCommand)),
+      script =>
+        cold :+= script
+        HostCommands.Run(0, Array.emptyByteArray, ""),
+    )
+    val first = shell.run("""echo "it's \"quoted\" ü $$"; echo to-stderr >&2; exit 3""")
+    assertEquals((first.exit, first.err, cold), (3, "to-stderr", Vector.empty))
+    assert(first.text.startsWith("it's \"quoted\" ü "), first.text)
+    shell.run("second")
+    assertEquals(cold, Vector("second"))
+    // Without a machine, the scripts run on the host, as koAgentFsScriptCommand runs them.
+    assertEquals(MachineShell.start("podman", Os.Linux).run("echo here").text, "here")
+
+  test("a machine shell started ahead gives way to the cold run once it has ended or been closed"):
+    assume(!isWindows, "the machine side runs under /bin/sh here")
+    def coldShell(early: Vector[String]) =
+      MachineShell(Some(early), script => HostCommands.Run(0, s"cold $script".getBytes, ""))
+    val before = ProcessHandle.current().children().toList
+    val ended = coldShell(Vector("/bin/sh", "-c", "exit 0"))
+    ProcessHandle.current().children().filter(child => !before.contains(child)).forEach(_.onExit().get())
+    assertEquals(ended.run("a").text, "cold a")
+    val closed = coldShell(Vector("/bin/sh", "-c", EarlyShellCommand))
+    closed.close()
+    assertEquals(closed.run("b").text, "cold b")
+    val unstartable = coldShell(Vector("/nonexistent/podman"))
+    assertEquals(unstartable.run("c").text, "cold c")
+    // An ssh that passes no input, as under `StdinNull yes`: the machine side refuses before running anything.
+    val inputless = coldShell(Vector("/bin/sh", "-c", s"exec </dev/null; $EarlyShellCommand"))
+    assertEquals(inputless.run("d").text, "cold d")
+    // A script that prints the refusal's own line and exits 2 ran, and runs once, also after ssh's own output
+    // without a newline.
+    val state = Files.createTempFile("early-shell", ".log")
+    try
+      val failing = coldShell(Vector("/bin/sh", "-c", s"printf 'from ssh'; $EarlyShellCommand"))
+      val ran = failing.run(
+        s"echo ran >> '$state'; echo 'ko-agent-sandbox: the launcher sent no complete script' >&2; echo own; exit 2",
+      )
+      assertEquals((ran.exit, ran.text, Files.readString(state)), (2, "from sshown", "ran\n"))
+    finally Files.deleteIfExists(state)
+
+  test("the early shell's machine side runs nothing that arrived incomplete, and has no double quote"):
+    assume(!isWindows, "the machine side runs under /bin/sh here")
+    assert(!EarlyShellCommand.contains('"'), EarlyShellCommand)
+    val encoded = java.util.Base64.getEncoder.encodeToString("echo ran\necho rest\n".getBytes("UTF-8"))
+    Vector("", "12", s"${encoded.length}", s"${encoded.length}\n${encoded.take(12)}", s"999\n$encoded").foreach:
+      input =>
+        val process = ProcessBuilder("/bin/sh", "-c", EarlyShellCommand).start()
+        process.getOutputStream.write(input.getBytes("US-ASCII"))
+        process.getOutputStream.close()
+        val out = String(process.getInputStream.readAllBytes(), "UTF-8")
+        assertEquals((process.waitFor(), out), (2, ""), input)
+
   test("the reap script counts sessions by marker, prunes dead ones, and unmounts only at zero"):
     val script = koAgentFsReapScript("/usr/bin/podman", "app-abc123def456", "run-container-1")
     assert(script.contains("rm -f \"$dir/sessions/run-container-1\""))

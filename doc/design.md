@@ -8,7 +8,8 @@ What was decided and must not change silently:
 - the prior art they were reviewed against;
 - the principles to preserve.
 
-TODO.md lists what remains to do, and SECURITY.md states the security model.
+TODO.md lists what remains to do, and SECURITY.md states the security model. `design-win.md`
+holds the standing decisions that only Windows hosts motivate.
 
 ## Terminology
 
@@ -1017,25 +1018,23 @@ overlay, whose writes podman discards (SECURITY.md, "Cache overlay").
 - The README's opening list and diagram show no opt-in host grant, `--claude-plugin-dir` included.
   The option's help names what the session can read.
 
-### The launcher's text is ASCII
+### What may move across the start prompt
 
-Every string in the launcher's sources is ASCII, except characters it matches or writes into a
-script. `AsciiTextTest` enforces this and lists those characters. A Windows host shows any other
-character wrong wherever the text goes. Some of that text is consent or refusal text, which a
-reader must be able to trust verbatim. Measured on Japanese Windows (Windows Server 2025):
+The reader's time at the start prompt could hide a launch step's seconds. A step moves across the
+prompt only on these conditions, with the moves measured on Windows (2026-11-21):
 
-- In Windows Terminal, Java writes `System.out` in the console's code page, 932: `—`, which code
-  page 932 lacks, prints as `?`.
-- Redirected to a file, Java writes in the system's code page (`native.encoding`, MS932), while
-  podman's lines in the same file are UTF-8.
-- Written as UTF-8, `→—` shows in Windows Terminal as `竊停・`.
-
-ASCII is the same bytes in every one of these encodings. The launcher prints text it passes along
-as it is, such as a path with a non-ASCII name or podman's own lines.
-
-Revisit if Windows consoles default to code page 65001 (UTF-8), or if the launcher sets the
-console's code page itself (`SetConsoleOutputCP`). Every process attached to that console would
-then share that code page.
+- A step moves after the prompt only if the reader still sees what it prints. The agent's TUI
+  clears a note printed after Enter, and `--session-start=pause` exists to hold a launch's startup
+  lines on screen (README).
+  - A refusal may come after Enter, since the launch then ends and no TUI starts.
+  - Showing the prompt before the proxy is ready would gain 2.5 to 3.4s. It would move notes
+    after Enter: the sessions that the BPF backend's reconcile refused or removed, and "could not
+    list this workspace's containers".
+- A step moves before the prompt only if it creates nothing that the hold must precede. `launch()`
+  records at the hold why the hold comes before the container exists.
+  - Creating the container while the prompt waits would gain up to the 2.6 to 3.2s after it, and
+    reverses that order. A decline would also wait for `podman rm`, and AWS credentials that
+    expired at the prompt would refuse after Enter.
 
 ## The properties verification has to separate
 

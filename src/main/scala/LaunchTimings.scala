@@ -4,7 +4,7 @@
 // - The log ends with the handover's wall-clock time. Inside the session, the start times of the container's first
 //   processes (/proc/1/stat and /proc/2/stat, in clock ticks since the machine's boot) continue the timeline.
 // - A refused launch exits before the handover and writes no log.
-// - Steps run in the background beside the main thread's (plan-launch-parallelism.md), so each line says when its part
+// - Steps run in the background beside the main thread's (inBackground, ResourceSteps), so each line says when its part
 //   began, and the lines come in the order the parts ended.
 
 package agentsandbox.launcher

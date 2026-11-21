@@ -23,7 +23,7 @@ object HostCommands:
     else Os.Linux
 
   /** Prints the message on stderr and exits. A stack trace would read as a launcher bug, not as operator guidance. The
-    * message is ASCII (design.md, "The launcher's text is ASCII"). */
+    * message is ASCII (design-win.md, "The launcher's text is ASCII"). */
   def fail(message: String, code: Int = 1): Nothing =
     if shuttingDown then
       val interrupted = "the launch was interrupted; the failure below is its consequence, not a fault of its own"
@@ -526,6 +526,23 @@ object HostCommands:
       try Runtime.getRuntime.removeShutdownHook(settle)
       catch case _: IllegalStateException => ()
       outcome.getOrElse(throw IllegalStateException(s"$name ended without a result")).get
+
+  /** Runs `body`, then waits for `step` (inBackground) however `body` ends, so a lock that `body` runs under outlives
+    * the step. The step's own failure surfaces where the caller asks for its result. An interrupt does not end the
+    * wait; the thread's interrupt status is restored after it. */
+  def joiningAfter[A](step: () => Any)(body: => A): A =
+    try body
+    finally
+      var interrupted = false
+      var waiting = true
+      while waiting do
+        try
+          step()
+          waiting = false
+        catch
+          case _: InterruptedException => interrupted = true
+          case _: Exception            => waiting = false
+      if interrupted then Thread.currentThread().interrupt()
 
   private[launcher] def untilTheJvmEnds(): Nothing =
     while true do Thread.sleep(Long.MaxValue)

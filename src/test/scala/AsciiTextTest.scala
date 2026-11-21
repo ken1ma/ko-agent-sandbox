@@ -1,4 +1,4 @@
-// The launcher's own text is ASCII (design.md, "The launcher's text is ASCII"). The check reads the
+// The launcher's own text is ASCII (design-win.md, "The launcher's text is ASCII"). The check reads the
 // compiled classes rather than the sources. The classes hold every literal and no comment, and the
 // literals include the scripts that the launcher embeds and the egress proxy's text.
 

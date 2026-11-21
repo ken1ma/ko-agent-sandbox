@@ -143,7 +143,7 @@ object SandboxLifecycle:
     }
 
   /**
-   * The run's resources that background steps are creating, such as its networks (plan-launch-parallelism.md).
+   * The run's resources that background steps are creating, such as its networks (AgentSandboxLauncher.launch).
    * - The run's cleanup calls `settle` before it removes anything. Shutdown hooks run concurrently, so a removal that
    *   did not wait could run before a create ends, and leave the resource behind.
    * - A step that `settle` overtook does not start. Its join, which only a main thread in the JVM's shutdown can then

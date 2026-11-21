@@ -245,6 +245,36 @@ class HostCommandsTest extends munit.FunSuite:
     )
     assertEquals(process.waitFor(), 1)
 
+  test("a lock that a body runs under outlives the background step joined after it, when the body throws"):
+    val lockFile = Files.createTempFile("joining-after", ".lock")
+    try
+      val release = java.util.concurrent.CountDownLatch(1)
+      val holder = Thread: () =>
+        try
+          withFileLock(lockFile):
+            val step = inBackground("pending step", _ => ())(release.await())
+            joiningAfter(step)(throw IllegalStateException("the body failed"))
+        catch case _: IllegalStateException => ()
+      holder.start()
+      // The holder waits in its join once the body has thrown; without the join it would end and release the lock.
+      while holder.getState != Thread.State.WAITING && holder.isAlive do Thread.sleep(5)
+      def lockIsFree(): Boolean =
+        val channel = java.nio.channels.FileChannel.open(lockFile, java.nio.file.StandardOpenOption.WRITE)
+        try
+          try Option(channel.tryLock()).map(_.release()).isDefined
+          catch case _: java.nio.channels.OverlappingFileLockException => false
+        finally channel.close()
+      assert(holder.isAlive && !lockIsFree())
+      // An interrupt does not end the wait.
+      holder.interrupt()
+      Thread.sleep(50)
+      while holder.getState != Thread.State.WAITING && holder.isAlive do Thread.sleep(5)
+      assert(holder.isAlive && !lockIsFree())
+      release.countDown()
+      holder.join()
+      assert(lockIsFree())
+    finally Files.deleteIfExists(lockFile)
+
   test("a background step a shutdown overtakes does not start"):
     // The shutdown ends the JVM, so each case runs in a JVM of its own (BackgroundStepDuringShutdown).
     def stepLines(mode: String): Vector[String] =

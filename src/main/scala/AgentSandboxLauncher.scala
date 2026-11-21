@@ -275,6 +275,10 @@ object AgentSandboxLauncher:
       else if System.nanoTime() >= deadline then
         outcome = Some(Left(s"the egress proxy did not report ready within ${bound.toSeconds}s\n$said"))
       // Each pass asks podman once, and the pause bounds how late the launch notices a proxy that is ready.
+      // - The loop reads the log only between inspects, and pairs a ready line with the latest completed inspect's
+      //   answer, about this pause older than the read.
+      // - A line read during an inspect would pair with an answer a whole inspect older, or wait for the inspect in
+      //   flight and gain no more than this pause.
       else Thread.sleep(50)
     outcome.get
 
@@ -959,6 +963,49 @@ object AgentSandboxLauncher:
       .filter(_.matches(tlsRunDir(RunSuffixPattern)))
       .filterNot(name => liveRuns.contains(name.stripPrefix(tlsRunDir(""))))
 
+  /**
+   * Removes the retained logs and the TLS mount copies of `workspaceId`'s runs that no container in `containers`
+   * names, rather than letting them accumulate; the resets remove the rest. Gives the note for a failed listing,
+   * which prunes nothing (prepareRunFiles says why).
+   * - `ownRunDirs`, this run's directories, are left out. The listing may predate this run's proxy, and
+   *   runLogDirsToPrune keeps one fewer than RetainedRuns, so this run's directory brings the count to RetainedRuns.
+   * - A run's log directory names its run in the same suffix as its containers.
+   */
+  def pruneEndedRuns(
+    workspaceId: String,
+    containers: Either[String, Vector[String]],
+    logDir: Path,
+    tlsDir: Path,
+    ownRunDirs: Set[String],
+  ): Option[String] =
+    liveRunsOf(workspaceId, containers.toOption).foreach: live =>
+      def others(dir: Path) = directoryEntries(dir).map(_.getFileName.toString).filterNot(ownRunDirs)
+      runLogDirsToPrune(others(logDir), RetainedRuns, live).foreach(name => deleteRecursively(logDir.resolve(name)))
+      tlsRunDirsToPrune(others(tlsDir), live).foreach(name => deleteRecursively(tlsDir.resolve(name)))
+    containers.left.toOption.map: err =>
+      "note: could not list this workspace's containers; keeping every retained log and run file\n" + err
+
+  /**
+   * Lists the containers with `list` and prunes with pruneEndedRuns, in the background. The returned function gives
+   * the pruning's note.
+   * - A launch refused before it asks for the note still prunes, since its exit waits for the step (inBackground).
+   *   Otherwise each refused launch would add a log directory that nothing prunes.
+   * - The pruning deletes only other runs' directories, so it does not race the run's own files.
+   * - The caller holds the workspace's TLS lock until the step ends, on an exception too (joiningAfter). The lock
+   *   releases at the process's end after `fail`, whose exit waits for the step. A pruning that outlived the lock
+   *   could delete what a later launch created after the listing.
+   */
+  def startPruningEndedRuns(
+    workspaceId: String,
+    list: () => Either[String, Vector[String]],
+    logDir: Path,
+    tlsDir: Path,
+    ownRunDirs: Set[String],
+    register: Thread => Unit = Runtime.getRuntime.addShutdownHook(_),
+  ): () => Option[String] =
+    inBackground("this workspace's container listing and pruning", register):
+      pruneEndedRuns(workspaceId, list(), logDir, tlsDir, ownRunDirs)
+
   /** The run suffixes of `workspaceId` that a container in `containerNames` names, the run's proxy or its sandbox.
     * None when the listing failed, so that nothing is pruned (prepareRunFiles says why either container counts). */
   def liveRunsOf(workspaceId: String, containerNames: Option[Vector[String]]): Option[Set[String]] =
@@ -1510,6 +1557,8 @@ object AgentSandboxLauncher:
     val machineMemory = timings.timed("checked podman and the machine's memory"):
       requirePodman(os, requireLimits = true, beside = reads)
     val LaunchReads(awaitImage, awaitProxyImage, startedBpfChecks, startedKoAgentFsChecks) = reads.started
+    // The reconcile's shell connects once the machine runs, and the reconcile starts about 0.7s later.
+    val reconcileShell = Option.when(workspaceSettings.bpf)(MachineShell.start(podman, os))
     val cacheOverlays = timings.timed("resolved the cache overlays"):
       resolveCacheOverlays(parsed, settings, workspace, os)
 
@@ -1571,6 +1620,7 @@ object AgentSandboxLauncher:
             missing.map(line => s"  - $line")).mkString("\n"),
         )
         None
+    if bpfFacts.isEmpty then reconcileShell.foreach(_.close())
     // The backend's reconcile runs at this launcher's start (ko-agent-fs/bpf/doc/architecture.md, "Lifecycle", step
     // 7), under the launch lock, so the reconcile does not take a launch in flight's pins for an orphan's.
     // - The reconcile runs beside the launch's next steps, none of which takes the launch lock, and the launch joins it
@@ -1578,13 +1628,12 @@ object AgentSandboxLauncher:
     //   before createUnderLaunchLock.
     // - The reconcile does not touch this run, which has no record or attach cgroup until the launch script.
     // - A launch refused before the join drops the reconcile's notes; the next launch reconciles again.
-    val reconciling = bpfFacts.map: facts =>
+    val reconciling = bpfFacts.zip(reconcileShell).map: (facts, shell) =>
       val asked = System.nanoTime()
       inBackground("ko-agent-bpf reconcile"):
         withFileLock(KoAgentBpf.launchLockFile(stateRoot(os))):
           timings.since("waited for the launch lock before the reconcile", asked)
-          timings.timed("ran the BPF backend's reconcile"):
-            run(koAgentFsScriptCommand(podman, os, KoAgentBpf.reconcileScript(facts.manager))*)
+          timings.timed("ran the BPF backend's reconcile")(shell.run(KoAgentBpf.reconcileScript(facts.manager)))
     // What this run is, for its labels and for the comparison with the live sessions. A read-only session that the
     // probe left without a policy is a FUSE backend session with no socket setting, whatever was asked. A live `bpf`
     // session beside it is therefore refused, as it would be beside any other FUSE backend session.
@@ -1752,6 +1801,10 @@ object AgentSandboxLauncher:
         terminalReader.filter(_ => sessionStartMode == "pause"),
       )
 
+    // The first machine script after the hold, the BPF backend's launch script or the mounts' identities, gets a shell
+    // that connects while the prompt waits. Under --session-start=immediate nothing waits, and the shell gains little.
+    val afterHoldShell = MachineShell.start(podman, os)
+
     // The hold comes first, then the create, the reaper, the mount, and the start.
     // - The hold comes before the container exists. A Ctrl-C there is then an ordinary shutdown: the hook removes this
     //   run's proxy and networks, and the launch ends at once. A launcher killed outright at the prompt leaves no
@@ -1771,6 +1824,7 @@ object AgentSandboxLauncher:
     val started = timings.timed("waited for the answer to the start prompt"):
       confirmStart(sessionStartMode, if command.isEmpty then Vector("bash") else command, terminalReader)
     if !started then
+      afterHoldShell.close()
       heldLineClosed = true
       sys.exit(0)
 
@@ -1788,7 +1842,7 @@ object AgentSandboxLauncher:
 
     startSandbox(
       parsed, settings, workspace, rules, names, mount, git, createWithVolumes, fuseReap, runFiles, channelLogFile,
-      micLogFile, backendLogFile, launchLogFile, timings, cleanup, os,
+      micLogFile, backendLogFile, launchLogFile, afterHoldShell, timings, cleanup, os,
     )
 
   /** The options that another launch line states when in force. That line names the options file when the option came
@@ -2437,211 +2491,204 @@ object AgentSandboxLauncher:
       // - A run is live while either of its containers exists. The proxy writes the run's logs, and so do the runner
       //   and the relay, which serve the sandbox container. The mount copies serve both containers. A run whose proxy
       //   crashed while its sandbox lives on must keep its files.
-      val containers = listedNames(podman, "ps", "--all", "--format", "{{.Names}}")
-      val liveRuns = liveRunsOf(workspaceId, containers.toOption)
-      containers.left.foreach: err =>
-        System.err.println(
-          "note: could not list this workspace's containers; keeping every retained log and run file\n" + err,
-        )
+      // - The listing and the pruning run beside this run's files and the proxy's create, each a podman round trip
+      //   (startPruningEndedRuns).
+      val pruning = startPruningEndedRuns(
+        workspaceId,
+        () => listedNames(podman, "ps", "--all", "--format", "{{.Names}}"),
+        logDir, tlsDir, Set(runLogs.getFileName.toString, runFiles.getFileName.toString),
+      )
 
-      // A run's log directory names its run in the same suffix as its containers.
-      liveRuns.foreach: live =>
-        val entries = directoryEntries(logDir).map(_.getFileName.toString)
-        runLogDirsToPrune(entries, RetainedRuns, live).foreach(name => deleteRecursively(logDir.resolve(name)))
+      // The lock outlives the pruning on every path (startPruningEndedRuns).
+      val prepared = joiningAfter(pruning):
+        createPrivateDirectories(runLogs)
+        writePrivate(hostLogFile, "")
 
-      // This launch removes the run copies whose runs are gone, rather than letting them accumulate. The resets remove
-      // the rest.
-      liveRuns.foreach: live =>
-        val entries = directoryEntries(tlsDir).map(_.getFileName.toString)
-        tlsRunDirsToPrune(entries, live).foreach(name => deleteRecursively(tlsDir.resolve(name)))
+        // This run's directory comes first, because the copies below are written into it.
+        createPrivateDirectories(runFiles)
 
-      // This directory comes after the pruning, which keeps one fewer than RetainedRuns, so this run's directory brings
-      // the count to RetainedRuns.
-      createPrivateDirectories(runLogs)
-      writePrivate(hostLogFile, "")
+        // The CA check tests coherence, not just expiry (CertificateHelper.keyMatchesCertificate).
+        val caServes = (readIfPresent(caCertFile), readIfPresent(caKeyFile)) match
+          case (Some(cert), Some(key)) =>
+            certificateExpiresAfter(Some(cert), reissueDeadline) && keyMatchesCertificate(cert, key)
+          case _ => false
+        if !caServes then
+          try
+            val ca = InspectionCa.create(workspaceSlug)
+            // The launch retires the leaf that this CA no longer signs by emptying the leaf, not by deleting it.
+            // - The names stay stable for the copies below and for anything still reading the files
+            //   (FileHelper.writeWithMode).
+            // - An empty leaf fails every expiry test below, so this same launch reissues the leaf.
+            // - The launch empties the leaf before writing the CA. A launch that dies here leaves a leaf that the next
+            //   launch reissues, rather than a leaf silently signed by the old CA.
+            Seq(leafCertFile, leafKeyFile).foreach(writePrivate(_, ""))
+            writePrivate(caKeyFile, ca.privateKeyPem)
+            writePrivate(caCertFile, ca.certificatePem)
+          catch
+            case ex: Exception =>
+              fail(s"error: could not create this workspace's inspection CA in $tlsDir\n$ex")
 
-      // This run's directory comes first, because the copies below are written into it.
-      createPrivateDirectories(runFiles)
-
-      // The CA check tests coherence, not just expiry (CertificateHelper.keyMatchesCertificate).
-      val caServes = (readIfPresent(caCertFile), readIfPresent(caKeyFile)) match
-        case (Some(cert), Some(key)) =>
-          certificateExpiresAfter(Some(cert), reissueDeadline) && keyMatchesCertificate(cert, key)
-        case _ => false
-      if !caServes then
-        try
-          val ca = InspectionCa.create(workspaceSlug)
-          // The launch retires the leaf that this CA no longer signs by emptying the leaf, not by deleting it.
-          // - The names stay stable for the copies below and for anything still reading the files
-          //   (FileHelper.writeWithMode).
-          // - An empty leaf fails every expiry test below, so this same launch reissues the leaf.
-          // - The launch empties the leaf before writing the CA. A launch that dies here leaves a leaf that the next
-          //   launch reissues, rather than a leaf silently signed by the old CA.
-          Seq(leafCertFile, leafKeyFile).foreach(writePrivate(_, ""))
-          writePrivate(caKeyFile, ca.privateKeyPem)
-          writePrivate(caCertFile, ca.certificatePem)
-        catch
-          case ex: Exception =>
-            fail(s"error: could not create this workspace's inspection CA in $tlsDir\n$ex")
-
-      // The leaf is reissued when the CA is reissued (the leaf is emptied just above), and whenever the leaf stops
-      // serving the inspected names (CertificateHelper.leafServes). A ruleset that inspects nothing gets no leaf.
-      if inspectedHosts.nonEmpty
-        && !leafServes(
-          readIfPresent(leafCertFile), readIfPresent(leafKeyFile), inspectedHosts.toSet, Files.readString(caCertFile),
-          reissueDeadline,
-        )
-      then
-        try
-          val leaf = X509Helper.issueLeaf(
-            inspectedHosts,
-            parseCertificate(Files.readString(caCertFile)),
-            parsePrivateKey(Files.readString(caKeyFile), caKeyFile.toString),
+        // The leaf is reissued when the CA is reissued (the leaf is emptied just above), and whenever the leaf stops
+        // serving the inspected names (CertificateHelper.leafServes). A ruleset that inspects nothing gets no leaf.
+        if inspectedHosts.nonEmpty
+          && !leafServes(
+            readIfPresent(leafCertFile), readIfPresent(leafKeyFile), inspectedHosts.toSet, Files.readString(caCertFile),
+            reissueDeadline,
           )
-          writePrivate(leafKeyFile, leaf.privateKeyPem)
-          writePrivate(leafCertFile, leaf.certificatePem)
-        catch
-          case ex: Exception =>
-            fail(s"error: could not issue this workspace's inspection certificate\n$ex")
+        then
+          try
+            val leaf = X509Helper.issueLeaf(
+              inspectedHosts,
+              parseCertificate(Files.readString(caCertFile)),
+              parsePrivateKey(Files.readString(caKeyFile), caKeyFile.toString),
+            )
+            writePrivate(leafKeyFile, leaf.privateKeyPem)
+            writePrivate(leafCertFile, leaf.certificatePem)
+          catch
+            case ex: Exception =>
+              fail(s"error: could not issue this workspace's inspection certificate\n$ex")
 
-      // The sandbox's trust is the image's own CA bundle, plus the CA that this run trusts. The workstation's bundle is
-      // a different set entirely. The launch re-reads the image's bundle when the image or the CA changes, and the
-      // stamp records both (imageId comes from the sandbox image's inspect).
-      val caFingerprint = certificateFingerprint(parseCertificate(Files.readString(caCertFile)))
-      val bundleStamp = s"$imageId $caFingerprint"
+        // The sandbox's trust is the image's own CA bundle, plus the CA that this run trusts. The workstation's bundle
+        // is a different set entirely. The launch re-reads the image's bundle when the image or the CA changes, and
+        // the stamp records both (imageId comes from the sandbox image's inspect).
+        val caFingerprint = certificateFingerprint(parseCertificate(Files.readString(caCertFile)))
+        val bundleStamp = s"$imageId $caFingerprint"
 
-      // The image's files from which both caches below are made. The launch reads both files in one run of the image
-      // when both caches are stale, as after a rebuild.
-      val bundleStale = readIfPresent(bundleFile).forall(_.isEmpty) || firstLine(bundleStampFile) != bundleStamp
-      val agentDocStale =
-        readIfPresent(agentDocFile).forall(_.isEmpty) || firstLine(agentDocStampFile) != agentDocStamp
-      val imageBundlePath = "/etc/ssl/certs/ca-certificates.crt"
-      val (imageFiles, imageFilesMissing) = readImageFiles(
-        podman, imageId,
-        Vector(imageBundlePath).filter(_ => bundleStale) ++ Vector(AgentDocPath).filter(_ => agentDocStale),
-      )
-
-      if bundleStale then
-        val imageBundle = imageFiles.get(imageBundlePath).filter(_.nonEmpty)
-          .getOrElse(fail(s"error: could not read the CA bundle out of $image\n$imageFilesMissing"))
-        val bundleText =
-          String(imageBundle, StandardCharsets.US_ASCII).stripLineEnd + "\n" +
-            Files.readString(caCertFile)
-        writeReadable(bundleFile, bundleText)
-        writeReadable(bundleStampFile, bundleStamp + "\n")
-
-      // The JVM reads a `cacerts` keystore and no proxy variable, so the bundle above and the HTTPS_PROXY family cannot
-      // reach the JVM. JdkTrust.scala handles the JVM's trust and proxy, and an empty answer means that the image ships
-      // no JDK.
-      val jdkFileMounts = jdkMounts(
-        podman, imageId, imageEnv, tlsDir, bundleStamp, caCertFile, EgressProxyHost, EgressProxyPort,
-        selinuxEnforcing,
-      )
-
-      if agentDocStale then
-        val imageDoc = imageFiles.get(AgentDocPath).filter(_.nonEmpty)
-          .getOrElse(fail(s"error: could not read the agent instructions out of $image\n$imageFilesMissing"))
-        writeReadable(
-          agentDocFile,
-          String(imageDoc, StandardCharsets.UTF_8).stripLineEnd
-            + appendedSection(
-              mountPath, workspaceMode, rulesetText, runOnHost, os == Os.Mac, gitInstruction, parsed.credentialBindings,
-              backend = parsed.workspaceSettings.backend,
-              unixSocket = parsed.workspaceSettings.unixSocket,
-              windowsShare = os == Os.Windows,
-            ),
+        // The image's files from which both caches below are made. The launch reads both files in one run of the image
+        // when both caches are stale, as after a rebuild.
+        val bundleStale = readIfPresent(bundleFile).forall(_.isEmpty) || firstLine(bundleStampFile) != bundleStamp
+        val agentDocStale =
+          readIfPresent(agentDocFile).forall(_.isEmpty) || firstLine(agentDocStampFile) != agentDocStamp
+        val imageBundlePath = "/etc/ssl/certs/ca-certificates.crt"
+        val (imageFiles, imageFilesMissing) = readImageFiles(
+          podman, imageId,
+          Vector(imageBundlePath).filter(_ => bundleStale) ++ Vector(AgentDocPath).filter(_ => agentDocStale),
         )
-        writeReadable(agentDocStampFile, agentDocStamp + "\n")
 
-      // This run's copies, made while the lock still holds, so no concurrent launch's rewrite can happen between an
-      // expiry check above and a copy below.
-      // - A file that this run wrote into its own directory is mounted where it is.
-      // - Modes travel with the copy: the leaf key stays owner-only, and the run directory itself allows only this
-      //   user.
-      def carried(source: Path): Path =
-        if source.startsWith(runFiles) then source
-        else
-          val target = runFiles.resolve(source.getFileName)
-          Files.copy(
-            source, target,
-            StandardCopyOption.COPY_ATTRIBUTES, StandardCopyOption.REPLACE_EXISTING,
+        if bundleStale then
+          val imageBundle = imageFiles.get(imageBundlePath).filter(_.nonEmpty)
+            .getOrElse(fail(s"error: could not read the CA bundle out of $image\n$imageFilesMissing"))
+          val bundleText =
+            String(imageBundle, StandardCharsets.US_ASCII).stripLineEnd + "\n" +
+              Files.readString(caCertFile)
+          writeReadable(bundleFile, bundleText)
+          writeReadable(bundleStampFile, bundleStamp + "\n")
+
+        // The JVM reads a `cacerts` keystore and no proxy variable, so the bundle above and the HTTPS_PROXY family
+        // cannot reach the JVM. JdkTrust.scala handles the JVM's trust and proxy, and an empty answer means that the
+        // image ships no JDK.
+        val jdkFileMounts = jdkMounts(
+          podman, imageId, imageEnv, tlsDir, bundleStamp, caCertFile, EgressProxyHost, EgressProxyPort,
+          selinuxEnforcing,
+        )
+
+        if agentDocStale then
+          val imageDoc = imageFiles.get(AgentDocPath).filter(_.nonEmpty)
+            .getOrElse(fail(s"error: could not read the agent instructions out of $image\n$imageFilesMissing"))
+          writeReadable(
+            agentDocFile,
+            String(imageDoc, StandardCharsets.UTF_8).stripLineEnd
+              + appendedSection(
+                mountPath, workspaceMode, rulesetText, runOnHost, os == Os.Mac, gitInstruction,
+                parsed.credentialBindings,
+                backend = parsed.workspaceSettings.backend,
+                unixSocket = parsed.workspaceSettings.unixSocket,
+                windowsShare = os == Os.Windows,
+              ),
           )
-          target
+          writeReadable(agentDocStampFile, agentDocStamp + "\n")
 
-      // The proxy gets the leaf and its key only.
-      // - The CA key is stored beside them and is never copied or mounted.
-      // - A ruleset that inspects nothing gets no material, because the proxy refuses material that it has nothing to
-      //   inspect with.
-      // - --userns makes an owner-only key readable as uid 65532. Without --userns, the key would have to be
-      //   world-readable on the host. The userns flag itself stays on the create call, because the proxy writes its
-      //   owner-only log file through the same mapping.
-      val proxyTls = proxyTlsArgs(
-        if inspectedHosts.isEmpty then ProxyTlsMaterial.Uninspected
-        else ProxyTlsMaterial.Leaf(carried(leafCertFile), carried(leafKeyFile)),
-        selinuxEnforcing,
-      )
+        // This run's copies, made while the lock still holds, so no concurrent launch's rewrite can happen between an
+        // expiry check above and a copy below.
+        // - A file that this run wrote into its own directory is mounted where it is.
+        // - Modes travel with the copy: the leaf key stays owner-only, and the run directory itself allows only this
+        //   user.
+        def carried(source: Path): Path =
+          if source.startsWith(runFiles) then source
+          else
+            val target = runFiles.resolve(source.getFileName)
+            Files.copy(
+              source, target,
+              StandardCopyOption.COPY_ATTRIBUTES, StandardCopyOption.REPLACE_EXISTING,
+            )
+            target
 
-      // The host plugins' marketplace manifest and managed drop-in are this run's own files (ClaudePlugins.scala has
-      // the layout). The plugin directories are bound where they are.
-      val marketplaceRoot = runFiles.resolve(ClaudePlugins.RunFilesDirectory)
-      val pluginDropIn = runFiles.resolve(ClaudePlugins.DropInFile)
-      if claudePlugins.nonEmpty then
-        val manifest = marketplaceRoot.resolve(ClaudePlugins.MarketplaceFile)
-        Files.createDirectories(manifest.getParent)
-        writeReadable(manifest, ClaudePlugins.marketplaceText(claudePlugins))
-        writeReadable(pluginDropIn, ClaudePlugins.dropInText(claudePlugins))
+        // The proxy gets the leaf and its key only.
+        // - The CA key is stored beside them and is never copied or mounted.
+        // - A ruleset that inspects nothing gets no material, because the proxy refuses material that it has nothing to
+        //   inspect with.
+        // - --userns makes an owner-only key readable as uid 65532. Without --userns, the key would have to be
+        //   world-readable on the host. The userns flag itself stays on the create call, because the proxy writes its
+        //   owner-only log file through the same mapping.
+        val proxyTls = proxyTlsArgs(
+          if inspectedHosts.isEmpty then ProxyTlsMaterial.Uninspected
+          else ProxyTlsMaterial.Leaf(carried(leafCertFile), carried(leafKeyFile)),
+          selinuxEnforcing,
+        )
 
-      val preparedSandboxFiles = sandboxFileArgs(
-        carried(bundleFile), carried(caCertFile),
-        jdkFileMounts.map((file, at) => (carried(file), at)), carried(agentDocFile),
-        selinuxEnforcing,
-      )
-        ++ ClaudePlugins.mountArgs(marketplaceRoot, pluginDropIn, claudePlugins, selinuxEnforcing)
-        // The JDK files' facts once more, as `-D` words, for the JVMs that read no file (JdkTrust.scala).
-        ++ javaHomeOf(imageEnv).map(home =>
-          s"--env=KO_AGENT_SANDBOX_JAVA_OPTS=${jdkJavaOpts(home, EgressProxyHost, EgressProxyPort)}"
-        ).toVector
+        // The host plugins' marketplace manifest and managed drop-in are this run's own files (ClaudePlugins.scala has
+        // the layout). The plugin directories are bound where they are.
+        val marketplaceRoot = runFiles.resolve(ClaudePlugins.RunFilesDirectory)
+        val pluginDropIn = runFiles.resolve(ClaudePlugins.DropInFile)
+        if claudePlugins.nonEmpty then
+          val manifest = marketplaceRoot.resolve(ClaudePlugins.MarketplaceFile)
+          Files.createDirectories(manifest.getParent)
+          writeReadable(manifest, ClaudePlugins.marketplaceText(claudePlugins))
+          writeReadable(pluginDropIn, ClaudePlugins.dropInText(claudePlugins))
 
-      // -----------------------------------------------------------------------
-      // Proxy container
-      // -----------------------------------------------------------------------
-      //
-      // A session keeps the ruleset that it started with, and the next launch re-reads the rules.
-      // - The proxy is --rm, so a proxy whose process exits removes itself.
-      // - The audit-log bind is the proxy's only writable path, because the native executable needs no scratch
-      //   filesystem.
-      // - The launch creates the proxy here, still under the lock. No sweep that lists under the lock (the top of this
-      //   block) then sees this run's files above without a container that names the run. A launch that dies before
-      //   this create leaves files that no container names, and that sweep exists for those files.
-      // - The launch starts the proxy once the lock is released.
-      awaitNetworks()
-      val proxyCreated = run(
-        Vector(
-          podman, "create",
-          s"--name=$proxyContainer",
-          "--rm",
-          "--pull=never",
-          "--init",
-          s"--network=$sandboxNetwork",
-          s"--network=$egressNetwork",
-          "--cap-drop=ALL",
-          "--security-opt=no-new-privileges",
-          "--read-only",
-          "--read-only-tmpfs=false", // Do not add writable tmpfs mounts to the read-only root.
-        ) ++
-          // memoryArguments says why the equal limits disable podman's default swap allowance.
-          memoryArguments(Some(ProxyMemoryLimit), None, None) ++ Vector(
-            "--pids-limit=512",
-            "--http-proxy=false",
-            UidGidMapping,
-          ) ++ rulesetEnvArgs(egressProfile, presets, ruleFiles) ++ upstreamProxyArgs(env)
-          ++ proxyCredentialArgs(sessionCredentials)
-          ++ proxyTls ++ proxyLogArgs(hostLogFile, selinuxEnforcing) ++ Vector(proxyImageId)*
-      )
-      if !proxyCreated.ok then
-        fail(s"error: could not create the egress proxy container\n${proxyCreated.err}")
+        val preparedSandboxFiles = sandboxFileArgs(
+          carried(bundleFile), carried(caCertFile),
+          jdkFileMounts.map((file, at) => (carried(file), at)), carried(agentDocFile),
+          selinuxEnforcing,
+        )
+          ++ ClaudePlugins.mountArgs(marketplaceRoot, pluginDropIn, claudePlugins, selinuxEnforcing)
+          // The JDK files' facts once more, as `-D` words, for the JVMs that read no file (JdkTrust.scala).
+          ++ javaHomeOf(imageEnv).map(home =>
+            s"--env=KO_AGENT_SANDBOX_JAVA_OPTS=${jdkJavaOpts(home, EgressProxyHost, EgressProxyPort)}"
+          ).toVector
 
-      preparedSandboxFiles
+        // -----------------------------------------------------------------------
+        // Proxy container
+        // -----------------------------------------------------------------------
+        //
+        // A session keeps the ruleset that it started with, and the next launch re-reads the rules.
+        // - The proxy is --rm, so a proxy whose process exits removes itself.
+        // - The audit-log bind is the proxy's only writable path, because the native executable needs no scratch
+        //   filesystem.
+        // - The launch creates the proxy here, still under the lock. No sweep that lists under the lock (the top of
+        //   this block) then sees this run's files above without a container that names the run. A launch that dies
+        //   before this create leaves files that no container names, and that sweep exists for those files.
+        // - The launch starts the proxy once the lock is released.
+        awaitNetworks()
+        val proxyCreated = run(
+          Vector(
+            podman, "create",
+            s"--name=$proxyContainer",
+            "--rm",
+            "--pull=never",
+            "--init",
+            s"--network=$sandboxNetwork",
+            s"--network=$egressNetwork",
+            "--cap-drop=ALL",
+            "--security-opt=no-new-privileges",
+            "--read-only",
+            "--read-only-tmpfs=false", // Do not add writable tmpfs mounts to the read-only root.
+          ) ++
+            // memoryArguments says why the equal limits disable podman's default swap allowance.
+            memoryArguments(Some(ProxyMemoryLimit), None, None) ++ Vector(
+              "--pids-limit=512",
+              "--http-proxy=false",
+              UidGidMapping,
+            ) ++ rulesetEnvArgs(egressProfile, presets, ruleFiles) ++ upstreamProxyArgs(env)
+            ++ proxyCredentialArgs(sessionCredentials)
+            ++ proxyTls ++ proxyLogArgs(hostLogFile, selinuxEnforcing) ++ Vector(proxyImageId)*
+        )
+        if !proxyCreated.ok then
+          fail(s"error: could not create the egress proxy container\n${proxyCreated.err}")
+
+        preparedSandboxFiles
+      pruning().foreach(System.err.println)
+      prepared
 
   /** `git --version` on the host, or None where no git answers on PATH. */
   private def hostGitVersionLine(): Option[String] =
@@ -3073,6 +3120,7 @@ object AgentSandboxLauncher:
     micLogFile: Path,
     backendLogFile: Path,
     launchLogFile: Path,
+    machineShell: MachineShell,
     timings: LaunchTimings,
     cleanup: RunCleanup,
     os: Os,
@@ -3107,7 +3155,7 @@ object AgentSandboxLauncher:
       val asked = System.nanoTime()
       val ran = withFileLock(ImageBuilds.imageBuildLockFile(os)):
         timings.since("waited for the image-build lock", asked)
-        timings.timed("ran the launch script")(run(koAgentFsScriptCommand(podman, os, script)*))
+        timings.timed("ran the launch script")(machineShell.run(script))
       if !ran.ok then
         fail(
           s"error: the BPF backend's launch failed at its ${KoAgentBpf.stepReached(ran.text)} step; nothing is bound " +
@@ -3120,7 +3168,7 @@ object AgentSandboxLauncher:
     val identities: Option[KoAgentBpf.Launched] => Vector[String] => Map[String, String] = launched =>
       paths =>
         launched.map(_.identities).filter(known => paths.forall(known.contains)).getOrElse:
-          val asked = run(koAgentFsScriptCommand(podman, os, KoAgentBpf.identScript(paths))*)
+          val asked = machineShell.run(KoAgentBpf.identScript(paths))
           if !asked.ok then fail(s"error: the machine did not answer the mounts' identities\n${asked.err}")
           KoAgentBpf.parseIdentities(asked.text)
     val (launched, created) = createUnderLaunchLock(

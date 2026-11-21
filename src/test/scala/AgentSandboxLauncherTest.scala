@@ -2676,6 +2676,53 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assertEquals(tlsRunDirsToPrune(names, Set.empty), Seq("run-1a2b3c4d", "run-ffffffff"))
     assertEquals(tlsRunDirsToPrune(names, Set("1a2b3c4d", "ffffffff")), Seq())
 
+  test("pruning keeps this run's own directories, which the listing may predate, and RetainedRuns logs in all"):
+    val workspaceId = "p-0123456789ab"
+    val state = Files.createTempDirectory("prune-ended-runs")
+    try
+      val logDir = Files.createDirectories(state.resolve("log"))
+      val tlsDir = Files.createDirectories(state.resolve("tls"))
+      val ended = (1 to EgressRules.RetainedRuns + 2).map(i => f"run-20261120T0000${i}%02dZ-$i%08x")
+      val own = "run-20261121T000000Z-0000abcd"
+      (ended :+ own).foreach(name => Files.createDirectories(logDir.resolve(name)))
+      Vector("run-00000001", "run-0000abcd", "run-0000beef").foreach: name =>
+        Files.createDirectories(tlsDir.resolve(name))
+      val ownRunDirs = Set(own, "run-0000abcd")
+      def present(dir: Path) = FileHelper.directoryEntries(dir).map(_.getFileName.toString).toSet
+      // A failed listing prunes nothing and says so.
+      val note = pruneEndedRuns(workspaceId, Left("podman failed"), logDir, tlsDir, ownRunDirs)
+      assert(note.exists(_.endsWith("podman failed")), note.toString)
+      assertEquals(present(logDir).size, EgressRules.RetainedRuns + 3)
+      // The listing names only the run 0000beef, not this run: this run keeps its directories, and the other ended
+      // runs keep the newest RetainedRuns - 1 logs.
+      val listed = Right(Vector(proxyRunContainer(workspaceId, "0000beef")))
+      assertEquals(pruneEndedRuns(workspaceId, listed, logDir, tlsDir, ownRunDirs), None)
+      assertEquals(present(logDir), (ended.takeRight(EgressRules.RetainedRuns - 1) :+ own).toSet)
+      assertEquals(present(tlsDir), Set("run-0000abcd", "run-0000beef"))
+    finally FileHelper.deleteRecursively(state)
+
+  test("a launch refused before it asks for the pruning's note still prunes, through its exit's wait"):
+    val workspaceId = "p-0123456789ab"
+    val state = Files.createTempDirectory("prune-on-refusal")
+    try
+      val logDir = Files.createDirectories(state.resolve("log"))
+      val tlsDir = Files.createDirectories(state.resolve("tls"))
+      val ended = (1 to EgressRules.RetainedRuns + 2).map(i => f"run-20261120T0000${i}%02dZ-$i%08x")
+      ended.foreach(name => Files.createDirectories(logDir.resolve(name)))
+      Files.createDirectories(tlsDir.resolve("run-00000001"))
+      var exitHook: Option[Thread] = None
+      startPruningEndedRuns(
+        workspaceId, () => Right(Vector.empty), logDir, tlsDir, Set.empty, hook => exitHook = Some(hook),
+      )
+      // The refusal's exit runs the hook, and nobody asks for the note.
+      exitHook.foreach(_.run())
+      assertEquals(
+        FileHelper.directoryEntries(logDir).map(_.getFileName.toString).toSet,
+        ended.takeRight(EgressRules.RetainedRuns - 1).toSet,
+      )
+      assert(FileHelper.directoryEntries(tlsDir).isEmpty)
+    finally FileHelper.deleteRecursively(state)
+
   test("a run is live while its proxy or its sandbox container exists, and unknown when the listing failed"):
     val workspaceId = "p-0123456789ab"
     val listing = Vector(
