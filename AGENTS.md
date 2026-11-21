@@ -74,8 +74,8 @@ claim: keep articles and verbs, and give each sentence one main clause.
 - Put citations at the end of the sentence, never between subject and verb.
 
 Record a standing practice or fact once, in the document that made the decision or the code
-enforcing it, and reference it elsewhere. Record a deliberate absence and its reason once; do not
-repeat the explanation elsewhere.
+enforcing it, and reference it elsewhere. If a reader of the current design would expect something
+deliberately omitted, explain its absence once, where the reader would look for it.
 
 Compare each edit's old and new meanings, then re-read the whole passage and check each sentence
 against Writing style. Unless the user authorized the change, ask before removing a recorded reason

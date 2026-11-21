@@ -1679,7 +1679,7 @@ object AgentSandboxLauncher:
     val removeWhatThisRunCreated = () =>
       // Podman takes about a second on cleanup, whether a launch was refused, interrupted, or ended normally through
       // the resident path. The notice reports progress, so the pause does not look like a hang.
-      System.err.println((if heldLineClosed then "" else "\n") + "removing this run's containers and networks")
+      System.err.println((if heldLineClosed then "" else "\n") + "removing the sandbox")
       resourceSteps.settle()
       removeRunResources(podman, sandboxContainer, proxyContainer, Seq(sandboxNetwork, egressNetwork))
       // This run's mount-source copies. The reaper deliberately does not remove them, so the reaper's argument list
@@ -3181,7 +3181,6 @@ object AgentSandboxLauncher:
           KoAgentBpf.createFailureNote(os, created.err).filter(_ => bpf.isDefined).fold("")(note => s"\n$note"),
       )
     launched.foreach: done =>
-      System.err.println(KoAgentBpf.LaunchLine)
       KoAgentBpf.appendLog(backendLogFile, KoAgentBpf.stepsLogLine(done))
       if done.preloaded then
         KoAgentBpf.appendLog(backendLogFile, "a program set for the next launch is being verified behind this one")

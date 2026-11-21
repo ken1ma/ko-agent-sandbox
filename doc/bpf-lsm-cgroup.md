@@ -205,8 +205,8 @@ What a launch under `bpf` does and refuses:
 
 - A capability probe runs at every launch ("The launcher's side"). Where it fails, a live launch is
   refused and a read-only launch keeps only the raw `ro` bind. Both print what the machine lacks,
-  with the remedy for each provider. The launch line names the backend, and the steps' times go to
-  the run's `ko-agent-bpf.log`.
+  with the remedy for each provider. The `workspace:` launch line names the backend, and the steps'
+  times go to the run's `ko-agent-bpf.log`.
 - The launch refuses an installation from another launcher build. It also refuses one whose tags
   were recorded under a kernel other than the one the machine runs, as after
   `podman machine os upgrade` or `wsl --update`. The refusal names `--build`.

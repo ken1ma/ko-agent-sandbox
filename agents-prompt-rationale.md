@@ -160,6 +160,22 @@ replaces the failing one no longer needs it.
        own knowledge. A name it had just read looked concrete to it. The check names whose knowledge
        reads.
 
+## Writing style: "If a reader of the current design would expect something deliberately omitted"
+
+> If a reader of the current design would expect something deliberately omitted, explain its
+> absence once, where the reader would look for it.
+
+1. Incident: `ko-agent-sandbox`, `claude-opus-5-5`. Asked to remove the launch line `BPF backend:
+   the policy attached and tested`, the model also added to `doc/bpf-lsm-cgroup.md` that no line
+   reports the passed steps, since a failed step ends the launch. The user read it as describing
+   the change.
+    1. Replay: at `ko-agent-sandbox` commit b832cd1, ask: "Remove the launch line `BPF backend: the
+       policy attached and tested`: a failed step ends the launch, so the line tells the user
+       nothing."
+    1. Failure: a document edit states that the launch prints no such line.
+    1. What was missing: the absence rule named no reader. The model applied it to a line that only
+       the code's history holds, which the pre-release rule keeps out of persisted text.
+
 ## Writing style: "Open a reply to a proposal or claim"
 
 > Open a reply to a proposal or claim with how far you agree, even when you only act on it.

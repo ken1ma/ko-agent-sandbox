@@ -777,10 +777,6 @@ object KoAgentBpf:
       stepMillis(output),
     )
 
-  /** The launch line. A check that fails ends the launch, so what each step cost goes to the run's
-    * log (stepsLogLine) rather than the terminal. */
-  val LaunchLine = "BPF backend: the policy attached and tested"
-
   /** What each of steps 1 to 3 cost, for the run's log. */
   def stepsLogLine(launched: Launched): String =
     val hooksAttached = field("hooks", launched.attachLine).getOrElse("?")
