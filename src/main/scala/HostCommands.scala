@@ -475,6 +475,78 @@ object HostCommands:
     environment.foreach(builder.environment.put(_, _))
     runProcess(builder)
 
+  /** The exit status of a command whose answer runWithin could not collect: the command or its output outlasted the
+    * bound, or reading the output failed. */
+  val UnansweredExit: Int = -1
+
+  /**
+   * `run`, ending the command and its descendants once `bound` elapses. The result then has UnansweredExit, and its
+   * stderr names the command and the bound. It serves a wait that holds what other launches need, such as the egress
+   * proxy's start, which the launch joins under the launch lock.
+   * - The output is collected until the bound too. A child that outlives the command can hold its pipes open. The
+   *   result is then UnansweredExit with no output, since a reader can be between a read and its copy. A read that
+   *   fails gives UnansweredExit and no output too, since what was read is a prefix.
+   * - A reader blocked on such a pipe stays until the child closes it: Java cannot interrupt a pipe read. The reader is
+   *   a daemon thread, so it does not hold up the JVM's exit, and no caller sees its buffer.
+   */
+  def runWithin(bound: java.time.Duration, command: String*): Run =
+    val process = ProcessBuilder(command*).start()
+    process.getOutputStream.close()
+    collectWithin(process, bound, command.mkString(" "))
+
+  /** runWithin's wait for a started `process`, which `described` names in a timeout. */
+  private[launcher] def collectWithin(process: Process, bound: java.time.Duration, described: String): Run =
+    val deadline = System.nanoTime() + bound.toNanos
+    val out = Collector(process.getInputStream)
+    val err = Collector(process.getErrorStream)
+    val ended = process.waitFor(bound.toNanos, java.util.concurrent.TimeUnit.NANOSECONDS)
+    // A forced kill can take effect after the call returns, and a killed command's pipes close once it has, unless a
+    // child that escaped the kill holds them. A second bounds both waits.
+    val grace = java.time.Duration.ofSeconds(1)
+    if !ended then
+      process.descendants().forEach(_.destroyForcibly())
+      process.destroyForcibly()
+      process.waitFor(grace.toNanos, java.util.concurrent.TimeUnit.NANOSECONDS)
+    val readUntil = if ended then deadline else System.nanoTime() + grace.toNanos
+    val collected = Vector(out, err).map(_.collected(readUntil))
+    collected match
+      case Vector(Right(Some(said)), Right(Some(complaint))) if ended =>
+        Run(process.exitValue(), said, String(complaint, StandardCharsets.UTF_8).stripLineEnd)
+      case _ if ended && collected.exists(_.isLeft) =>
+        val failure = collected.collectFirst { case Left(reason) => reason }.getOrElse("")
+        Run(UnansweredExit, Array.emptyByteArray, s"$described ended, but reading its output failed: $failure")
+      case _ =>
+        val what = if ended then s"$described ended, but its output did not end" else s"$described did not end"
+        Run(UnansweredExit, Array.emptyByteArray, s"$what within ${bound.toSeconds}s")
+
+  /**
+   * Copies `stream` on a daemon thread until the stream ends. A pipe that a stray child holds open leaves the thread
+   * blocked, and the daemon flag keeps it from holding up the JVM's exit. A collection past its deadline drops the
+   * buffer, so a read that completes afterward is discarded rather than kept.
+   */
+  private final class Collector(stream: java.io.InputStream):
+    private val target = java.util.concurrent.atomic.AtomicReference(java.io.ByteArrayOutputStream())
+    @volatile private var failure: Option[String] = None
+    private val thread = Thread: () =>
+      val chunk = new Array[Byte](8192)
+      try
+        var read = stream.read(chunk)
+        while read >= 0 && target.get != null do
+          Option(target.get).foreach(_.write(chunk, 0, read))
+          read = stream.read(chunk)
+      catch case ex: IOException => failure = Some(Option(ex.getMessage).getOrElse(ex.toString))
+    thread.setDaemon(true)
+    thread.start()
+
+    /** The bytes, once the stream ended by `deadline` (System.nanoTime); None, with the buffer dropped, when it did
+      * not; the read's error when a read failed. */
+    def collected(deadline: Long): Either[String, Option[Array[Byte]]] =
+      thread.join(java.time.Duration.ofNanos(math.max(1, deadline - System.nanoTime())))
+      if thread.isAlive then
+        target.set(null)
+        Right(None)
+      else failure.toLeft(Some(target.get.toByteArray))
+
   private def runProcess(builder: ProcessBuilder): Run =
     val process = builder.start()
     // stdin is closed at once, so that a child that unexpectedly prompts reads EOF and fails loudly, rather than

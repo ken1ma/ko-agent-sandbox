@@ -845,6 +845,14 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val silent = awaitProxyReady(podman(running = true), "proxy", unopened, bound).swap
       .getOrElse(fail("a stall must fail"))
     assert(silent.startsWith("the egress proxy did not report ready within 2s"), silent)
+    // A podman that does not answer the inspect is named as such, not taken for a proxy that exited, though the ready
+    // line is there.
+    val stalling = dir.resolve("podman-stalling")
+    Files.writeString(stalling, "#!/bin/sh\nexec sleep 30\n")
+    stalling.toFile.setExecutable(true)
+    val stalled = awaitProxyReady(stalling.toString, "proxy", listened, java.time.Duration.ofMillis(500)).swap
+      .getOrElse(fail("a podman that does not answer must fail"))
+    assert(stalled.startsWith(s"$PodmanStalled\n"), stalled)
 
   test("this build includes the proxy for --serve-proxy-on-host: its resources load"):
     // Class initialization reads /defaults eagerly, so nonEmpty proves that the resources are on this

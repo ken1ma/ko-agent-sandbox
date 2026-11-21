@@ -46,7 +46,8 @@ What the first version covers:
   container: the entrypoint, `podman exec` processes, and OCI hooks that run in the container's
   namespaces. The container runtime's own processes are trusted, as the FUSE backend's daemon is.
 - The threat is a process inside the sandbox. A VM administrator, a compromised podman or runtime,
-  and whoever runs the controller are trusted; pinned links do not resist them.
+  and whoever runs the controller are trusted. The links' pins, files in the BPF filesystem that
+  keep the links in force, do not resist them.
 - On Windows, the policy is what the WSL kernel enforces on container processes. It changes nothing
   about WSL as a boundary toward the Windows host
   (https://wsl.dev/technical-documentation/security/).

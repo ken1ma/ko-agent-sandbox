@@ -1026,10 +1026,19 @@ prompt only on these conditions, with the moves measured on Windows (2026-11-21)
 - A step moves after the prompt only if the reader still sees what it prints. The agent's TUI
   clears a note printed after Enter, and `--session-start=pause` exists to hold a launch's startup
   lines on screen (README).
-  - A refusal may come after Enter, since the launch then ends and no TUI starts.
-  - Showing the prompt before the proxy is ready would gain 2.5 to 3.4s. It would move notes
-    after Enter: the sessions that the BPF backend's reconcile refused or removed, and "could not
-    list this workspace's containers".
+  - A refusal may come after Enter, since the launch then ends and no TUI starts. So the proxy
+    starts beside the prompt, and the launch joins it just before the sandbox's create. Under
+    `--session-start=immediate` the start then runs beside the BPF backend's launch script.
+  - The prompt does not wait for the BPF backend's reconcile either. The reconcile saves its notes
+    under the launch lock, and each launch prints the saved notes right before its prompt, under
+    either backend (`printReconcileNotes`). A reconcile that ends after the prompt appears reaches
+    the screen at the next launch; a refused session recurs in each reconcile anyway.
+  - The run's files stay before the prompt, since their listing prints "could not list this
+    workspace's containers".
+  - In two Windows launches, the prompt appears 0.1 to 0.2s after the run's files are ready, and
+    1.5 to 2.3s before both the proxy's ready line and the reconcile's end. After Enter, neither
+    join waits. In two launches under `--session-start=immediate`, the proxy's start ends 1.1 to
+    1.4s after the reconcile's join, while the launch script runs, and the create waits 0s for it.
 - A step moves before the prompt only if it creates nothing that the hold must precede. `launch()`
   records at the hold why the hold comes before the container exists.
   - Creating the container while the prompt waits would gain up to the 2.6 to 3.2s after it, and

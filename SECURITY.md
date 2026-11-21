@@ -709,7 +709,8 @@ What an auditor trusts, and how each link is checked:
   - fills the maps from records that an unprivileged program wrote: the guard at a launch
     (`ko-agent-fs --resolve --bpf-records`), `fixture records` for `--self-test`'s corpus. It also
     fills them from the identities that the controller reads for itself;
-  - attaches below the invoking user's slice alone, and pins;
+  - attaches below the invoking user's slice alone, and pins the links: it stores each in the BPF
+    filesystem, which keeps the links in force after the controller exits;
   - exits before the container exists.
 - **No container process runs before the policy is proven.**
   - A read-back runs with the controller's privileges and none of the controller's code. The

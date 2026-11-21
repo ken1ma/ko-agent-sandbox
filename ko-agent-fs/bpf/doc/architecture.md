@@ -683,6 +683,9 @@ The programs enforce; the controller only loads them.
 - In a podman machine the launcher runs it for the launch through `podman machine ssh`, under the
   machine's `sudo`. On native Linux it runs directly under the host's `sudo` (the sudoers drop-in
   "Native Linux" names). It exits once the links are pinned.
+  - A pin is a file in the BPF filesystem (`bpffs`, mounted at `/sys/fs/bpf`) that keeps a BPF
+    program, map or link alive with no process holding it. Deleting the file releases the object
+    (`BPF_OBJ_PIN` in the kernel's `include/uapi/linux/bpf.h`).
 - The session never has those privileges, and the controller never reads the workspace. Its input
   is the launcher's fixed-size records, made by the unprivileged guard ("The policy"); its output
   is links and maps.
@@ -893,6 +896,8 @@ session:
      controller (`KoAgentBpf.reconcileScript`).
    - A listing or a label that cannot be read leaves every pin in place and is reported, each
      named.
+   - A refused session keeps its pins and cgroup, and each later reconcile reports the session
+     again. No reset removes them; a machine restart clears both, and the record then goes as above.
    - The reconcile removes only cgroups below the user's slice and pins below the controller's own
      directory, each by the identity the launcher recorded. It refuses a symlink, another
      filesystem or a path outside those roots, since a cleanup guard elsewhere has admitted `.` and
@@ -927,8 +932,9 @@ How the steps of "Lifecycle" map onto the code:
     `~/.local/share/ko-agent-sandbox/bpf/`, records the tags and prepares the preloaded set.
 - A launch runs the probe beside `podman info` and its image and rule checks, without the launch
   lock. Once the probe passes, the launch runs the reconcile under the launch lock, beside its
-  networks, files and proxy, and waits for it before the start prompt (`reconcileScript`, the
-  controller's `reconcile`; "Lifecycle", 7).
+  networks, files, proxy and start prompt (`reconcileScript`, the controller's `reconcile`;
+  "Lifecycle", 7). Notes of a reconcile that ends after the prompt appears go to the next launch
+  (`../../../doc/design.md`, "What may move across the start prompt").
 - `startSandbox` holds the launch lock from the backend's steps 1 to 3 through the listing of the
   live sessions, the comparison (`refusalBeside`) and `podman create`.
   - Steps 1 to 3 are `launchScript`: the guard's records, the fixture, the attach cgroup, the

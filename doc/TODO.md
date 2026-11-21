@@ -454,6 +454,52 @@ only the container-launching suites. That document's command returns to
     and consult them.
   - The FUSE backend resolves those entries at its mount, after the create, and keeps the gap.
 
+## One term for the file rules' pinned names, in prose and identifiers
+
+The workspace policy calls a name pinned when a listed name passes through it, as `.claude` for
+`.claude/settings.json` does, when the guard traversed it, or when it is a gitdir's `objects` or
+`objects/info`. The policy refuses to rename or unlink a pinned name, and refuses to create anything
+at it except an empty directory by `mkdir`. It allows `rmdir` of that directory, and each entry
+inside follows its own rules (`RuleContext::pinned` and `authorize_rule_create` in
+`../ko-agent-fs/policy/src/policy.rs`). "Pin" is this project's own word for this, and readers meet
+it undefined:
+
+- `file-rules.md`, "The rule file", says "`*` pins every entry it matches". The same document's
+  opening list describes the behavior without the word.
+- `../ko-agent-fs/fuse/doc/troubleshooting.md` sends a reader of `pinned-file-rule-component` to
+  `file-rules.md`, which never defines it.
+- The BPF backend also uses "pin" in the kernel's sense, a file in the BPF filesystem
+  (`../ko-agent-fs/bpf/doc/architecture.md`, "Lifecycle"), and `policy.bpf.c` uses both senses.
+
+- [ ] Choose the term with the user. Facts the choice must fit:
+  - The name may hold a symlink as well as a directory: the guard traverses symlinks, and
+    `.claude -> shared/claude` makes the symlink a component of a listed name.
+  - "Protected" already has another meaning: `Protected` in
+    `../ko-agent-fs/policy/doc/git-metadata.md` and the `protected-*` refusal reasons mean that
+    the session cannot modify the entry at all. A pinned directory stays writable inside.
+  - Candidates so far: "fixed name", "held name", or plain wording such as "a name that a listed
+    name passes through".
+- [ ] Rename the prose and the identifiers in one change. The identifiers include:
+  - the resolved rules' `pinned-path` word;
+  - `RuleWord::Pinned`, `RuleContext::pinned` and `is_pinned_within_gitdir`;
+  - the refusal reasons `pinned-file-rule-component` and `pinned-git-component`;
+  - the BPF program's `R_RULE_PINNED`, `R_GIT_PINNED` and record fields;
+  - `FileRules`, `SeatbeltProfile` and `BpfCorpus` on the Scala side.
+
+  `rg -i 'pinned[-_ ]?(path|file-rule|git|component)|is_pinned|R_\w*PINNED|\.pinned\(\)'`
+  lists the code. The change alters every BPF suite's sources, so each suite joins "BPF suite
+  reruns".
+- [ ] Replace each loose use of "pin" with the verb it stands for:
+  - `bpf-lsm-cgroup.md`, `the commit "Inventory" pins`: names;
+  - `../ko-agent-fs/fuse/doc/TODO.md`, "the open descriptor pins": keeps alive;
+  - `plan-executable-agent-configuration.md`, "pinned (`allowManagedHooksOnly`)" and "No
+    requirement pins `notify`": fixes through a managed setting.
+
+  Version pins stay, by the decision recorded in commit 1c1639b.
+- [ ] Consider an AGENTS.md rule that an identifier and the prose that names it always change
+  together, so that an agent renames both without asking. Record the rule's reason in
+  `../agents-prompt-rationale.md`.
+
 ## Japanese names in file rules
 
 - [ ] Let `read-only` and `writable` lines name Japanese directories and files; `file-rules.md`

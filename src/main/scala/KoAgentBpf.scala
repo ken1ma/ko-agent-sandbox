@@ -910,15 +910,102 @@ object KoAgentBpf:
          |exit 0""".stripMargin,
     )
 
-  /** The reconcile's summary for the launch lines, or None when nothing was removed or refused. */
-  def reconcileNote(output: String): Option[String] =
-    output.linesIterator.find(_.startsWith("reconcile sessions=")).flatMap: line =>
-      val removed = field("removed", line).getOrElse("0")
-      val refused = field("refused", line).getOrElse("0")
-      Option.when(removed != "0" || refused != "0")(
-        s"BPF backend reconcile: $removed orphaned session(s) removed, $refused refused" +
-          (if refused != "0" then "; the lines above name each" else ""),
+  /**
+   * What a reconcile reports in the launch lines: a line for each session that it removed or refused, and why it did
+   * not finish.
+   * - The controller prints one line for each session that it removes or refuses, and the script one for each record
+   *   that it drops itself after a machine restart. The summary therefore counts lines; the controller's own summary
+   *   leaves the script's records out.
+   * - A reconcile finished only when the controller printed its `reconcile sessions=` summary. A failed listing prints
+   *   `reconcile listing=failed` and exits 0, and the script ignores the controller's exit status (reconcileScript).
+   * - No reset removes a refused session's pins or cgroup. A machine restart clears both, and the next reconcile then
+   *   drops the record (reconcileScript).
+   */
+  final case class ReconcileNotes(sessionLines: Vector[String], failure: Option[String]):
+    def isEmpty: Boolean = sessionLines.isEmpty && failure.isEmpty
+
+    /** These notes over `earlier`, which a launch saved unshown.
+      * - A session that these notes name takes this reconcile's line.
+      * - An earlier removal stays, since no reconcile reports it again.
+      * - An earlier refusal stays only when this reconcile did not finish. A reconcile that finished names every
+      *   refusal that remains.
+      * - An earlier failure goes, since this reconcile finished or has its own failure. */
+    def over(earlier: ReconcileNotes): ReconcileNotes =
+      val named = sessionLines.flatMap(field("session", _)).toSet
+      val kept = earlier.sessionLines.filter: line =>
+        !field("session", line).exists(named) && (failure.nonEmpty || line.contains(" action=removed"))
+      ReconcileNotes(sessionLines ++ kept, failure)
+
+    /** The lines that the launch prints. */
+    def printed: Vector[String] =
+      val removed = sessionLines.count(_.contains(" action=removed"))
+      val refused = sessionLines.count(_.contains(" action=refused"))
+      val parts = Vector(
+        Option.when(removed > 0)(s"removed the leftovers of $removed ended session(s)"),
+        Option.when(refused > 0)(
+          s"could not safely remove the leftovers of $refused ended session(s), named above; this session does not " +
+            "use them, and a restart of the podman machine clears them",
+        ),
+      ).flatten
+      val failureNote = failure.map: err =>
+        "note: the BPF backend's reconcile did not finish; ended sessions' leftovers stay until a later launch's " +
+          s"reconcile${if err.isBlank then "" else s"\n${err.stripTrailing}"}"
+      val summary = Option.when(parts.nonEmpty)(parts.mkString("BPF backend: ", "; ", ""))
+      failureNote.toVector ++ sessionLines.map(line => s"  $line") ++ summary.toVector
+
+    /** The text that ReconcileNotes.parse reads back. */
+    def saved: String =
+      val failureLines = failure.toVector.flatMap(err => ReconcileNotes.FailureLine +: err.linesIterator.map(line =>
+        s"${ReconcileNotes.FailureLine} $line",
+      ).toVector)
+      (sessionLines ++ failureLines).mkString("", "\n", "\n")
+
+  object ReconcileNotes:
+    val empty: ReconcileNotes = ReconcileNotes(Vector.empty, None)
+    private val FailureLine = "failure"
+
+    def of(reconciled: Run): ReconcileNotes =
+      val (sessionLines, otherLines) =
+        reconciled.text.linesIterator.toVector.partition(_.startsWith("reconcile session="))
+      val finished = reconciled.ok && otherLines.exists(_.startsWith("reconcile sessions="))
+      ReconcileNotes(
+        sessionLines.filter(line => line.contains(" action=removed") || line.contains(" action=refused")),
+        Option.when(!finished):
+          (otherLines.filterNot(_.startsWith("preloaded ")) :+ reconciled.err).filter(_.nonEmpty).mkString("\n"),
       )
+
+    def parse(text: String): ReconcileNotes =
+      val (failureLines, sessionLines) = text.linesIterator.toVector.partition: line =>
+        line == FailureLine || line.startsWith(s"$FailureLine ")
+      ReconcileNotes(
+        sessionLines.filter(_.startsWith("reconcile session=")),
+        Option.when(failureLines.nonEmpty)(failureLines.drop(1).map(_.stripPrefix(s"$FailureLine ")).mkString("\n")),
+      )
+
+  /** The notes of reconciles that ended after their launch's start prompt appeared, which the next launch prints
+    * before its own prompt. The agent's TUI would clear a note printed after Enter. */
+  def reconcileNotesFile(stateRoot: Path): Path = stateRoot.resolve("bpf").resolve("reconcile-notes")
+
+  private def reconcileNotesLock(stateRoot: Path): Path = stateRoot.resolve("bpf").resolve("reconcile-notes.lock")
+
+  /** Serializes this JVM's threads before they take the file lock: the prompt's take and the reconcile's save can
+    * overlap, and `FileChannel.lock` throws OverlappingFileLockException for a second holder in one JVM. */
+  private val reconcileNotesMonitor = Object()
+
+  /** The saved notes, which the call removes. */
+  def takeReconcileNotes(stateRoot: Path): ReconcileNotes = reconcileNotesMonitor.synchronized:
+    FileHelper.withFileLock(reconcileNotesLock(stateRoot)):
+      val file = reconcileNotesFile(stateRoot)
+      val saved = FileHelper.readIfPresent(file).fold(ReconcileNotes.empty)(ReconcileNotes.parse)
+      Files.deleteIfExists(file)
+      saved
+
+  /** Saves `notes` over the saved notes (ReconcileNotes.over), such as another launch's. */
+  def saveReconcileNotes(stateRoot: Path, notes: ReconcileNotes): Unit = reconcileNotesMonitor.synchronized:
+    FileHelper.withFileLock(reconcileNotesLock(stateRoot)):
+      val file = reconcileNotesFile(stateRoot)
+      val merged = notes.over(FileHelper.readIfPresent(file).fold(ReconcileNotes.empty)(ReconcileNotes.parse))
+      if merged.isEmpty then Files.deleteIfExists(file) else FileHelper.writePrivate(file, merged.saved)
 
   /** The identities of paths in the machine, for a FUSE backend session's labels (identScript's
     * output parses as the launch script's IdentMarker lines). */

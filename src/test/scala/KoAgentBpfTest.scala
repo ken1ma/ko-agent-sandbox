@@ -557,12 +557,104 @@ class KoAgentBpfTest extends munit.FunSuite:
         val said = String(checked.getInputStream.readAllBytes())
         assertEquals(checked.waitFor(), 0, said)
     assert(!reconcileScript("cgroupfs").contains("ko-agent-bpf-hold-$name"), "cgroupfs has no hold unit")
-    assertEquals(reconcileNote("reconcile sessions=3 removed=0 kept=3 refused=0"), None)
+
+  private def reconciled(exit: Int, text: String, err: String = ""): HostCommands.Run =
+    HostCommands.Run(exit, text.getBytes(java.nio.charset.StandardCharsets.UTF_8), err)
+
+  private val removedA = "reconcile session=run-a action=removed links=8 progs=8 cgroup=removed"
+  private val goneB = "reconcile session=run-b action=removed reason=gone"
+  private val refusedC = "reconcile session=run-c action=refused reason=pin-attached path=links/x pin_cgroup_id=7"
+
+  test("a reconcile's notes count its removed and refused sessions' lines, the script's dropped records included"):
+    val notes = ReconcileNotes.of(reconciled(
+      0,
+      Vector(goneB, removedA, "reconcile session=run-d action=kept reason=populated cgroup=/x", refusedC,
+        "reconcile sessions=3 removed=1 kept=1 refused=1", "preloaded stale=1").mkString("\n"),
+    ))
+    assertEquals(notes, ReconcileNotes(Vector(goneB, removedA, refusedC), None))
+    assertEquals(notes.printed.take(3), Vector(goneB, removedA, refusedC).map(line => s"  $line"))
     assertEquals(
-      reconcileNote("reconcile sessions=3 removed=2 kept=1 refused=0"),
-      Some("BPF backend reconcile: 2 orphaned session(s) removed, 0 refused"),
+      notes.printed.last,
+      "BPF backend: removed the leftovers of 2 ended session(s); could not safely remove the leftovers of 1 ended " +
+        "session(s), named above; this session does not use them, and a restart of the podman machine clears them",
     )
-    assert(reconcileNote("reconcile sessions=3 removed=0 kept=2 refused=1").exists(_.contains("name each")))
+    assert(ReconcileNotes.of(reconciled(0, "reconcile sessions=3 removed=0 kept=3 refused=0")).isEmpty)
+    assertEquals(
+      ReconcileNotes.of(reconciled(0, s"$removedA\nreconcile sessions=1 removed=1 kept=0 refused=0")).printed,
+      Vector(s"  $removedA", "BPF backend: removed the leftovers of 1 ended session(s)"),
+    )
+
+  test("a reconcile that did not finish says so first, with its error"):
+    val failed = ReconcileNotes.of(reconciled(255, "", "ssh: connect refused\n"))
+    assertEquals(
+      failed.printed,
+      Vector("note: the BPF backend's reconcile did not finish; ended sessions' leftovers stay until a later " +
+        "launch's reconcile\nssh: connect refused"),
+    )
+    assert(!ReconcileNotes.of(reconciled(1, "")).printed.head.contains("\n"))
+
+  test("a reconcile without the controller's summary did not finish, though the script exits 0"):
+    // The controller's own output for a failed listing (controller.c, `reconcile`), and a controller that sudo
+    // refused, which the script runs with `|| true`.
+    val listingFailed = ReconcileNotes.of(reconciled(0, s"$goneB\nreconcile listing=failed sessions=2 removed=0 " +
+      "kept=2 refused=0\npreloaded stale=1"))
+    assertEquals(listingFailed.sessionLines, Vector(goneB))
+    assertEquals(listingFailed.failure, Some("reconcile listing=failed sessions=2 removed=0 kept=2 refused=0"))
+    assertEquals(
+      ReconcileNotes.of(reconciled(0, "sudo: a password is required")).failure,
+      Some("sudo: a password is required"),
+    )
+    // An unshown refusal therefore survives the failed listing.
+    assertEquals(
+      listingFailed.over(ReconcileNotes(Vector(refusedC), None)),
+      ReconcileNotes(Vector(goneB, refusedC), listingFailed.failure),
+    )
+
+  test("saved notes survive their text, an empty or multi-line error included"):
+    Vector(
+      ReconcileNotes(Vector(removedA, refusedC), None),
+      ReconcileNotes(Vector(goneB), Some("first\nsecond")),
+      ReconcileNotes(Vector.empty, Some("")),
+    ).foreach(notes => assertEquals(ReconcileNotes.parse(notes.saved), notes))
+
+  test("a reconcile's notes over unshown ones keep what no later reconcile reports again"):
+    val earlier = ReconcileNotes(Vector(removedA, refusedC, "reconcile session=run-e action=refused reason=name"),
+      Some("earlier failure"))
+    // A reconcile that finished names every remaining refusal, and takes the line of a session both name.
+    val refusedE = "reconcile session=run-e action=refused reason=cgroup-identity cgroup=/x recorded=1 found=2"
+    assertEquals(
+      ReconcileNotes(Vector(goneB, refusedE), None).over(earlier),
+      ReconcileNotes(Vector(goneB, refusedE, removedA), None),
+    )
+    // A reconcile that did not finish keeps the earlier refusals, and replaces the earlier failure.
+    assertEquals(
+      ReconcileNotes(Vector.empty, Some("now")).over(earlier),
+      ReconcileNotes(earlier.sessionLines, Some("now")),
+    )
+
+  test("the saved notes are taken once, and a save merges into what another launch saved"):
+    val root = Files.createTempDirectory("reconcile-notes")
+    assert(takeReconcileNotes(root).isEmpty)
+    saveReconcileNotes(root, ReconcileNotes(Vector(removedA, refusedC), None))
+    saveReconcileNotes(root, ReconcileNotes(Vector(goneB), None))
+    assertEquals(takeReconcileNotes(root), ReconcileNotes(Vector(goneB, removedA), None))
+    assert(takeReconcileNotes(root).isEmpty)
+    assert(!Files.exists(reconcileNotesFile(root)))
+    // A finished reconcile with nothing to report still clears a refusal saved before it.
+    saveReconcileNotes(root, ReconcileNotes(Vector(refusedC), None))
+    saveReconcileNotes(root, ReconcileNotes.empty)
+    assert(!Files.exists(reconcileNotesFile(root)))
+
+  test("a take and a save that overlap in one JVM wait for each other"):
+    val root = Files.createTempDirectory("reconcile-notes-race")
+    val saving = Thread: () =>
+      (1 to 200).foreach(_ => saveReconcileNotes(root, ReconcileNotes(Vector(removedA), None)))
+    var thrown: Option[Throwable] = None
+    saving.setUncaughtExceptionHandler((_, ex) => thrown = Some(ex))
+    saving.start()
+    (1 to 200).foreach(_ => takeReconcileNotes(root))
+    saving.join()
+    assertEquals(thrown, None)
 
   test("the identities of paths travel encoded both ways"):
     val script = identScript(Vector("/Users/me/My Project", "/mnt/c/work"))

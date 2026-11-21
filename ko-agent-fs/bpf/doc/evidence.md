@@ -283,7 +283,8 @@ commit 654586d (`bpf/probe/phase1/`, `bpf/probe/phase2/`).
     - one that loads wrong records;
     - one that leaves the record maps unfrozen;
   - a write from user space to each record map of a live session, which is refused;
-  - the reconcile of "Lifecycle", 7:
+  - the reconcile of "Lifecycle", 7, where a pin is a file in the BPF filesystem that keeps a
+    session's program or link alive ("Lifecycle" in `architecture.md`):
     - a launcher killed between the pins and `podman create`, and a `podman create` that fails
       after the pins, each leave a cgroup and pins, which the next start removes;
     - a launcher killed between `podman create` and `podman start` leaves a container that names

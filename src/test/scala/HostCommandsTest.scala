@@ -13,6 +13,53 @@ import SandboxLifecycle.*
 
 class HostCommandsTest extends munit.FunSuite:
 
+  test("runWithin gives a command's result, and ends a command and its children at the bound"):
+    assume(!scala.util.Properties.isWin, "the commands are POSIX sh")
+    assertEquals(runWithin(java.time.Duration.ofSeconds(10), "/bin/sh", "-c", "echo out; echo err >&2").text, "out")
+    val began = System.nanoTime()
+    val stalled = runWithin(java.time.Duration.ofMillis(200), "/bin/sh", "-c", "sleep 30 & sleep 30")
+    assert(System.nanoTime() - began < java.time.Duration.ofSeconds(10).toNanos, "the bound ended the wait")
+    assertEquals(stalled.exit, UnansweredExit)
+    assert(stalled.err.contains("did not end within 0s"), stalled.err)
+    // A command that ends while its child holds the output pipe returns by the bound. OpenJDK's reaper can drain and
+    // close the pipe when the command exits before a reader blocks, so the output may also arrive whole.
+    val inheriting = System.nanoTime()
+    val inherited = runWithin(java.time.Duration.ofMillis(500), "/bin/sh", "-c", "echo out; sleep 30 &")
+    assert(System.nanoTime() - inheriting < java.time.Duration.ofSeconds(10).toNanos, "the bound ended the wait")
+    assert(Set((0, "out"), (UnansweredExit, "")).contains((inherited.exit, inherited.text)), inherited.toString)
+
+  test("a command that ended with output still arriving at the bound gives no partial output"):
+    val held = java.io.PipedOutputStream()
+    val heldOpen = java.io.PipedInputStream(held)
+    held.write("partial".getBytes)
+    val ended = new Process:
+      def getOutputStream: java.io.OutputStream = java.io.OutputStream.nullOutputStream()
+      def getInputStream: java.io.InputStream = heldOpen
+      def getErrorStream: java.io.InputStream = java.io.InputStream.nullInputStream()
+      def waitFor(): Int = 0
+      def exitValue(): Int = 0
+      def destroy(): Unit = ()
+    val collected = collectWithin(ended, java.time.Duration.ofMillis(200), "podman inspect")
+    assertEquals((collected.exit, collected.text), (UnansweredExit, ""))
+    assertEquals(collected.err, "podman inspect ended, but its output did not end within 0s")
+    held.close()
+
+  test("a command whose output fails partway gives no partial output"):
+    val failing = new Process:
+      private val prefix = java.io.ByteArrayInputStream("10.89.".getBytes)
+      def getOutputStream: java.io.OutputStream = java.io.OutputStream.nullOutputStream()
+      def getInputStream: java.io.InputStream = new java.io.InputStream:
+        def read(): Int =
+          val next = prefix.read()
+          if next >= 0 then next else throw java.io.IOException("Stream closed")
+      def getErrorStream: java.io.InputStream = java.io.InputStream.nullInputStream()
+      def waitFor(): Int = 0
+      def exitValue(): Int = 0
+      def destroy(): Unit = ()
+    val collected = collectWithin(failing, java.time.Duration.ofSeconds(5), "podman inspect")
+    assertEquals((collected.exit, collected.text), (UnansweredExit, ""))
+    assertEquals(collected.err, "podman inspect ended, but reading its output failed: Stream closed")
+
   test("sizes print as `numfmt --to=iec` prints them, the rule of df, du and ls -h"):
     // Each expected string is numfmt's own output for the same byte count.
     assertEquals(humanBytes(0), "0")

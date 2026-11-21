@@ -218,6 +218,10 @@ object AgentSandboxLauncher:
     * rather than waiting for it. */
   val EgressProxyReadyBound: java.time.Duration = java.time.Duration.ofSeconds(30)
 
+  /** The reason of a proxy start in which a podman call gave no answer: it outlasted its bound, or its output could
+    * not be read (runWithin). */
+  val PodmanStalled = "podman did not answer about the egress proxy"
+
   /**
    * Waits for the proxy to report ready, or fails with what the proxy wrote.
    * - `podman start` returns once the process is spawned, and says nothing about whether the process stayed up. A
@@ -237,10 +241,14 @@ object AgentSandboxLauncher:
     def said: String = readIfReadable(log).getOrElse("")
     def ready: Boolean = said.linesIterator.exists(isProxyReadyLine)
     var networks: Option[String] = None
+    // A podman that does not answer an inspect within the bound ends the wait with its own reason.
+    var stalled: Option[String] = None
     def inspected: Boolean =
-      val state = run(
-        podman, "container", "inspect", "--format", s"{{.State.Running}}{{println}}$ProxyNetworksFormat", container,
+      val state = runWithin(
+        bound, podman, "container", "inspect", "--format", s"{{.State.Running}}{{println}}$ProxyNetworksFormat",
+        container,
       )
+      if state.exit == UnansweredExit then stalled = Some(state.err)
       val lines = state.text.linesIterator
       val running = state.ok && lines.nextOption().exists(_.trim == "true")
       if running then networks = Some(lines.mkString("\n"))
@@ -249,15 +257,18 @@ object AgentSandboxLauncher:
     // failure with its log, not an address that the launch cannot find.
     def exitedAfterReady: Either[String, String] = Left(s"the egress proxy exited after reporting ready\n$said")
     def readied: Either[String, String] =
-      if networks.isEmpty && !inspected then exitedAfterReady
+      if networks.isEmpty && !inspected then stalledOr(exitedAfterReady)
       else Right(networks.getOrElse(""))
+    def stalledOr(answer: => Either[String, String]): Either[String, String] =
+      stalled.fold(answer)(reason => Left(s"$PodmanStalled\n$reason"))
     var outcome: Option[Either[String, String]] = None
     while outcome.isEmpty do
       if ready then outcome = Some(readied)
       else if !inspected then
         // The last write may arrive after the liveness answer, so the loop reads once more to name which exit this is.
         // The loop does not call `readied`, which would answer with the networks of an earlier inspect.
-        if ready then outcome = Some(exitedAfterReady)
+        if stalled.nonEmpty then outcome = Some(stalledOr(exitedAfterReady))
+        else if ready then outcome = Some(exitedAfterReady)
         else
           val written = said
           // If the proxy could not open its log, the refusal may appear only in podman's logs. `--rm` may also have
@@ -265,8 +276,9 @@ object AgentSandboxLauncher:
           val reason =
             if written.nonEmpty then written
             else
-              val relayed = run(podman, "logs", container)
-              if relayed.ok && relayed.err.nonEmpty then relayed.err
+              val relayed = runWithin(bound, podman, "logs", container)
+              if relayed.exit == UnansweredExit then s"$PodmanStalled\n${relayed.err}"
+              else if relayed.ok && relayed.err.nonEmpty then relayed.err
               else if relayed.ok then s"nothing was written to $log or to podman's logs of $container"
               else
                 s"nothing was written to $log and podman had already removed the container: the " +
@@ -291,6 +303,8 @@ object AgentSandboxLauncher:
    * - The remote client leaves `--sig-proxy` out of its help but honours the flag (podman's
    *   `cmd/podman/containers/start.go`).
    * - The client's output is the proxy's own output, which the log has.
+   * - Each podman call has EgressProxyReadyBound (runWithin), as awaitProxyReady's own are, since the launch joins the
+   *   start under the launch lock (createUnderLaunchLock).
    */
   def startProxyContainer(
     podman: String,
@@ -298,7 +312,7 @@ object AgentSandboxLauncher:
     credentials: Seq[BrokeredCredential],
   )(awaitReady: => Either[String, String]): Either[String, String] =
     if credentials.isEmpty then
-      val started = run(podman, "start", container)
+      val started = runWithin(EgressProxyReadyBound, podman, "start", container)
       if !started.ok then Left(s"could not start the egress proxy container\n${started.err}")
       else awaitReady
     else
@@ -347,12 +361,12 @@ object AgentSandboxLauncher:
     said: () => String,
   ): Either[String, Unit] =
     val deadline = System.nanoTime() + EgressProxyReadyBound.toNanos
-    def created: Boolean =
-      val state = run(podman, "container", "inspect", "--format", "{{.State.Status}}", container)
-      state.ok && state.text.trim == "created"
     var outcome: Option[Either[String, Unit]] = None
     while outcome.isEmpty do
-      if !created then outcome = Some(Right(()))
+      val state =
+        runWithin(EgressProxyReadyBound, podman, "container", "inspect", "--format", "{{.State.Status}}", container)
+      if state.exit == UnansweredExit then outcome = Some(Left(s"$PodmanStalled\n${state.err}"))
+      else if !(state.ok && state.text.trim == "created") then outcome = Some(Right(()))
       else if !client.isAlive then
         outcome = Some(Left(s"could not start the egress proxy container\n${said()}"))
       else if System.nanoTime() >= deadline then
@@ -1623,17 +1637,22 @@ object AgentSandboxLauncher:
     if bpfFacts.isEmpty then reconcileShell.foreach(_.close())
     // The backend's reconcile runs at this launcher's start (ko-agent-fs/bpf/doc/architecture.md, "Lifecycle", step
     // 7), under the launch lock, so the reconcile does not take a launch in flight's pins for an orphan's.
-    // - The reconcile runs beside the launch's next steps, none of which takes the launch lock, and the launch joins it
-    //   before its launch lines. `FileChannel.lock` refuses a second holder in one JVM, so the join must also come
-    //   before createUnderLaunchLock.
+    // - The reconcile runs beside the launch's next steps, none of which takes the launch lock. `FileChannel.lock`
+    //   refuses a second holder in one JVM, so the launch joins it before createUnderLaunchLock.
+    // - The reconcile saves its notes before it releases the lock, so the saves keep the reconciles' order, and an exit
+    //   that waits for the reconcile (inBackground) saves them too. The start prompt does not wait for the reconcile;
+    //   the notes print before this launch's prompt or the next launch's (printReconcileNotes).
     // - The reconcile does not touch this run, which has no record or attach cgroup until the launch script.
-    // - A launch refused before the join drops the reconcile's notes; the next launch reconciles again.
     val reconciling = bpfFacts.zip(reconcileShell).map: (facts, shell) =>
       val asked = System.nanoTime()
       inBackground("ko-agent-bpf reconcile"):
         withFileLock(KoAgentBpf.launchLockFile(stateRoot(os))):
           timings.since("waited for the launch lock before the reconcile", asked)
-          timings.timed("ran the BPF backend's reconcile")(shell.run(KoAgentBpf.reconcileScript(facts.manager)))
+          val reconciled =
+            timings.timed("ran the BPF backend's reconcile")(shell.run(KoAgentBpf.reconcileScript(facts.manager)))
+          // A note that cannot be saved is lost, which costs less than refusing the launch over it.
+          try KoAgentBpf.saveReconcileNotes(stateRoot(os), KoAgentBpf.ReconcileNotes.of(reconciled))
+          catch case _: IOException => ()
     // What this run is, for its labels and for the comparison with the live sessions. A read-only session that the
     // probe left without a policy is a FUSE backend session with no socket setting, whatever was asked. A live `bpf`
     // session beside it is therefore refused, as it would be beside any other FUSE backend session.
@@ -1761,23 +1780,17 @@ object AgentSandboxLauncher:
         awaitNetworks, os,
       )
 
-    val proxyNetworks = timings.timed("started the egress proxy and waited until it was ready"):
-      startProxyContainer(podman, proxyContainer, sessionCredentials)(
-        timings.timed("waited for the egress proxy's ready line"):
-          awaitProxyReady(podman, proxyContainer, hostLogFile, EgressProxyReadyBound),
-      ).fold(reason => fail(s"error: $reason"), identity)
-    val proxyIp = addressOn(proxyNetworks, sandboxNetwork)
-      .getOrElse(fail(s"error: could not determine the egress proxy's address on $sandboxNetwork"))
-
-    reconciling.foreach: awaitReconcile =>
-      val reconciled = timings.timed("waited for the BPF backend's reconcile")(awaitReconcile())
-      if !reconciled.ok then
-        System.err.println(
-          s"note: the BPF backend's reconcile did not run; stale sessions stay until the next\n${reconciled.err}",
+    // The proxy starts beside the start prompt, and the launch joins it just before the sandbox's create, the first
+    // step that needs the proxy's address (createUnderLaunchLock). Under --session-start=immediate the start then also
+    // runs beside the listing of the live sessions and the BPF backend's launch script.
+    // - A proxy that fails refuses the launch after Enter. The refusal ends the launch, so no TUI clears it.
+    // - The start is a resource step, so a Ctrl-C or a declined prompt waits for the start before removing the proxy.
+    val startingProxy = resourceSteps.start("egress proxy start"):
+      timings.timed("started the egress proxy and waited until it was ready"):
+        startProxyContainer(podman, proxyContainer, sessionCredentials)(
+          timings.timed("waited for the egress proxy's ready line"):
+            awaitProxyReady(podman, proxyContainer, hostLogFile, EgressProxyReadyBound),
         )
-      reconciled.text.linesIterator.filter(line => line.contains("action=refused") || line.contains("action=removed"))
-        .foreach(line => System.err.println(s"  $line"))
-      KoAgentBpf.reconcileNote(reconciled.text).foreach(System.err.println)
 
     val mount =
       LaunchMount(fuseWorkspace, bpfFacts, effectiveSettings, joinedRules, sessionRuleLines, sessionRulesText)
@@ -1786,8 +1799,7 @@ object AgentSandboxLauncher:
     printLaunchLines(parsed, settings, workspace, rules, mount, git, cacheOverlays, hostLogFile, os)
     sbtVolumes.flatMap(planned => SbtBuildVolumes.skippedWarning(planned.skipped, os)).foreach(warn)
     val createCommand = sandboxCreateCommand(
-      parsed, settings, workspace, images, rules, names, mount, git, cacheOverlays, proxyIp, sandboxFiles,
-      machineMemory, os,
+      parsed, settings, workspace, images, rules, names, mount, git, cacheOverlays, sandboxFiles, machineMemory, os,
     )
 
     // Before the hold, the launch offers the run that provisions each executable whose absence would make the first
@@ -1806,9 +1818,9 @@ object AgentSandboxLauncher:
     val afterHoldShell = MachineShell.start(podman, os)
 
     // The hold comes first, then the create, the reaper, the mount, and the start.
-    // - The hold comes before the container exists. A Ctrl-C there is then an ordinary shutdown: the hook removes this
-    //   run's proxy and networks, and the launch ends at once. A launcher killed outright at the prompt leaves no
-    //   created container behind.
+    // - The hold comes before the container exists. A Ctrl-C there is then an ordinary shutdown: the hook waits for the
+    //   proxy's start, removes this run's proxy and networks, and the launch ends. A launcher killed outright at the
+    //   prompt leaves no created container behind.
     // - The reaper comes right after the create, so a created-but-never-started sandbox has its remover
     //   (SandboxLifecycle, ReaperScript) from the first instant, where a reaper runs.
     //   - Where no reaper runs, on Windows or after a failed POSIX spawn, the launcher stays resident. A resident
@@ -1821,12 +1833,14 @@ object AgentSandboxLauncher:
     //     container.
     // - The cost: the notes below print after the release, and the TUI then clears them with the rest. The notes say
     //   that the reaper could not be spawned, or which branch the mount took.
+    printReconcileNotes(os)
     val started = timings.timed("waited for the answer to the start prompt"):
       confirmStart(sessionStartMode, if command.isEmpty then Vector("bash") else command, terminalReader)
     if !started then
       afterHoldShell.close()
       heldLineClosed = true
       sys.exit(0)
+    reconciling.foreach(awaitReconcile => timings.timed("waited for the BPF backend's reconcile")(awaitReconcile()))
 
     // The launch creates the sbt builds' mount points only once the user has chosen to start, and just before the
     // create, so that a directory has the least time to change between the check and podman's mount. A build that
@@ -1835,15 +1849,39 @@ object AgentSandboxLauncher:
       val (mounts, changed) = SbtBuildVolumes.prepare(planned, os)
       SbtBuildVolumes.skippedWarning(changed, os).foreach(warn)
       mounts
+    // --add-host supplies the one name that the sandbox must resolve (sandboxCreateCommand). The address is read back
+    // from podman, so no subnet is reserved.
+    val proxyHostArgument = () =>
+      val proxyNetworks = timings.timed("waited for the egress proxy")(startingProxy())
+        .fold(reason => fail(s"error: $reason"), identity)
+      val proxyIp = addressOn(proxyNetworks, sandboxNetwork)
+        .getOrElse(fail(s"error: could not determine the egress proxy's address on $sandboxNetwork"))
+      s"--add-host=$EgressProxyHost:$proxyIp"
     val createWithVolumes = createCommand.copy(
       sbtVolumes = sbtVolumeMounts,
       commandLineLimit = Option.when(os == Os.Windows)(SbtBuildVolumes.WindowsCommandLineLimit),
     )
 
     startSandbox(
-      parsed, settings, workspace, rules, names, mount, git, createWithVolumes, fuseReap, runFiles, channelLogFile,
-      micLogFile, backendLogFile, launchLogFile, afterHoldShell, timings, cleanup, os,
+      parsed, settings, workspace, rules, names, mount, git, createWithVolumes, proxyHostArgument, fuseReap, runFiles,
+      channelLogFile, micLogFile, backendLogFile, launchLogFile, afterHoldShell, timings, cleanup, os,
     )
+
+  /**
+   * Prints the reconcile notes that the reconciles saved, this launch's own included when its reconcile has ended,
+   * right before the start prompt. The prompt does not wait for the reconcile, which can end a second after the run's
+   * files are ready. A refused session recurs in each reconcile, so its line reaches the screen at most one launch
+   * late.
+   * - A launch under the FUSE backend prints the notes too, since they concern the machine.
+   * - A host that has never saved notes gets no state directory from the check.
+   */
+  private def printReconcileNotes(os: Os): Unit =
+    val file = KoAgentBpf.reconcileNotesFile(stateRoot(os))
+    if Files.exists(file) then
+      try KoAgentBpf.takeReconcileNotes(stateRoot(os)).printed.foreach(System.err.println)
+      catch
+        case ex: IOException =>
+          System.err.println(s"note: could not read the BPF backend's reconcile notes in $file: ${ex.getMessage}")
 
   /** The options that another launch line states when in force. That line names the options file when the option came
     * from the file. The lines are the grants' orange lines, the shared agent-state volume's line, the workspace and
@@ -2838,7 +2876,6 @@ object AgentSandboxLauncher:
     mount: LaunchMount,
     git: GitAccess,
     cacheOverlays: Vector[CacheOverlay.Resolved],
-    proxyIp: String,
     sandboxFiles: Vector[String],
     machineMemory: Option[Long],
     os: Os,
@@ -2862,15 +2899,13 @@ object AgentSandboxLauncher:
     // the internal network.
     // - --dns=none is defence in depth, not a fix for a known hole. SECURITY.md has the measurement. Do not remove the
     //   flag in the belief that it closes a hole.
-    // - --add-host supplies the one name that must work. The address is read back from podman, so no subnet is
-    //   reserved.
+    // - The launch adds --add-host once the proxy is ready, just before the create (createUnderLaunchLock).
     // - proxyVariables has the variables.
     val egressProxyUrl = s"http://$EgressProxyHost:$EgressProxyPort"
 
     val egressArgs = Vector(
       s"--network=$sandboxNetwork",
       "--dns=none",
-      s"--add-host=$EgressProxyHost:$proxyIp",
     ) ++ proxyVariables(egressProxyUrl).map((name, value) => s"--env=$name=$value") ++ Vector(
 
       // Keep the proxy's resolved rules available on demand.
@@ -3026,9 +3061,14 @@ object AgentSandboxLauncher:
    * - On native Linux no backend but the FUSE backend runs, so no identity is read, and no live session is compared.
    * - The listing runs beside `prepare` (liveSessions), and the launch reads it after `prepare`, so a failed backend
    *   step still refuses first.
+   * - `proxyHostArgument` waits for the proxy's start, which therefore runs beside the listing and `prepare`. The
+   *   start's podman calls have a bound (startProxyContainer), so the wait holds the launch lock for a bounded time.
+   *   Every measured launch with a start prompt finished the start before Enter (doc/design.md, "What may move across
+   *   the start prompt").
    */
   private def createUnderLaunchLock(
     createCommand: CreateCommand,
+    proxyHostArgument: () => String,
     settings: CommandLine.WorkspaceSettings,
     persistentVolume: String,
     mountPaths: Vector[String],
@@ -3042,10 +3082,10 @@ object AgentSandboxLauncher:
       launched.toVector.flatMap: done =>
         Vector(s"--cgroup-parent=${done.parent}", "--restart=no", s"--label=${KoAgentBpf.CgroupLabel}=${done.cgroup}")
     if os == Os.Linux then
-      val labels = KoAgentBpf.labelArguments(settings, persistentVolume, Vector.empty, None)
-      createCommand.leftOutWarning(labels).foreach(warn)
+      val options = KoAgentBpf.labelArguments(settings, persistentVolume, Vector.empty, None) :+ proxyHostArgument()
+      createCommand.leftOutWarning(options).foreach(warn)
       val created = timings.timed("created the container"):
-        runWithEnvironment(environment, createCommand.withOptions(labels)*)
+        runWithEnvironment(environment, createCommand.withOptions(options)*)
       return (None, created)
     val asked = System.nanoTime()
     withFileLock(KoAgentBpf.launchLockFile(stateRoot(os))):
@@ -3061,10 +3101,11 @@ object AgentSandboxLauncher:
         KoAgentBpf.RawMount(path, identity)
       KoAgentBpf.refusalBeside(settings, persistentVolume, mine, live, path => known.get(path).filter(_ != "gone"))
         .foreach(reason => fail(reason))
-      val labels = KoAgentBpf.labelArguments(settings, persistentVolume, mine, None)
-      createCommand.leftOutWarning(labels ++ bpfOptions(launched)).foreach(warn)
+      val options =
+        KoAgentBpf.labelArguments(settings, persistentVolume, mine, None) ++ bpfOptions(launched) :+ proxyHostArgument()
+      createCommand.leftOutWarning(options).foreach(warn)
       val created = timings.timed("created the container"):
-        runWithEnvironment(environment, createCommand.withOptions(labels ++ bpfOptions(launched))*)
+        runWithEnvironment(environment, createCommand.withOptions(options)*)
       (launched, created)
 
   /**
@@ -3114,6 +3155,7 @@ object AgentSandboxLauncher:
     mount: LaunchMount,
     git: GitAccess,
     createCommand: CreateCommand,
+    proxyHostArgument: () => String,
     fuseReap: Option[String],
     runFiles: Path,
     channelLogFile: Path,
@@ -3172,8 +3214,8 @@ object AgentSandboxLauncher:
           if !asked.ok then fail(s"error: the machine did not answer the mounts' identities\n${asked.err}")
           KoAgentBpf.parseIdentities(asked.text)
     val (launched, created) = createUnderLaunchLock(
-      createCommand, workspaceSettings, persistentVolume, mountPaths, () => bpf.map(backendSteps), identities,
-      awsCredential.map(_.environment).getOrElse(Map.empty), timings, os,
+      createCommand, proxyHostArgument, workspaceSettings, persistentVolume, mountPaths, () => bpf.map(backendSteps),
+      identities, awsCredential.map(_.environment).getOrElse(Map.empty), timings, os,
     )
     if !created.ok then
       fail(
