@@ -44,6 +44,70 @@ were read on 2026-09-28.
 - The interactive mode's git child fetches the official plugin marketplace from `github.com`,
   without a credential.
 
+## Measured with claude 2.1.326 on 2026-11-21: credentials bound with `--egress-cred`
+
+Two sessions, each on a new persistent volume, with `--egress-preset=anthropic`.
+
+- Setup, the API key: a Console key bound as `ANTHROPIC_API_KEY@api.anthropic.com:x-api-key`;
+  interactive `claude` with the key approved, then `claude -p`; then a second launch on the same
+  volume, with a new placeholder.
+- Every `/v1/messages` request carried `inject=ANTHROPIC_API_KEY`, so Claude Code sends the key in
+  `x-api-key`. The `-p` turn completed; the interactive turn got the account's "Credit balance too
+  low".
+- In the second launch, interactive `claude` asked to approve the key again, with "No
+  (recommended)" preselected. `claude -p` did not ask.
+- Requests without a credential: `GET` `/api/hello`, `/api/directory/server-urls` and
+  `/api/directory/plugins`, and `POST` `/api/event_logging/v2/batch`. Each `POST` came before the
+  launch's first request with the key.
+- With the key, Claude Code also requested `/api/claude_code/policy_limits`,
+  `/api/claude_code/settings`, `/api/claude_code/organizations/metrics_enabled` and
+  `/api/claude_code/metrics`.
+- Setup, the setup token: a `claude setup-token` token bound as
+  `CLAUDE_CODE_OAUTH_TOKEN@api.anthropic.com`, which binds `Authorization`; `claude -p "say ok"`.
+- Claude Code accepted the placeholder of 22 letters and digits, without the token's
+  `sk-ant-oat01-` prefix, and the turn completed. Every request that carried a credential,
+  `/v1/messages` included, carried `inject=CLAUDE_CODE_OAUTH_TOKEN`.
+- The only request without a credential was `GET` `/api/directory/server-urls`; every
+  `/api/event_logging/v2/batch` `POST` carried the token.
+
+## Measured with claude 2.1.326 on 2026-11-21: a sign-in and a forced refresh
+
+`/login` with a Claude subscription account on a new persistent volume, then
+`claudeAiOauth.expiresAt` set to `0` and `claude -p "say ok"`.
+
+- `~/.claude/.credentials.json` holds `claudeAiOauth` with `accessToken` and `refreshToken`
+  (strings), `expiresAt` and `refreshTokenExpiresAt` (numbers), `scopes` (seven strings),
+  `subscriptionType`, `subscriptionTypeSource`, `rateLimitTier`, `accountUuid` and
+  `organizationUuid`.
+- `oauthAccount` in `~/.claude/.claude.json` names the account by `accountUuid`, `emailAddress`
+  and `organizationUuid`. Its other fields describe the plan, the profile and the organization.
+- The sign-in sent one `POST /v1/oauth/token` to `platform.claude.com`, from `axios/1.15.2` and
+  without a credential. The next request carried `cred=1`.
+- The `-p` run sent two `POST /v1/oauth/token` requests, at 20:32:09 and 20:32:10 UTC, and each
+  was followed by a new index, `cred=2` and then `cred=3`.
+  - Four requests after the first refresh still carried `cred=1`. The turn completed under
+    `cred=3`.
+  - The log does not show which refresh token the second request sent.
+- Requests without a credential: at `api.anthropic.com`, `GET` `/api/hello` and
+  `/api/directory/server-urls`, and three `POST` `/api/event_logging/v2/batch` before the sign-in
+  completed; at `platform.claude.com`, `GET` `/v1/oauth/hello` and each `POST /v1/oauth/token`.
+
+## Measured with claude 2.1.326 on 2026-11-21: a sign-out whose revocation fails
+
+On the sign-in's volume: `/logout` under a workspace line
+`deny https://platform.claude.com/ method=POST`, then, without the line, a sign-in and a second
+`/logout`.
+
+- The proxy refused `POST /v1/oauth/token/revoke`. Claude Code printed "Logged out on this
+  computer, but Anthropic didn't confirm the login was revoked. It may still work until you revoke
+  it at https://claude.ai/settings/claude-code".
+- At the next launch on the volume, `~/.claude/.credentials.json` did not exist.
+- Without the line, the revoke request was allowed: `POST /v1/oauth/token/revoke` from
+  `axios/1.15.2`, `content-length=205`, without a credential. Claude Code printed "Successfully
+  logged out from your Anthropic account", and the credentials file did not exist afterwards.
+- After each `/logout`, one `POST /api/event_logging/v2/batch` went to `api.anthropic.com` without
+  a credential.
+
 ### The lines that MeasurementReport accepts
 
 `MeasurementReport` reads this block (`doc/agent-measurement.md`, "The measurement suite").
@@ -56,9 +120,15 @@ path api.anthropic.com /api/oauth/organizations/<org>/skills/list-skills
 path api.anthropic.com /api/oauth/organizations/<org>/skills/<name>/download
 path api.anthropic.com /api/oauth/organizations/<org>/plugins/list-plugins
 path api.anthropic.com /api/oauth/organizations/<org>/marketplaces
+path api.anthropic.com /api/oauth/organizations/<org>/referral/eligibility
+path api.anthropic.com /api/oauth/organizations/<org>/quirky-lollipop/link-offer
+path api.anthropic.com /api/organization/claude_code_first_token_date
 path api.anthropic.com /api/organizations/<org>/model_selector/cc
 path api.anthropic.com /api/claude_cli/bootstrap /api/claude_code_grove
 path api.anthropic.com /api/claude_code_penguin_mode
+path api.anthropic.com /api/frame/contract/latest
+path api.anthropic.com /api/claude_code/policy_limits /api/claude_code/settings
+path api.anthropic.com /api/claude_code/organizations/metrics_enabled /api/claude_code/metrics
 path api.anthropic.com /api/eval/sdk-<key> /api/event_logging/v2/batch /api/artifacts/mcp
 path api.anthropic.com /api/hello /api/web/domain_info /api/directory/plugins
 path api.anthropic.com /api/directory/server-urls

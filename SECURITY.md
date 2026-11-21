@@ -469,6 +469,17 @@ Inspection therefore does not establish that a request contains no workspace inf
   onward.
 - Claude Code's WebFetch is the opposite: a direct request from inside the sandbox, through the
   proxy. Only an allowed host answers the request, and the proxy logs it like any other connection.
+- A model request can name a server that the provider then connects to: Anthropic's web fetch tool
+  and MCP connector, and the `mcp` tool of OpenAI's Responses API. The ruleset never sees that
+  connection.
+  - Any process in the session can send such a request with the agent's login token from the
+    persistent volume, name an attacker's server, and pass workspace data in the call.
+  - A refusal of foreign credentials does not stop this: the request carries the session's own
+    credential. `doc/TODO.md`, "Server tools that connect where a request says", holds the
+    controls.
+  - Web fetch fetches only a URL that already appears in the conversation, and a process that
+    writes the request writes the conversation
+    (https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-fetch-tool).
 
 Copilot CLI's sign-in stores a forge credential, not merely a model-provider credential.
 

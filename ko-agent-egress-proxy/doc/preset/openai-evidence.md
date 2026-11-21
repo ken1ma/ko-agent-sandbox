@@ -86,6 +86,47 @@ state as of that day.
   one (rust-v0.169.0, `codex-rs/codex-api/src/endpoint/search.rs` and
   `codex-rs/ext/web-search/src/history.rs`).
 
+## Measured with codex 0.169.0 on 2026-11-21: `CODEX_API_KEY` bound with `--egress-cred`
+
+An API key bound as `CODEX_API_KEY@api.openai.com`, which binds `Authorization`, with
+`--egress-preset=openai` and a new persistent volume; `codex exec --skip-git-repo-check "say ok"`.
+
+- `POST /v1/responses` carried `inject=CODEX_API_KEY`, and the turn completed.
+- The four `GET /backend-api/codex/models` requests to `chatgpt.com` carried the placeholder
+  unsubstituted, with the same `cred=1` as `/v1/responses`. `chatgpt.com` answered each with 401,
+  "Could not parse your authentication token", and Codex logged a failed model refresh.
+- Seven refused WebSocket upgrades at `/v1/responses` over about six seconds preceded the HTTPS
+  fallback; `ab.chatgpt.com` was refused.
+- `git` fetched `github.com/openai/plugins.git` twice, without a credential.
+
+## Measured with codex 0.169.0 on 2026-11-21: a sign-in, a forced refresh and a sign-out
+
+On a new persistent volume with `--egress-preset=openai`.
+
+- `codex login --device-auth` sent `POST /api/accounts/deviceauth/usercode`, polled
+  `/api/accounts/deviceauth/token` about every five seconds until approval, then sent one
+  `POST /oauth/token`. None of these lines named a client or carried `cred=`.
+- `~/.codex/auth.json` holds `auth_mode`, `last_refresh`, and `tokens` with `id_token`,
+  `access_token`, `refresh_token`, `oauth_provenance.issuer`, `oauth_provenance.client_id`,
+  `login_owner_id` and `account_id`, all strings.
+- The ID token's claims name the account by `sub`, `email` and, under
+  `https://api.openai.com/auth`, `user_id`, `chatgpt_account_id` and `chatgpt_user_id`. That
+  object also holds `groups`, `organizations` (each with `id`, `title`, `role`, and
+  `is_default` on one), `chatgpt_plan_type` and the subscription's dates. The other claims are
+  `name`, `email_verified`, `auth_provider`, `amr`, `iss`, `aud`, `auth_time`, `rat`, `sid`, `iat`,
+  `exp`, `jti` and `at_hash`.
+- With `tokens.access_token` set to `invalid`, `codex exec` sent requests to `chatgpt.com` with
+  that value as `cred=1`, and `/backend-api/codex/models` answered 401. Then one
+  `POST /oauth/token` from `codex_exec/0.169.0`, and the turn completed under `cred=2`.
+  - Five requests after the refresh still carried `cred=1`.
+  - Codex also logged two MCP transport errors in that run, `HTTP 451: no_biscuit_no_service`.
+- A copy of the sign-in under another `CODEX_HOME`, with the ID token's signature replaced by
+  `c2lnbmF0dXJl`, completed a turn without a refresh. So did a copy whose ID token also had the
+  empty payload `e30`. The volume's own login worked afterwards.
+- With a workspace line `deny https://auth.openai.com/ method=POST`, the proxy refused
+  `POST /oauth/revoke`. `codex logout` printed "Successfully logged out", and `~/.codex/auth.json`
+  no longer existed.
+
 ### The lines that MeasurementReport accepts for Codex
 
 `MeasurementReport` reads this block (`doc/agent-measurement.md`, "The measurement suite").
@@ -103,6 +144,7 @@ path chatgpt.com /backend-api/codex/alpha/search
 path api.openai.com /v1/responses
 path auth.openai.com /oauth/revoke /api/accounts/deviceauth/usercode
 path auth.openai.com /api/accounts/deviceauth/token /oauth/token
+path github.com /openai/plugins.git/info/refs /openai/plugins.git/git-upload-pack
 refused chatgpt.com GET /backend-api/codex/responses
 refused api.openai.com GET /v1/responses
 refused ab.chatgpt.com CONNECT

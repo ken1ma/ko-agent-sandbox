@@ -24,11 +24,95 @@ reason, so that nobody proposes it again.
 - [ ] Give a value without a recognized prefix a placeholder that its program accepts. A program
   that checks the value's syntax before sending the value refuses the placeholder of 22 letters
   and digits (`egress-proxy.md`, "Where the value goes").
-- [ ] Implement `plan-preset-credential-proxy.md` in its delivery order. At the hosts that a
-  selected credential marks, its refusal stops uploads under a foreign key (SECURITY.md,
-  "Exfiltration through allowed network traffic").
+- [ ] Implement `plan-preset-credential-proxy.md` in its delivery order. At a selected credential's
+  refusing hosts, the refusal stops uploads under a foreign key in a form that the catalog
+  declares (SECURITY.md, "Exfiltration through allowed network traffic").
+- [ ] Decide `plan-login-brokering.md`, which brokers the agents' own logins so that the refusal
+  covers a signed-in session.
+- [ ] Measure `CODEX_ACCESS_TOKEN@openai`, which the preset plan delivers from Codex's source, with
+  a token from a ChatGPT Business or Enterprise workspace, once the plan's step 2 has landed:
+  - launch with `--egress-preset=openai --egress-preset-cred=CODEX_ACCESS_TOKEN@openai bash` and
+    run `codex exec --skip-git-repo-check "say ok"`;
+  - expect `inject=CODEX_ACCESS_TOKEN` on `auth.openai.com`'s
+    `/api/accounts/v1/user-auth-credential/whoami` and on the `chatgpt.com` requests, and record
+    every host whose lines carry `cred=`. A line with `cred=` and no `inject=` sent the placeholder
+    where the entry does not substitute;
+  - record the result in `ko-agent-egress-proxy/doc/preset/openai-evidence.md`.
 - AWS is in neither: `design.md`, "Credential brokering at the egress proxy", explains why, and
   what a session forwards instead.
+
+## The brokered login store off disk
+
+`plan-login-brokering.md` keeps an agent login's real tokens in a podman named volume, a plaintext
+file at rest beside the persistent volume. Keeping them off disk takes a secret that no file holds:
+
+- [ ] The host's keychain holds a key, the launcher pipes it to the proxy at launch as it pipes a
+  brokered value, and the store holds the tokens encrypted under it. No refresh crosses to the
+  host, unlike tokens kept in the keychain themselves.
+  - Open: the hosts without a keychain, such as a Linux host without a Secret Service.
+  - A key in a file encrypts nothing: whoever reads the store reads the key.
+
+## Server tools that connect where a request says
+
+A model request can make the provider connect to a server the request names, outside the ruleset
+(SECURITY.md, "The web reached through the model provider"). Anthropic's Cowork proxy "blocks
+headers that would enable server-side fetch", without naming them
+(https://www.anthropic.com/research/how-we-contain-claude). Each control below waits for a
+measurement showing whether Claude Code or Codex sends what it refuses:
+
+- [ ] Refuse `anthropic-beta: mcp-client-*` at `api.anthropic.com`, which turns on the MCP
+  connector (https://platform.claude.com/docs/en/agents-and-tools/mcp-connector). Claude Code's
+  evidence lists `/v1/mcp_servers`, so the measurement comes first.
+- [ ] Refuse a request whose body declares `web_fetch` or `mcp_toolset` in its `tools` at
+  `api.anthropic.com`, or `mcp` at `api.openai.com`
+  (https://developers.openai.com/api/docs/guides/tools-connectors-mcp.md).
+  - The proxy parses no body today. design.md rules out a body field only as a log field ("Model
+    hosts inspected by default"), so a refusal by body needs a decision of its own.
+  - The tool types carry version dates, so the check follows each release's names.
+  - Claude Code's WebSearch runs on the provider's servers, so the check leaves the search tool
+    alone.
+
+## Comparable sandboxes, read for ideas to take
+
+Each pass reads a project's current release for what this launcher lacks or does worse. The pass
+records each idea where its decision lives: an adopted idea in a plan or this file, a declined one
+in design.md with its reason. The pass then updates the project's line here with the version
+read and the ideas still undecided.
+
+- nono (https://github.com/nolabs-ai/nono): a sandbox with a credential proxy, a sandbox per tool,
+  Sigstore attestation of skills and instruction files, a tamper-evident audit log and file
+  rollback. Read 2026-11-21: nono-proxy 0.82.0, and the documentation at e75c83b. Undecided:
+  - Sandboxed OAuth logins (`docs/cli/features/sandboxed-oauth-logins.mdx`) are taken up in
+    `plan-login-brokering.md`.
+  - [ ] A placeholder in a declared shape, such as `sk-ant-oat01-{}` or `ghp_{}`, for a client that
+    checks a token's prefix. The item on values without a recognized prefix, under "Credential
+    brokering", needs this.
+  - [ ] AWS SigV4 re-signing at TLS-intercepted hosts, which answers 403 to a key ID that the
+    profile does not name (`docs/cli/features/credential-injection.mdx`). design.md leaves
+    re-signing out.
+- Docker Sandboxes (https://github.com/docker/sbx-releases): the releases and issues, the source of
+  many failure reports that design.md cites. Not yet read as a pass. Its agent logins, brokered by
+  answering the token endpoint (https://github.com/docker/sandbox-kit-spec, `credential@1.md`,
+  `oauth`), are weighed in `plan-login-brokering.md`.
+- sandbox-runtime (https://github.com/anthropics/sandbox-runtime), Claude Code's sandbox:
+  credential masking, SigV4 re-signing and violation reports. Not yet read as a pass.
+- Codex's `codex-rs/network-proxy` (https://github.com/openai/codex): the credential broker and
+  the policy decisions handed to the agent. Not yet read as a pass.
+- greywall (https://github.com/GreyhavenHQ/greywall), a sandbox without containers, and clampdown
+  (https://github.com/89luca89/clampdown), a container sandbox; both broker credentials. Not yet
+  read as a pass.
+- OpenShell (https://github.com/ai-openshell/openshell), an agent runtime whose proxy
+  TLS-terminates and swaps placeholders, with Copilot CLI as a provider. Its gateway alone refreshes
+  OAuth tokens and writes each new access token to the provider record
+  (https://docs.nvidia.com/openshell/latest/how-it-works/providers/overview.md, "Credential
+  Refresh"). Not yet read as a pass.
+- Lens sandbox-core (https://github.com/lensapp/lens-sandbox-core), the policy, proxy and
+  credential library of Lens's sandbox. Its proxy answers OAuth token and refresh requests with
+  placeholders (`oauthTokenAnswer`, `oauthRefreshAnswer`, PR #63). Not yet read as a pass.
+- iron-proxy (https://github.com/paradigmxyz/iron-proxy), an egress firewall that swaps secrets,
+  and GitHub's agentic-workflow firewall (https://github.com/github/gh-aw-firewall), which sets
+  each Copilot host's `Authorization` scheme (`containers/api-proxy/providers/copilot-auth.js`).
+  Not yet read as a pass.
 
 ## Host process observations without helper processes
 

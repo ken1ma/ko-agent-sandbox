@@ -34,13 +34,14 @@ Preserve scope, ownership and how work is separated for review.
 - Investigate a problem or improvement found beyond the task as one inside it: a boundary limits
   what you change, not what you read, run or report.
 
-Read the relevant official documentation, source, issues and workspace documents, including
-earlier decisions on the subject, before reasoning, designing, experimenting or editing.
-Existing usage shows what is consistent, not what was decided. Reason and
-experiment about what they leave open. State as fact only what you read or measured. Do not mark a
-claim unverified when reading can settle it, as for an option you propose or a command, flag or API
-you write. In persisted text, an unverified claim appears only as an open question, such as a TODO
-item. Before recommending, test the recommendation against its strongest objection.
+Read the relevant official documentation, source, issues and workspace documents, including earlier
+decisions on the subject, before reasoning, designing, experimenting or editing. Existing usage
+shows what is consistent, not what was decided. Reason and experiment about what they leave open.
+State as fact only what you read or measured, no wider than it: "only", "no", "every" or "cannot"
+needs a reading of every place a counterexample could be. Do not mark a claim unverified when
+reading can settle it, as for an option you propose or a command, flag or API you write. In
+persisted text, an unverified claim appears only as an open question, such as a TODO item. Before
+recommending, test the recommendation against its strongest objection.
 
 Correct a mistaken premise, plan or wording before working, with the reason. Once the disagreement
 is heard, do the work as asked. Disagreement is expected; do not silently conform to a guessed
@@ -59,12 +60,12 @@ Use names to say what methods, parameters and values are before adding comments.
 comments that only do this with better names.
 
 Use concrete subject–verb–object wording. Use a term that leaves the reader to guess what it
-stands for (such as "invariant", "venue", "prose", the verb "mint") only when concrete wording
-loses meaning or precision; name what it stands for in the same sentence. Report existing names
-and wording that fail this, and rewrite rather than imitate it in the passage you edit. Describe
-what a tool or service does with the verb its own documentation uses. Read each sentence alone,
-knowing only what the reader has read. Rewrite the sentence rather than mechanically replacing
-words.
+stands for (such as "invariant", "venue", "prose", the verb "mint", or an everyday word in its
+writer's own sense) only when concrete wording loses meaning or precision; name what it stands for
+in the same sentence. Report existing names and wording that fail this, and rewrite rather than
+imitate it in the passage you edit. Describe what a tool or service does with the verb its own
+documentation uses. Read each sentence alone, knowing only what the reader has read. Rewrite the
+sentence rather than mechanically replacing words.
 
 Write for an experienced developer reading at speed. Terse means fewer claims, not fewer words per
 claim: keep articles and verbs, and give each sentence one main clause.
@@ -78,12 +79,12 @@ enforcing it, and reference it elsewhere. If a reader of the current design woul
 deliberately omitted, explain its absence once, where the reader would look for it.
 
 Compare each edit's old and new meanings, then re-read the whole passage and check each sentence
-against Writing style. Unless the user authorized the change, ask before removing a recorded reason
-or intent or changing its meaning; code alone cannot establish why a choice was made. Account for
-removed expectations, reasons, conditions and actions in the working list: preserve them, link to
-where the reader needs them, or, when the removal is allowed, give a concrete reason they do not
-belong. Check for duplication and clauses more specific or general than their neighbors: those
-belong in a different document.
+against Writing style and each claim against what you read or measured. Unless the user authorized
+the change, ask before removing a recorded reason or intent or changing its meaning; code alone
+cannot establish why a choice was made. Account for removed expectations, reasons, conditions and
+actions in the working list: preserve them, link to where the reader needs them, or, when the
+removal is allowed, give a concrete reason they do not belong. Check for duplication and clauses
+more specific or general than their neighbors: those belong in a different document.
 
 A completeness checklist, such as a security boundary or a test list, states each element's
 contribution, even when that repeats another document: an auditor reads the list alone.

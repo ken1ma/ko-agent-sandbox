@@ -531,8 +531,10 @@ No format limits that placeholder's length (`EgressCredentials.placeholderFor`):
     brokering at the egress proxy").
 - A model provider's API key at a host that the defaults inspect:
   - `ANTHROPIC_API_KEY@api.anthropic.com:x-api-key`, the header Claude Code sends the key in;
-  - `OPENAI_API_KEY@api.openai.com`. Codex also fetches its model list from `chatgpt.com` with
-    that key, which the binding does not reach.
+  - `CODEX_API_KEY@api.openai.com`, the variable that `codex exec` sends as its credential. Codex
+    also fetches its model list from `chatgpt.com` with that key, which the binding does not reach.
+    Codex's TUI does not send `CODEX_API_KEY`: it uses the key that `codex login --with-api-key`
+    stored (`codex-rs`, `AuthManager`'s `enable_codex_api_key_env`).
 - Not an API key at a model host that a workspace made a tunnel, where nothing is substituted, and
   not an agent's own login. The same design.md section says why.
 

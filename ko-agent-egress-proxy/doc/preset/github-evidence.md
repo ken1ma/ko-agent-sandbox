@@ -81,6 +81,23 @@ Signed in on an individual plan, under `deny-unless-allowed`.
 - Unmeasured: the business and enterprise hosts, and session sync, which the account's organization
   policy turns off.
 
+## Measured with copilot 1.0.113 on 2026-11-21: a token bound with `--egress-cred`
+
+A fine-grained personal access token with read access to "Copilot Requests" and no repository
+access, bound as `COPILOT_GITHUB_TOKEN@api.github.com`, which binds `Authorization`, with
+`--egress-preset=github` and a new persistent volume; `copilot -p "say ok"`.
+
+- Copilot accepted the placeholder that keeps the token's format, `github_pat_` followed by the
+  token's length and character classes. `/copilot_internal/user`,
+  `/copilot_internal/managed_settings`, `/copilot_internal/team_customizations` and
+  `/repos/github/copilot-cli/releases` on `api.github.com` carried `inject=COPILOT_GITHUB_TOKEN`.
+- `api.individual.githubcopilot.com` got the placeholder unsubstituted, with the same `cred=1`, on
+  `POST /mcp/readonly` and `GET /meta`. Copilot then exited with "Authentication failed".
+- `api.githubcopilot.com` got `GET /.well-known/oauth-protected-resource/mcp/readonly` without a
+  credential, which ended in `relay: client: Broken pipe`.
+- The refusals and the `CONNECT` errors are those of the 2026-11-14 measurement, with one more
+  `CONNECT` error at `api.githubcopilot.com`.
+
 ### The lines that MeasurementReport accepts for Copilot CLI
 
 `MeasurementReport` reads this block (`doc/agent-measurement.md`, "The measurement suite").
@@ -96,6 +113,7 @@ path api.github.com /copilot_internal/team_customizations /repos/github/copilot-
 path api.github.com /repos/<owner>/<repo>/issues /repos/<owner>/<repo>/pulls
 path api.github.com /repos/<owner>/<repo>/copilot_internal/embeddings_index
 path github.com /login/device/code /login/oauth/access_token
+path api.githubcopilot.com /.well-known/oauth-protected-resource/mcp/readonly
 refused api.individual.githubcopilot.com GET /responses
 refused api.github.com POST /graphql
 refused api.github.com POST /repos/<owner>/<repo>/copilot_internal/embeddings_index
@@ -109,6 +127,8 @@ refused cafe.github.com CONNECT
 error api.individual.githubcopilot.com tunnel: expected 5 bytes, got 0
 error api.github.com tunnel: expected 5 bytes, got 0
 error github.com tunnel: expected 5 bytes, got 0
+error api.githubcopilot.com tunnel: expected 5 bytes, got 0
+error api.githubcopilot.com relay: client: Broken pipe
 ```
 
 ## OpenCode signed in to GitHub Copilot

@@ -123,11 +123,37 @@ replaces the failing one no longer needs it.
     1. What was missing: AGENTS.md says to read earlier decisions. Nothing told a decision apart
        from existing usage.
 
+## Top priorities: "no wider than it" and "each claim against what you read or measured"
+
+> State as fact only what you read or measured, no wider than it: "only", "no", "every" or
+> "cannot" needs a reading of every place a counterexample could be.
+
+> … re-read the whole passage and check each sentence against Writing style and each claim against
+> what you read or measured.
+
+1. Incident: `ko-agent-sandbox`, `claude-opus-5-5`. While revising
+   `doc/plan-preset-credential-proxy.md` and drafting two plans beside it, the model wrote claims
+   wider than what it had read, and the user had to ask "Do you have no more overclaims?". The
+   model then found about twenty more of them.
+    1. "Codex's TUI reads no variable", from reading how Codex reads `CODEX_API_KEY`. The same
+       function, `load_auth`, reads `CODEX_ACCESS_TOKEN` in every mode, the TUI included.
+    1. "Most failure reports", from the reports it had read.
+    1. The user reported the same twice in one week.
+    1. Replay: at `ko-agent-sandbox` commit 62c33a8, ask: "Reevaluate
+       plan-preset-credential-proxy.md, I want to implement it now".
+    1. Failure: a persisted claim with "only", "no", "every", "cannot" or "most" covers more places
+       than the model read, or drops a source's hedge, such as "by one engineer's account".
+    1. What was missing: "State as fact only what you read or measured" did not say how far a fact
+       reaches, and a claim drawn from a partial reading read as read. The re-read checked style,
+       not evidence, so no step brought the claims back before the user saw them.
+    1. The first sentence restores "`only` or `every` must match behavior", removed earlier for
+       lack of a recorded failure.
+
 ## Writing style: "a term that leaves the reader to guess"
 
 > Use a term that leaves the reader to guess what it stands for (such as "invariant", "venue",
-> "prose", the verb "mint") only when concrete wording loses meaning or precision; name what it
-> stands for in the same sentence.
+> "prose", the verb "mint", or an everyday word in its writer's own sense) only when concrete
+> wording loses meaning or precision; name what it stands for in the same sentence.
 
 1. Incident: `ko-agent-sandbox`, `claude-opus-5-5` at high. From podman's `--userns=keep-id`, the
    model wrote "keep-id" in code names, comments, a TODO heading and a commit message, without
@@ -141,6 +167,18 @@ replaces the failing one no longer needs it.
     1. What was missing: the rule named abstractions and metaphors; a tool's term is neither, and
        "Describe what a tool or service does with the verb its own documentation uses" invites tool
        terms.
+1. Second incident: `ko-agent-sandbox`, `claude-opus-5-5`. `doc/plan-preset-credential-proxy.md`
+   said "the hosts that the entry marks" without saying what marking does. Revising the plan, the
+   model extended the wording to "marked" and "unmarked" hosts in the plan and its replies, and the
+   user had to ask what they meant.
+    1. The user reported the same three times in one week.
+    1. Replay: at `ko-agent-sandbox` commit 62c33a8, ask: "Reevaluate
+       plan-preset-credential-proxy.md, I want to implement it now".
+    1. Failure: the reply or an edited document uses "marked" hosts, or another everyday word in a
+       sense the document gave it, without saying what it stands for.
+    1. What was missing: the examples were all unusual words, and the rule did not read as covering
+       an everyday word. "Rewrite rather than imitate" did not fire, since the wording did not look
+       like a term.
 
 ## Writing style: "knowing only what the reader has read"
 
@@ -244,5 +282,3 @@ with a reason when its failure appears.
 
 1. "compared nouns must be the same kind", after "Read each sentence alone". It came in with the
    early history (commit 3d93befe), and no failure is recorded.
-1. "`only` or `every` must match behavior", in the same sentence. It came in with the same commit.
-   "State as fact only what you read or measured" covers a claim that uses `only` or `every`.

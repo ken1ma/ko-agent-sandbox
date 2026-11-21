@@ -759,7 +759,7 @@ The binding:
   - Otherwise the binding would show as a 401 inside the sandbox, with nothing in the log to
     explain it.
   - A model host that the defaults inspect takes a binding, such as
-    `ANTHROPIC_API_KEY@api.anthropic.com:x-api-key` or `OPENAI_API_KEY@api.openai.com`, with a
+    `ANTHROPIC_API_KEY@api.anthropic.com:x-api-key` or `CODEX_API_KEY@api.openai.com`, with a
     fixed header and no lifecycle. Claude Code sends its key in `X-Api-Key`, not in
     `Authorization`, which a binding defaults to.
 - The launcher and the proxy compile one grammar object (`CredentialGrammar`), rather than the

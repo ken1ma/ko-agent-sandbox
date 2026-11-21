@@ -29,6 +29,7 @@ allow https://pkg-containers.githubusercontent.com/ read  # ghcr.io's blob CDN
 
 # agent docs
 allow https://code.claude.com/        read  # claude
+allow https://www.anthropic.com/      read  # articles such as research/how-we-contain-claude
 allow https://developers.openai.com/  read  # codex
 allow https://learn.chatgpt.com/      read  # codex: 2026-09: developers.openai.com/codex redirects here
 allow https://antigravity.google/     read  # agy
@@ -44,6 +45,9 @@ allow https://opencode.ai/            read
 allow https://models.opencode.ai/     read
 
 allow https://pi.dev/                 read  # pi
+
+# Other sandboxes
+allow https://docs.nvidia.com/        read  # OpenShell
 
 # VS Code: the image's `code` CLI fetches the server release for `code agent host` at first start and on updates.
 # The CLI sends a GET for /commit:<commit>/server-linux-<arch>/stable to the update service, which redirects to the
