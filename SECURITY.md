@@ -297,7 +297,7 @@ A session cannot change those files. `doc/file-rules.md` has the list and the ru
   an NTFS 8.3 short name such as `GIT~1`, whatever that name holds when the link is made.
   - The check reads the target's names when the link is made. So a symlink that the session did not
     make, into a Git directory or through a short name, still lets a later link reach that
-    directory. Such a symlink is the host's, or predates the check.
+    directory. Such a symlink is the host's, or was made before the session.
 - The mount-time guard adds what a name cannot express. The guard reads the tree as the tree is at
   the mount, a snapshot like the Git check above:
   - A hook directory kept in the worktree is read-only. So is the target of a symlink inside a

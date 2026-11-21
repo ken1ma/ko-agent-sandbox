@@ -289,8 +289,8 @@ The identity checks (`fs.rs`, `policy_name` and `open_ino`) are in these figures
   29–69 % higher.
 - It is least higher where directory fds are held (`find`, +32 %), and most where every entry is
   resolved by path (`rm -rf`, +69 %; `ls -lR`, +63 %).
-- This bounds the checks' cost. The two runs do not separate the checks from the daemon's other
-  changes between them.
+- This bounds the checks' cost. The two builds differ in more than the checks, so the runs do not
+  isolate the checks' cost.
 
 `find` batches reads per directory. `find -printf` needs about one lookup and one getattr round trip
 per entry. `ls -lR` needs about 4–8 round trips, since each path-based syscall resolves every

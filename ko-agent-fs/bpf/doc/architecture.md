@@ -1108,9 +1108,7 @@ Both kernels' BTF lists every hook named in the table:
   `LsmCgroup` is https://github.com/aya-rs/aya/pull/1135.
   - Aya's resolution of a typeless ksym through `/proc/kallsyms`
     (https://github.com/aya-rs/aya/pull/1372) is in no release as of 2026-10-19. The policy program
-    reads no kernel symbol since the per-dentry `d_seq` replaced `rename_lock` ("What is gained and
-    what is lost"). The one-hook and every-hook suites resolved `rename_lock` as a typeless `__ksym`
-    extern through `/proc/kallsyms`, as libbpf does at load.
+    reads no kernel symbol, so it needs no such resolution.
   - By the user's decision of 2026-10-26 the controller stays C over libbpf until the classifier is
     ported to Rust (`../../../doc/TODO.md`, "The BPF backend's later versions"). That is a
     scheduling choice: a Rust controller needs no CO-RE from `rustc`; only the program needs it.

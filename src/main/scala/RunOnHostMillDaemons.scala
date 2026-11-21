@@ -10,7 +10,7 @@
 //     the fingerprint with. A helper would reproduce `MillLauncherMain.main0`'s preamble against `mill.launcher`
 //     internals pinned to one version.
 //   - A fingerprint that differs is the mismatch on which the next client ends the daemon.
-//   - A Mill version whose daemon does not survive the starter's end would bring the helper back.
+//   - A Mill version whose daemon does not survive the starter's end would need the helper.
 // - The connect is denied because the daemon inherits the starter's profile. SeatbeltProfile.Network.MillDaemon
 //   explains why no outbound connection is granted. The runner ends the starter once its daemon is observed listening,
 //   so the denied connect's ten-second retry is not waited out.

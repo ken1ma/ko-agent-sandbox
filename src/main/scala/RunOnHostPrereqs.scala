@@ -1205,11 +1205,9 @@ object RunOnHostPrereqs:
    *   - Validating the value anyway turns a request that names somewhere else into one answer instead of a wall of
    *     denials.
    *
-   * `mount` is the path at which the workspace root is mounted inside the container, which is the root's own path
-   * (SandboxWorkspace.mountPathOf).
+   * `mount` is the path at which the workspace root is mounted inside the container (SandboxWorkspace.mountPathOf):
+   * the root's own path on macOS and Linux, and its `/mnt/<drive>/` spelling on Windows.
    *
-   *   - The requested directory and the host directory are therefore one string. The validation stays, because the
-   *     value still arrives from inside.
    *   - A request that is not under `mount`, that climbs out with `..`, or whose canonical form leaves the workspace,
    *     is refused. Nothing is clamped back to the root.
    */

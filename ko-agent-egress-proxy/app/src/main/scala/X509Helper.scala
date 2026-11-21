@@ -94,8 +94,8 @@ object X509Helper:
     serverAuth.add(ObjectIdentifier.of(KnownOIDs.serverAuth))
     extensions.setExtension(ExtendedKeyUsageExtension.NAME, ExtendedKeyUsageExtension(serverAuth))
     // Strict verifiers refuse a chain without the key identifiers. OpenSSL's X509_STRICT, which Python enables by
-    // default since 3.13, fails with "Missing Authority Key Identifier": the image's own urllib failed so against
-    // every inspected host. curl and apt merely tolerate the omission.
+    // default since 3.13, fails with "Missing Authority Key Identifier", so without them the image's own urllib
+    // fails against every inspected host. curl and apt merely tolerate the omission.
     extensions.setExtension(
       SubjectKeyIdentifierExtension.NAME,
       SubjectKeyIdentifierExtension(KeyIdentifier(keyPair.getPublic).getIdentifier),

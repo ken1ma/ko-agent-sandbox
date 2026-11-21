@@ -505,12 +505,13 @@ A turn's files:
     nested repository's commit id, and the superproject lacks that commit's objects. A file that
     becomes, or becomes part of, a nested repository enters the patch as deleted, and one that
     stops being one as added.
-- The patches replace Git refs for these reasons:
-  - refs and objects in the user's `.git` were the helper's only writes to the user's repository;
+- The patches, not Git refs, hold each turn's start. With refs:
+  - refs and objects in the user's `.git` would be the helper's only writes to the user's
+    repository;
   - a linked worktree, whose Git directory is read-only, could hold none;
-  - `delete` had to remove the refs, and objects stayed until a garbage collection;
-  - `--mirror` copied the refs;
-  - the review's storage depended on Git, which another version control system would not have.
+  - `delete` would have to remove the refs, and objects would stay until a garbage collection;
+  - `--mirror` would copy the refs;
+  - the review's storage would depend on Git, which another version control system lacks.
 
 ### Git as it is called
 
@@ -551,7 +552,7 @@ exports. A fact that the environment does not give stays absent; the helper gues
   define the stored format in code that the compiler checks.
 - A JVM's startup costs nothing that matters here: the launcher's `--help` takes 0.27–0.34s, and a
   reviewer turn takes minutes.
-- The cost is a build before the plugin runs, which a script did not need. The plugin is meant to
+- The cost is a build before the plugin runs, which a script would not need. The plugin is meant to
   move to a repository of its own, which builds its jar the same way.
 - The calls into the C library sit in one object with no ko-review types: the reviewer's process
   group, `killpg`, Linux's child subreaper and the reaping of adopted orphans. The object can

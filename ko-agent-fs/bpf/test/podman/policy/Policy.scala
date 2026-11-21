@@ -60,8 +60,8 @@
 //   Windows);
 // - the short name NTFS serves, and the output directory's name.
 //
-// Every command in the machine is one line without double quotes. The lifecycle suite's Windows
-// driver settled on that form after double quotes inside an argument did not reach the machine.
+// Every command in the machine is one line without double quotes, since double quotes inside an
+// argument do not reach the machine from Windows.
 // --platform makes the driver act as that platform where the detection must be overridden, as in a
 // dry run against fake commands.
 //

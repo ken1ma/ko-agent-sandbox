@@ -87,8 +87,7 @@ commit 654586d (`bpf/probe/phase1/`, `bpf/probe/phase2/`).
     a host-side mount inside the tree; and ordinary git.
   - It records the verifier's answer per hook per kernel, which attribute routes and ioctl
     commands each share accepts, and the cost of the bounded ancestry walk at the real tree's
-    depths on both kernels. The policy's price is then known before the classifier and the
-    lifecycle are built.
+    depths on both kernels.
   - A representative program, loaded on both kernels and run at the real tree's depth and at the
     walk's bound, holds together:
     - the bounded walk, twice, as `inode_rename` walks its source and its destination;
@@ -102,8 +101,8 @@ commit 654586d (`bpf/probe/phase1/`, `bpf/probe/phase2/`).
     - only loading, not reading, shows that a program meets the verifier's instruction budget and
       512-byte stack (`include/linux/bpf.h`, `BPF_COMPLEXITY_LIMIT_INSNS`;
       `include/linux/filter.h`, `MAX_BPF_STACK`);
-    - `policy.rs`'s `fold` and `child_context` allocate, so the port is written allocation-free
-      with bounded loops before the policy suite ports the rest.
+    - `policy.rs`'s `fold` and `child_context` allocate, so the program's port of them is
+      allocation-free, with bounded loops.
   - The driver was `bpf/probe/phase2/phase2.sh`, `phase2.ps1` on Windows, run on the host. Its
     transcript is this suite's record:
     - `inventory.bpf.c` records which of 33 hooks each operation of the exerciser (`mutate.c`)
@@ -136,9 +135,9 @@ commit 654586d (`bpf/probe/phase1/`, `bpf/probe/phase2/`).
     - the walk's cost is recorded beside the plain bind's;
     - the representative program loads on both kernels.
 - **Policy** (`../test/podman/policy/`). It measures:
-  - the classifier in the programs, with what the every-hook suite left to it ("The policy"): the
-    guarded objects' identities, the alias contexts, the short-name form, the symlink target
-    rules, `file_receive` and the walk's state against reentry;
+  - the classifier in the programs ("The policy"), including the guarded objects' identities, the
+    alias contexts, the short-name form, the symlink target rules, `file_receive` and the walk's
+    state against reentry;
   - the classifier's host build, and the corpus run through both classifiers ("What is gained and
     what is lost");
   - the map compiler in the guard (`../../policy/src/bpf_records.rs`). It produces the records
@@ -149,8 +148,8 @@ commit 654586d (`bpf/probe/phase1/`, `bpf/probe/phase2/`).
     `../../fuse/tests/mounted_*.rs`). The cases are transcribed because those tests mount the FUSE
     backend over a backing tree they write directly, which under the policy is a process outside
     the cgroup, and because they read `mkdir` as judged, which "Directories" does not.
-  - The walk's per-CPU slots ("The policy") replace the every-hook suite's per-CPU state. Each
-    kernel's preemption mode is read from `/sys/kernel/debug/sched/preempt`.
+  - The suite measures the walk's per-CPU slots ("The policy"). Each kernel's preemption mode is
+    read from `/sys/kernel/debug/sched/preempt`.
   - Its rows, each run with the policy attached, on both machines:
     - the corpus, in groups:
       - the name rule, the launcher's directory, hooks in the gitdir, a submodule's and a
@@ -247,11 +246,10 @@ commit 654586d (`bpf/probe/phase1/`, `bpf/probe/phase2/`).
       profile, none of those answers `EPERM`.
   - The driver is `../test/podman/policy/Policy.scala`, one driver for both hosts, run on the host.
     Its transcript is this suite's record:
-    - `policy.bpf.c` is the every-hook suite's program with the additions above. The walk, each
-      level of it and of its snapshot, the rule match, the alias activation and the symlink
-      judgment are each a global function, verified once per program. The reason: the verifier
-      checks a loop's inlined body at every iteration until its states converge, and 6.18
-      converges slowly ("Policy on WSL").
+    - `policy.bpf.c` holds the classifier. The walk, each level of it and of its snapshot, the
+      rule match, the alias activation and the symlink judgment are each a global function,
+      verified once per program. The reason: the verifier checks a loop's inlined body at every
+      iteration until its states converge, and 6.18 converges slowly ("Policy on WSL").
     - `exercise.c` lays out the fixtures, runs the corpus of 259 cases in eighteen groups and
       compares each answer with the expected one, runs the race and the storm, and binds, serves
       and receives sockets and descriptors. `--self-test` runs the same corpus under the installed
@@ -264,7 +262,6 @@ commit 654586d (`bpf/probe/phase1/`, `bpf/probe/phase2/`).
       the refusals the cases saw, so a case's `EPERM` cannot come from anywhere but the program.
     - `inspect.c` reads what a launch does not: the verifier's figures, and the program's own
       counters, slot guard, last decision and jited bytes.
-    - The runs settled the record layout, which the guard's compiler writes.
     - The host build (`../test/host/`) runs the FUSE backend's own corpus through the program
       before any host run. A program that has not passed it is not run on the machines.
   - Gate:
@@ -800,9 +797,8 @@ kernel 7.2.7-200.fc44, podman 6.1.4, crun 1.30, clang 19.1.7.
 |                          | of the walk 248 and of its snapshot 39, the rule match 2,524, the     |
 |                          | alias activation 689 and the symlink judgment 2,778, each a global    |
 |                          | function verified once; stack 352 to 384 of 512 bytes. The run of     |
-|                          | 2026-10-24 counted the walk and position at 40,584 insns: 39,476      |
-|                          | before the scratch locks' admission, 33,135 with the loop bodies      |
-|                          | inlined, 16,758 before the review's three changes                     |
+|                          | 2026-10-24 counted the walk and position at 40,584 insns, and 33,135  |
+|                          | with the loop bodies inlined                                          |
 | barrier                  | the jited `file_open`, 31,432 bytes, holds three `ldaddal`, one per   |
 |                          | fetch-add: before and after a level's reads, and before the snapshot  |
 | records                  | 128 rule lines, eleven roots (three workspaces, a submodule's gitdir, |
@@ -903,9 +899,8 @@ on WSL", kernel 6.18.54.1, podman 6.1.4 under the cgroupfs manager, crun 1.28, c
 |                          | activation 689 and the symlink judgment 4,450; stack 352 to 384       |
 |                          | bytes; at most 29 states per insn; 106 to 166ms each, 866ms for all   |
 |                          | nine. The runs of 2026-10-24 counted the walk and position at 109,037 |
-|                          | insns, 2.7 times 7.2.7's: 107,929 before the scratch locks'           |
-|                          | admission, 919,220 with the loop bodies inlined (24.7s for all        |
-|                          | nine), 121,408 before the review's three changes                      |
+|                          | insns, 2.7 times 7.2.7's, and 919,220 with the loop bodies inlined    |
+|                          | (24.7s for all nine)                                                  |
 | barrier                  | the jited `file_open`, 24,528 bytes, holds three `lock xadd`, the     |
 |                          | scan matching the instruction under any `REX` prefix                  |
 | corpus                   | 245 default cases, 0 mismatches: 239 run, the exchange among them     |

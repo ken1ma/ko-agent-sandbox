@@ -272,7 +272,7 @@ object FileHelper:
       catch case ex: UncheckedIOException => throw ex.getCause
 
   /** Windows refuses to delete an entry with the read-only attribute, where POSIX checks only the
-    * directory. A run's copy of `cacerts` met that refusal: the prepared store has no write bit
+    * directory. A run's copy of `cacerts` is such an entry: the prepared store has no write bit
     * (JdkTrust), and attributes travel with the copy (AgentSandboxLauncher, `carried`). */
   private def deleteEntry(path: Path): Unit =
     try Files.delete(path)

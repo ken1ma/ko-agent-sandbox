@@ -159,8 +159,8 @@ object EgressRules:
    *   - A retention rule that counts sessions rather than liveness does this to a workspace that runs
    *     more than `retain` sessions at once.
    *   - More than `retain` directories can remain while their runs are live.
-   * - The method also deletes the flat files of the layout before run directories, unless their run is
-   *   live. That branch can go after 2026-12-17, two months after run directories replaced the flat files.
+   * - The method also deletes the flat log files of launchers that wrote no run directories, unless their run
+   *   is live (TODO.md says when this branch goes).
    */
   def runLogDirsToPrune(names: Seq[String], retain: Int, liveRuns: Set[String]): Seq[String] =
     val runDirs = names.filter(_.matches(RunLogDirPattern)).sorted

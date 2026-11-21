@@ -350,7 +350,7 @@ object HTTPHelper:
       *   the client must hear that even when the origin's headers omit it.
       *   - A client that misses `Connection: close` reuses the connection or pipelines. The client's next request
       *     meets the closed socket's RST, and the RST destroys this response's unread tail in the client's buffer.
-      *   - apt showed this failure as intermittent mid-download EOFs, invisible in the proxy's own log.
+      *   - apt shows this failure as intermittent mid-download EOFs, which the proxy's own log does not record.
       * - An interim head carries no Connection at all: the final head states the disposition. */
     def toClientBytes: Array[Byte] =
       serialized(s"HTTP/1.1 $status $reason", headers, if interim then "" else "Connection: close\r\n")

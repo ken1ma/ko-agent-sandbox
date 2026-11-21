@@ -80,7 +80,7 @@ object SourceDigestCheck:
           actual == named
     if !results.forall(identity) then
       println(
-        "A changed digest is a pending rerun, not a refused change: list the change in doc/TODO.md, " +
+        "A changed digest is a pending rerun, not a refused change: list the suite in doc/TODO.md, " +
           s"\"BPF suite reruns\", and rerun before a release ($Evidence)",
       )
     sys.exit(if results.forall(identity) then 0 else 1)

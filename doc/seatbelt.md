@@ -84,9 +84,9 @@ for its caller outside the profile.
 - A command gets the same name, unmeasured. Which call of the proxy's JVM needs the name is not
   known, a build's JVM may make the same call, and the failure is a crash, not an error a build
   could report.
-- `open` started nothing from under the command profile while `mach-lookup` was unfiltered
-  (`mach-route`, macOS 27.2, 2026-11-17). `open -a` found no application, and no application
-  claimed a `.command` file the command wrote.
+- With `mach-lookup` unfiltered in the command profile, `open` starts nothing (`mach-route`,
+  macOS 27.2, 2026-11-17). `open -a` finds no application, and no application claims a `.command`
+  file the command writes.
 - Under the named service, `SeatbeltCheck` has rows for `open -a`, for a JVM asking the
   resolver, and for a lookup of an internet name, which must fail (SECURITY.md, "DNS").
 

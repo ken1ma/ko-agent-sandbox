@@ -1547,8 +1547,8 @@ object AgentSandboxLauncher:
     import settings.{workspaceRoot, runOnHost, sessionStartMode}
     import workspace.{mountPath, workspaceId}
     val workspaceSettings = parsed.workspaceSettings
-    // The images' inspects and the backends' checks run beside `podman info` (LaunchReads). The launch reads their
-    // answers where it read them when they ran in sequence, so the lines and refusals keep their order.
+    // The images' inspects and the backends' checks run beside `podman info` (LaunchReads). The launch reads each
+    // answer at the step that uses it, so the lines and refusals come in step order.
     val koAgentFsSourceId = Option.when(workspaceSettings.fuseMounted)(bundledKoAgentFsSourceId())
     val reads = BesideInfo.Restartable[LaunchReads](
       () => startLaunchReads(settings, workspaceSettings, mountPath, koAgentFsSourceId, timings, os),

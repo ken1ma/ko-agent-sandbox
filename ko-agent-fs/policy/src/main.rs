@@ -4,7 +4,7 @@
 //!
 //! The launcher builds the `--run-on-host` profile from that output, and the BPF backend takes the
 //! records `--bpf-records` writes (`bpf_records.rs`). The FUSE backend's daemon,
-//! `ko-agent-fs-fuse`, resolves the same rules itself when it mounts; this binary keeps the name
+//! `ko-agent-fs-fuse`, resolves the same rules itself when it mounts; this binary is named
 //! `ko-agent-fs` so that the launch scripts' calls outlive the FUSE backend.
 
 use std::ffi::OsString;

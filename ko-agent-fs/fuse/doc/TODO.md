@@ -138,14 +138,13 @@ Pass criterion:
   the test.
 - Fold tables depend on the version, which is why the recorded versions matter here.
 
-The `.git` rows in the recorded runs pass on APFS (both variants, macOS 26.4.1) and on NTFS
-(Windows Server 24H2; the 8.3 rows on Windows Server 2025). `verification-log.md` has the runs.
-`probe/name-rule-cs-apfs.sh` drives the case-sensitive APFS one end to end. What is left:
+`verification-log.md` has the runs on APFS and NTFS. `probe/name-rule-cs-apfs.sh` drives the
+case-sensitive APFS one end to end. What is left:
 
 - [ ] The `.git` rows for U+200E, U+202E and U+206F, on every backing: the recorded runs hold four
   of the seven ignorable forms.
 - [ ] The `.ko-agent-sandbox` rows on case-sensitive APFS. Case-insensitive APFS and NTFS pass
-  (`verification-log.md`, which also has the measurement that added the U+212A and U+017F folds).
+  (`verification-log.md`, which also has the measurement behind the U+212A and U+017F folds).
 - [ ] ext4, the control.
 - [ ] The NTFS 8.3 short-name rows with the identity comparisons of the resolver, of `setattr` and
   of `link` (`fs.rs`, `open_ino`, `apply_setattr`, `link`). The run `verification-log.md` records
@@ -164,11 +163,9 @@ promptly (`architecture.md`).
 - The launcher's `--self-test` share rows measure both paths a write can take, `read()` and an
   established `mmap`, across the whole stack. The launcher drives them, and the machine is
   recorded.
-- macOS 26.4.1 passes.
-- Windows passes, `mmap` included. A file the session holds refuses some host writers and not
-  others.
-- `verification-log.md` records both, and why the premise is about behavior, not about what a
-  setting declares.
+- `verification-log.md` has the macOS and Windows runs, and why the premise is about behavior, not
+  about what a setting declares. On Windows, a file the session holds refuses some host writers and
+  not others.
 
 - [ ] Run `--self-test` on Linux, and after a podman or macOS upgrade. The measurement, not the
   mount table, is what notices a changed hypervisor default.
@@ -227,13 +224,7 @@ The rows:
   open, held for reading and for writing, and whether releasing it restores what was refused.
   Apply's write-back depends on this.
 
-APFS answers all five (`verification-log.md` has the run):
-
-- the lower keeps hard-link relationships;
-- exchange is available on both sides;
-- symlinks round-trip;
-- two names that differ only by case are one name;
-- a descriptor the session holds blocks no host change.
+`verification-log.md` has APFS's answers to all five.
 
 One answer was never the share's to give. A session cannot see a hard-link relationship at all,
 because the FUSE backend assigns an inode per `(parent, name)`. What that costs a stage is for the
@@ -267,10 +258,8 @@ the FUSE backend judges each as a name in the link's directory, not as a path:
 - [ ] linux-x86_64 and linux-aarch64 (the two architectures every image here builds for).
 - [ ] The macOS podman machine on x86_64, if it still matters. The rows above ran on aarch64.
 
-On Windows, the name rule, coherency and performance rows are measured (`verification-log.md`):
-
-- fold tables are per volume, so the name-rule run verifies the volume it ran on;
-- `ls -lR` costs ~100ms per entry ("Performance", below).
+On Windows, `verification-log.md` has the name rule, coherency and performance rows. Fold tables
+are per volume, so the name-rule run verifies only the volume it ran on.
 
 
 ## Test infrastructure

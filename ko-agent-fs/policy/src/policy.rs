@@ -396,8 +396,7 @@ pub fn classify_within_gitdir(components: &[&[u8]]) -> GitPathClass {
         // git writes `<name>.lock` beside anything it locks, then renames it into place. So a lock
         // takes its target's class: `HEAD.lock` and `AUTO_MERGE.lock` are operational, while
         // `config.lock` stays protected. A hand-written list of lockable names freezes whichever
-        // one it forgets: forgetting `AUTO_MERGE.lock` broke `git merge` (`doc/git-metadata.md`,
-        // P2).
+        // one it forgets: without `AUTO_MERGE.lock`, `git merge` fails (`doc/git-metadata.md`, P2).
         if let Some(base) = first.strip_suffix(b".lock") {
             return classify_within_gitdir(&[base]);
         }

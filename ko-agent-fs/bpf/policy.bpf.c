@@ -1,5 +1,5 @@
-// The policy program of ko-agent-fs/bpf/doc/architecture.md, measured by the policy suite. It is the
-// every-hook suite's representative program plus what that suite left to this one ("The policy"):
+// The policy program of ko-agent-fs/bpf/doc/architecture.md, measured by the policy suite. Beside the bounded
+// walk, the folding, the ordered rule match and the git-context transitions, it holds ("The policy"):
 //
 // - the identities of guarded objects as second names;
 // - the guard's alias contexts (policy.rs, `RuleContext::also`);

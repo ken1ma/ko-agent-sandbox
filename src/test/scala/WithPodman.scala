@@ -332,7 +332,6 @@ object WithPodman extends munit.Assertions:
       forget(scratchId(workspace))
     finally deleteRecursively(workspace)
 
-  /** Where the session has its workspace: the workspace root's own path, as the launcher spells it. */
   /** The kernel writes a space, tab, newline or backslash in a mountinfo path as `\NNN` octal (`show_mountinfo`,
     * `mangle_path`). A workspace path that holds such a character therefore matches only after decoding. */
   def unescapeMountinfo(field: String): String =

@@ -220,7 +220,7 @@ No program needs a GitHub release CDN. The one download that would need it, the 
 provisioned on the host instead.
 
 The launcher derives Coursier's paths from Coursier's conventions and the environment. The launcher
-offers no overrides (`cache-root`, `jvm-root`, `install-root`) until a user needs one.
+offers no option to override them until a user needs one.
 
 ## Telling a host command apart in a build
 

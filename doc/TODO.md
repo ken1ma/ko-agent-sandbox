@@ -192,7 +192,10 @@ Six probes in `src/probe/` are shell scripts. Five run on the macOS host, and
 ## BPF suite reruns
 
 The suites whose sources changed since their evidence was measured. One rerun of a suite clears
-every change listed under it (`../ko-agent-fs/bpf/doc/evidence.md` has the procedure).
+its item (`../ko-agent-fs/bpf/doc/evidence.md` has the procedure).
+
+- [ ] Rerun the Launcher suite on macOS and WSL, and rewrite both of its sections from the reruns.
+  The code of `KoAgentBpf.scala` differs from the sources of its evidence of 2026-11-09.
 
 ## The BPF backend's later versions
 
@@ -464,8 +467,8 @@ only the container-launching suites. That document's command returns to
 
 The sandbox's home is an anonymous volume (`--mount type=volume,dst=/home/nonroot`). Every launcher
 removal passes `--volumes` (`SandboxLifecycle.scala`, `LauncherState.scala`), and a normal exit
-removes the volume through `--rm`. A user's `podman rm -f` without `--volumes` keeps it:
-`CacheOverlayLifecycleTest` left one on Windows (podman 6.2.0) before it passed `--volumes` itself.
+removes the volume through `--rm`. A user's `podman rm -f` without `--volumes` keeps it (measured
+on Windows, podman 6.2.0).
 
 - [ ] Let `--reset` find such a volume. An anonymous volume carries no link to its workspace, so
   the sweep cannot attribute it. One candidate: create the home as a volume named and labeled per
@@ -1121,6 +1124,12 @@ The option is enabled on native Linux, and no run there has verified it yet.
   `ResetRecordTest` case once the machines that launched before the workspace rename have run
   `--reset-all` or removed `<state root>/projects/` by hand. Nothing writes or reads that
   directory; a machine that never removes it keeps a few path strings, no resource.
+
+## The flat log files' cleanup
+
+- [ ] After 2026-12-17, two months after launchers began writing run directories, delete
+  `EgressRules.runLogDirsToPrune`'s branch for the flat log files (`proxy-*.log`,
+  `run-on-host-*.log`, `microphone-*.log`) and its case in `EgressRulesTest`.
 
 ## Before the first release — continuous integration
 

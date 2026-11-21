@@ -34,8 +34,7 @@ policy on the operations the kernel forwards. Three other mechanisms were consid
 - **BPF-LSM** — hook `security_inode_create`/`rename`/`link`/`setattr` and deny by name in the
   kernel. Elegant, and at native speed.
   - Rejected for the FUSE backend's design, for the three reasons below.
-  - `../../../doc/bpf-lsm-cgroup.md` ("The recorded decisions this answers") has since answered
-    each of them:
+  - `../../../doc/bpf-lsm-cgroup.md` ("The recorded decisions this answers") answers each of them:
     - `BPF_LSM_CGROUP` programs attached to the session's own cgroup give the asymmetry in the
       kernel;
     - a probe at every launch answers the configuration risk;
@@ -172,7 +171,7 @@ mediation is proven:
 ## Coherency: zero-cache is a correctness requirement
 
 Real-time visibility in both directions is the project's defining requirement. A copy-back overlay
-was rejected at the start.
+is rejected for that reason.
 
 - A FUSE attribute or entry cache with a nonzero TTL lets the kernel answer from a stale attribute
   without asking the daemon. A host edit then stays invisible until the TTL expires.

@@ -89,8 +89,8 @@ object RunOnHostInspection:
       case ex: (IOException | java.security.GeneralSecurityException | IllegalArgumentException) =>
         Left(s"creating the proxy's inspection certificate: ${ex.getMessage}")
       // The JVM was started without RunOnHostSandbox.CertificateBuilderExports. IllegalAccessError is an Error, so
-      // no caller's NonFatal handler takes it. A runner started without those exports logged the request and
-      // nothing after it, and the requester waited out the row's 1800s bound (measured).
+      // no caller's NonFatal handler takes it. Without this case, a runner started without those exports logs the
+      // request and nothing after it, and the requester waits out the row's 1800s bound (measured).
       case ex: IllegalAccessError =>
         Left(
           "creating the proxy's inspection certificate: this JVM was started without " +

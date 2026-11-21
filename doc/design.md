@@ -981,11 +981,11 @@ Coursier downloads into the anonymous home, and the downloads go with the sessio
 overlay, whose writes podman discards (SECURITY.md, "Cache overlay").
 
 - The cold default costs each session its first `scalac` and `scalafmt` downloads, about 90 MB,
-  and fails a first run that a narrow egress profile blocks. sbt downloads what it always did: the
-  image never ran sbt, so its cache held no sbt jars. In return, host artifacts stay unexposed
-  until the user opts in, and every download stays disposable.
-- No cache in the image: an image-owned cache, or a default cache image, would keep the image's
-  size and add another cache lifecycle. Revisit by prototyping a root-owned cache in the selected
+  and fails a first run that a narrow egress profile blocks. A session's first sbt run also
+  downloads the sbt version that its build selects. In return, host artifacts stay unexposed until
+  the user opts in, and every download stays disposable.
+- No cache in the image: an image-owned cache, or a default cache image, would grow the image and
+  add another cache lifecycle. Revisit by prototyping a root-owned cache in the selected
   image, mounted as a subpath with `type=image,rw=true`; the prototype must prove ownership, the
   nested mount and each platform.
 - No automatic overlay: private host artifacts stay unexposed without the option.
