@@ -240,6 +240,8 @@ lazy val root = project.in(file(".")).dependsOn(egressProxy).settings(
   // - The copy replaces the jar by a rename, so a re-invocation of a running launcher (RunOnHostSandbox.selfPresent)
   //   finds either the old jar or the new one. An unchanged jar is left in place, so that dist succeeds while a
   //   launcher runs it.
+  // - dist first copies the jar it replaces to dist/ko-agent-sandbox.jar.bak, which you can run when the new build
+  //   breaks.
   dist := KoAgentSandboxHelper.outsideHostCommand("dist", KoAgentSandboxHelper.BuildsWhatYouRun)(Def.task {
     Def.uncached {
       val built = fileConverter.value.toPath(assembly.value)
@@ -247,6 +249,10 @@ lazy val root = project.in(file(".")).dependsOn(egressProxy).settings(
       val runnable = distDirectory.resolve("ko-agent-sandbox.jar")
       if (!java.nio.file.Files.isRegularFile(runnable) || java.nio.file.Files.mismatch(built, runnable) != -1L) {
         java.nio.file.Files.createDirectories(distDirectory)
+        if (java.nio.file.Files.isRegularFile(runnable)) {
+          val backup = distDirectory.resolve("ko-agent-sandbox.jar.bak")
+          java.nio.file.Files.copy(runnable, backup, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        }
         val copy = java.nio.file.Files.createTempFile(distDirectory, "ko-agent-sandbox", ".jar.tmp")
         try {
           java.nio.file.Files.copy(built, copy, java.nio.file.StandardCopyOption.REPLACE_EXISTING)

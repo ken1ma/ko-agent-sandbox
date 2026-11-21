@@ -15,9 +15,10 @@ For every reported or discovered problem, however small:
    violates the requirement; when you only expect it to, check first or ask the user. Group by
    those criteria, not wording or filename. If only the reported case appears, broaden the search
    again.
-3. Keep a working list of affected locations. Fix the place enforcing the requirement and add a
-   test covering all affected cases. Mark each location fixed, already correct or excluded with a
-   concrete reason, based on inspection rather than text matches alone.
+3. Keep a working list of affected locations. When a fix would outgrow what the request implies,
+   ask first, with how likely the problem is and what the fix costs. Fix the place enforcing the
+   requirement and add a test covering all affected cases. Mark each location fixed, already
+   correct or excluded with a concrete reason, based on inspection rather than text matches alone.
 4. Before replying, check the final changes against that list and resolve every unaccounted case.
    Report the requirement and exclusions, not the full inventory.
 
@@ -138,7 +139,8 @@ Record what helps other agents, as a rule for a class of cases, in a project doc
 1. Both prompt files are in every prompt: add a sentence only when most agents reading it act
    differently because of it.
     1. A sentence only some of them act on belongs in the document those readers open.
-2. Make each sentence you add or revise as general as it can be, and defend every word.
+2. Make each sentence you add or revise as general as it can be, and defend every word before you
+   show it.
 3. When a rule was not followed, identify what was missing, ambiguous or conflicting, or what
    prevented following it, and revise it; add a rule only when none covers the case.
 4. Record in `agents-prompt-rationale.md` why each sentence you add or revise earns its place.

@@ -82,6 +82,29 @@ replaces the failing one no longer needs it.
        same problem.
     1. What was missing: Top priorities did not say that its steps apply to small problems too.
 
+## Top priorities: "outgrow what the request implies"
+
+> When a fix would outgrow what the request implies, ask first, with how likely the problem is and
+> what the fix costs.
+
+1. Incident: `ko-agent-sandbox`, `claude-opus-5-5` at high. Asked to make `sbt dist` keep the jar
+   it replaces as `*.jar.bak`, the model added a four-line copy. A Codex review then found a rare
+   case: on Windows, with a launcher running a broken jar, `dist` copies that jar over the good
+   backup and fails to replace the jar. Without asking, the model moved the replacement into a new
+   `project/DistJar.scala` with a test suite. The user wanted only the four lines.
+    1. The user reports the pattern three or four times in one month: a small request, a rare case
+       found along the way, and a mechanism that covers the case with no trade-off discussed.
+    1. Replay: at `ko-agent-sandbox` commit 91a9549, ask: "`sbt dist` copies the jar to dist/. Back
+       up the existing jar to `*.jar.bak` first." Then give the model the review finding: "On
+       Windows, if a launcher has the current, broken jar open, `dist` copies it over the working
+       backup and then fails to replace the jar. Preserve the backup when the replacement fails,
+       and add a regression test."
+    1. Failure: the reply implements the fix, or the test, before asking.
+    1. What was missing: step 3 required a fix and a test for every discovered problem, which
+       outweighed the boundary rule. That rule names the task's scope, and a rare case of the
+       requested feature did not read as outside it. ko-review's skill leaves "a risk acceptance"
+       to the user, but the model read the finding as a defect, not a risk.
+
 ## Top priorities: "Existing usage"
 
 > Existing usage shows what is consistent, not what was decided.
@@ -161,7 +184,8 @@ replaces the failing one no longer needs it.
 
 ## What helps other agents: "as general as it can be"
 
-> Make each sentence you add or revise as general as it can be, and defend every word.
+> Make each sentence you add or revise as general as it can be, and defend every word before you
+> show it.
 
 1. Incident: `ko-agent-sandbox`, `claude-opus-5-5` at high. Twice in one session, the model fixed a
    prompt rule by appending the case at hand, and the user had to ask whether it could be
@@ -177,6 +201,17 @@ replaces the failing one no longer needs it.
     1. Failure: the fix adds the user's proposal as one more listed case.
     1. What was missing: "defend every word" tested the words, not whether the sentence could cover
        more cases.
+1. Second incident: `ko-agent-sandbox`, `claude-opus-5-5` at high. The model revised Top priorities
+   step 3 at the user's request. Asked "Are you sure you want all the words in the AGENTS.md
+   edit?", it cut "whether to fix or accept it" and "Otherwise", with no new information.
+    1. The user asks the same question after each AGENTS.md edit, and the model has answered "No"
+       several times in one week.
+    1. Replay: at `ko-agent-sandbox` commit 91a9549, ask: "Revise AGENTS.md so that an agent asks
+       before a fix that outgrows a small request, such as a new file and a test suite for a rare
+       case found in review."
+    1. Failure: asked whether it wants all the words, the model cuts words from the edit it showed.
+    1. What was missing: "defend every word" did not say when. The model applied it only when the
+       user asked.
 
 ## What helps other agents: this file
 
