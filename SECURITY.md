@@ -72,9 +72,9 @@ The sections below describe the limits and costs of each.
 
 - Outbound HTTPS traffic passes through the proxy, which enforces the resolved egress rules and
   records protocol and policy decisions ("Egress proxy", below).
-- The default profile starts from the inspected catalog and the default rules of the model
-  providers that the launch selects: the agent's own provider and those that `--model-provider`
-  names. The workspace's rule file can remove or extend those grants.
+- The default profile starts from the inspected catalog and the presets that the launch selects:
+  the agent's own and those that `--egress-preset` names. A preset is a named set of default
+  rules in the proxy image. The workspace's rule file can remove or extend those grants.
 
 **Writing to remote hosts**, subject to the resolved egress rules.
 
@@ -442,15 +442,15 @@ defense.
   - Reported demonstrations exist against Anthropic's Files API
     (https://embracethered.com/blog/posts/2025/claude-abusing-network-access-and-anthropic-api-for-data-exfiltration/)
     and against Cowork (https://www.promptarmor.com/resources/claude-cowork-exfiltrates-files).
-  - `--egress=deny-unless-model` does not help: the model host is the receiving host.
-  - Another provider's API is a receiving host only when the launch selects that provider or the
-    workspace's rule file allows it. A launch admits the agent's own provider alone unless
-    `--model-provider` names more. A file's `allow model-provider` line for a provider that the
-    launch did not select is reported as a widening at every launch.
+  - `--egress=deny-unless-selected` does not help: the model host is the receiving host.
+  - Another provider's API is a receiving host only when the launch selects that provider's preset
+    or the workspace's rule file allows it. A launch admits the agent's own provider's preset alone
+    unless `--egress-preset` names more. A file's `allow preset` line for a preset that the launch
+    did not select is reported as a widening at every launch.
   - On an inspected model host, each such upload is a line with its method and path, and with the
     fields that "The audit line grammar" defines. A tunnel logs one `CONNECT` per connection.
-  - Refusing a credential that is not the session's needs the brokered overlay, which knows the
-    session's own credential (`doc/TODO.md`, "Credential brokering").
+  - Refusing a credential that is not the session's needs the session's own credential, which a
+    preset credential selected at launch supplies (`doc/plan-preset-credential-proxy.md`).
 - At inspected hosts, the proxy constrains methods, paths and HTTP framing, but does not validate
   application payloads.
   - An allowed `GET` carries its URL. A path grant narrows the recipient, but the path suffix and
@@ -487,7 +487,7 @@ Copilot CLI's sign-in stores a forge credential, not merely a model-provider cre
   - the built-in GitHub MCP server, which writes files, branches, issues and pull requests with the
     signed-in account;
   - Copilot's session export to GitHub's web UI.
-- The proxy rule `deny model-provider github` denies every host in GitHub's model-provider rules,
+- The proxy rule `deny preset github` denies every host in the `github` preset,
   including `github.com`, `api.github.com` and the model hosts, unless a later rule grants access
   again.
 - Resetting the workspace's agent-state volume discards the stored token ("What the persistent
@@ -500,7 +500,7 @@ Copilot CLI's sign-in stores a forge credential, not merely a model-provider cre
 agy's Business sign-in stores a Google Cloud credential for the licensed project.
 
 - Google's default rules have no line for the Business hosts, which a workspace adds as tunnels
-  (`defaults/model-provider/google`). Among them is the Agent Platform API, Vertex AI's API, at
+  (`defaults/preset/google`). Among them is the Agent Platform API, Vertex AI's API, at
   `aiplatform.googleapis.com` and its `us` and `eu` multi-region hosts. The API manages the
   project's resources as well as serving the project's model endpoints.
 - Through such opaque tunnels, the credential can perform whatever operations the user's IAM roles
@@ -516,7 +516,7 @@ agy's Business sign-in stores a Google Cloud credential for the licensed project
 - Storage, Compute and IAM use separate hosts. The sandbox reaches those hosts only where the
   profile or a workspace rule allows them.
 - A workspace can add the Business AI Code API's hosts without the three aiplatform hosts. A
-  workspace can also use `deny model-provider google` to deny every host in Google's default rules,
+  workspace can also use `deny preset google` to deny every host in Google's default rules,
   unless a later rule grants access again.
 - Resetting the workspace's agent-state volume discards the stored token ("What the persistent
   volume holds", below).
@@ -1191,7 +1191,7 @@ with the longest literal path match (`doc/egress-proxy.md`, "The rule file"):
     install-time vulnerability warnings allows that disclosure.
 - `upgrade=websocket`: a WebSocket handshake at that path, and the stream after a checked `101`,
   relayed unparsed. The defaults' one such line is Claude Code's `/voice` path
-  (`defaults/model-provider/anthropic`).
+  (`defaults/preset/anthropic`).
   - The handshake is a `GET` with one `Upgrade: websocket` and one `Sec-WebSocket-Key`, and the
     word grants no other request there.
   - The stream is a channel of its own size each way, which the log records as byte totals
@@ -1300,7 +1300,7 @@ The sandbox trusts that CA through:
     in that file alone (2026-09-22): Codex's HTTPS requests and its websocket connection both
     complete the TLS handshake. Without the variable, both fail with `UnknownIssuer`.
   - Under the default rules Codex meets this CA's leaf at `chatgpt.com` and `api.openai.com`, and
-    its turns complete (`ko-agent-egress-proxy/doc/model-provider/openai-evidence.md` records the
+    its turns complete (`ko-agent-egress-proxy/doc/preset/openai-evidence.md` records the
     measurement).
 
 The image's JDK reads none of the above: a JVM consults a `cacerts` keystore and a
@@ -1465,8 +1465,8 @@ case is denying a wanted host, which fails closed, never reaching a new host.
 
 - `**.foo.com` is the concise way to drop a provider that ships several subdomains, without
   re-listing the provider's current ones.
-- `deny model-provider NAME` names every host in that provider's default rules, as the provider's
-  endpoints change (`doc/egress-proxy.md`, "The rule file").
+- `deny preset NAME` names every host in that preset, as the provider's endpoints change
+  (`doc/egress-proxy.md`, "The rule file").
 
 Unlike a grant, a removal can fail when a typo matches nothing. The default then stays in place,
 while the file reads as though the default were dropped. The warnings:

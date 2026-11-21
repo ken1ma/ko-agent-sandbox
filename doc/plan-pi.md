@@ -2,14 +2,14 @@
 
 pi (https://pi.dev, Earendil Works) is a Node.js agent harness with no fixed model provider. This
 plan adds pi as the seventh preinstalled agent, launched as
-`java -jar ko-agent-sandbox.jar --model-provider=<names> pi`.
+`java -jar ko-agent-sandbox.jar --egress-preset=<names> pi`.
 
 The requirement: pi runs under the boundary the other agents have.
 
 - pi's state lives in the persistent volume.
 - The workspace is trusted without a prompt.
 - No tool-approval prompt appears.
-- pi's network reaches the selected providers, the proxy's host catalog, and nothing else.
+- pi's network reaches the selected presets, the proxy's host catalog, and nothing else.
 
 The facts below were read on 2026-10-18 from three sources: the pi.dev documentation
 (`/docs/latest`), the npm registry entry of `@earendil-works/pi-coding-agent` 1.3.0, and the
@@ -105,7 +105,7 @@ trusts the proxy CA through the `NODE_EXTRA_CA_CERTS` that the launcher sets
 
 Each item gives a pi provider id and its hosts, from `packages/ai/src/providers/*.ts` and
 `packages/ai/src/auth/oauth/*.ts`. Each item then says whether the proxy's
-`defaults/model-provider/` file of the same selection allows those hosts.
+`defaults/preset/` file of the same selection allows those hosts.
 
 - `anthropic`: `api.anthropic.com`, with OAuth at `claude.ai/oauth/authorize`, which the browser
   opens, and `platform.claude.com/v1/oauth/token`. The `anthropic` selection allows
@@ -191,16 +191,16 @@ device codes. README's "Sign-in" section describes the paste-back path.
 
 ### 3. Launcher and proxy
 
-- `EgressRules.ProviderlessAgents` gains `"pi"`. A launch that names no provider, on the command
+- `EgressRules.AgentsWithoutPreset` gains `"pi"`. A launch that names no preset, on the command
   line or in the options file, is then refused, as an opencode launch is. `EgressRulesTest` covers
   the refusal and the warning line.
 - The usage text and the first-line comment of `AgentSandboxLauncher.scala` name pi. The two
   comments that list the volume's directories gain `~/.pi`.
 - The proxy's host catalog holds `allow https://pi.dev/ read # pi`. The host serves the docs, the
   version check, the model catalog and the installer API.
-- Bedrock gets a selection of its own, `aws-bedrock`:
-  - The name joins `RulesetHelper.ModelProviders`.
-  - The file `defaults/model-provider/aws-bedrock` holds
+- Bedrock gets a preset of its own, `aws-bedrock`:
+  - The name joins `RulesetHelper.Presets`.
+  - The file `defaults/preset/aws-bedrock` holds
     `allow https://bedrock-runtime.us-east-1.amazonaws.com/ tunnel`. The file's comment gives the
     reason for the one region: pi defaults to `us-east-1`.
   - Another region is a workspace's own rule line, as the `aws` file says of an Identity Center
@@ -229,13 +229,13 @@ device codes. README's "Sign-in" section describes the paste-back path.
 
 - README:
   - the preinstalled list (`[pi](https://pi.dev) (multiple providers)`);
-  - the `--model-provider` paragraph ("`opencode` and `pi` have no fixed provider");
+  - the `--egress-preset` paragraph ("`opencode` and `pi` have no fixed model provider");
   - the resume arguments (`pi --continue`);
   - the usage text;
   - a `#### pi` section: launch with the option; `/login` for an OAuth or API-key provider; paste
-    the redirect URL back; Bedrock through `--model-provider=aws-bedrock` with forwarded
+    the redirect URL back; Bedrock through `--egress-preset=aws-bedrock` with forwarded
     credentials; `/share` and `/bug` are refused.
-- `doc/egress-proxy.md`: the providerless sentence.
+- `doc/egress-proxy.md`: the sentence on agents without a fixed model provider.
 - `AGENTS-SANDBOX.md`: the list of paths into the volume.
 - `doc/agent-settings.md`: pi reads `AGENTS.md`. "Restoring permission prompts" says pi has none to
   restore, and names the example extension.
@@ -247,7 +247,7 @@ device codes. README's "Sign-in" section describes the paste-back path.
 ## Tests
 
 - The image builds, and `pi --version` runs in the smoke test.
-- Under `--model-provider=anthropic`:
+- Under `--egress-preset=anthropic`:
   - `pi` starts;
   - the model catalog refresh succeeds through the proxy, with no TLS error in the log;
   - `/login anthropic` with a pasted code reaches `platform.claude.com`, and no request goes to
@@ -256,17 +256,17 @@ device codes. README's "Sign-in" section describes the paste-back path.
   - `/share` is refused;
   - a second launch with `pi --continue` finds the session.
 - With a `.pi/settings.json` in the workspace, no trust prompt appears, and the setting applies.
-- `pi -p "..."` runs under `--model-provider=openai`, with `OPENAI_API_KEY` passed through
+- `pi -p "..."` runs under `--egress-preset=openai`, with `OPENAI_API_KEY` passed through
   `--env`.
-- `pi` without the option is refused, with the message naming `--model-provider`.
+- `pi` without the option is refused, with the message naming `--egress-preset`.
 - The two new grants, each checked through `ko-sandbox-egress-check` and the proxy's log:
   - a GET of `pi.dev` succeeds, and a POST to `pi.dev` is refused;
-  - under `--model-provider=aws-bedrock`, `bedrock-runtime.us-east-1.amazonaws.com` tunnels, and
+  - under `--egress-preset=aws-bedrock`, `bedrock-runtime.us-east-1.amazonaws.com` tunnels, and
     `bedrock-runtime.ap-northeast-1.amazonaws.com` is refused;
   - under `aws` alone, both are refused.
 
-  `AgentEgressProxyTest` already checks that the provider names and the files under
-  `defaults/model-provider/` match.
+  `AgentEgressProxyTest` already checks that the preset names and the files under
+  `defaults/preset/` match.
 - `pi` starts under the seccomp profile (`doc/TODO.md`'s list).
 - In fullscreen mode, in the terminals that `doc/plan-clipboard.md` lists: whether the conversation
   stays out of the terminal's scrollback after exit, and whether a mouse selection is copied

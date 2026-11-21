@@ -1,5 +1,5 @@
 # The curated catalog: the hosts deny-unless-allowed allows on its own. These defaults sit beside the
-# model-provider rules in model-provider/.
+# presets in preset/.
 # Every host here is TLS-inspected. Each line grants `read`, which is GET and HEAD, plus the words written beside it.
 # SECURITY.md, "Reading without being able to write", has what each grant opens and what the inspection costs and
 # buys.

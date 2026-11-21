@@ -206,7 +206,7 @@ object MeasureAgents:
       "-H", "Authorization: Bearer ya29.measurement-not-a-token", "-H", "Content-Type: application/json")
 
   // Each mode names V3: a headless run that names no engine takes V2 without --trust-all-tools
-  // (https://kiro.dev/docs/cli/headless/), and defaults/model-provider/aws has no line for V2's model host.
+  // (https://kiro.dev/docs/cli/headless/), and defaults/preset/aws has no line for V2's model host.
   private def measureKiro(work: Path): Unit =
     val chat = Vector("kiro-cli", "chat", "--no-interactive", "--trust-all-tools", "--output-format", "stream-json")
     def ran(run: Vector[Json]) = kiroSucceeded(run) && kiroEngine(run).contains("v3")
@@ -250,8 +250,8 @@ object MeasureAgents:
     upload(work, "api.githubcopilot.com", "https://api.githubcopilot.com/responses",
       "-H", "Authorization: Bearer gho_measurement-not-a-token")
 
-  // OpenCode has no provider of its own, and the ChatGPT sign-in is the one route measured
-  // (ko-agent-egress-proxy/doc/model-provider/openai-evidence.md). Without --model, opencode run takes
+  // OpenCode has no preset of its own, and the ChatGPT sign-in is the one route measured
+  // (ko-agent-egress-proxy/doc/preset/openai-evidence.md). Without --model, opencode run takes
   // opencode/big-pickle, whose posts to opencode.ai the defaults refuse.
   val OpencodeModel = "openai/gpt-6-astra"
 
@@ -302,21 +302,21 @@ object MeasureAgents:
     "agy" ->
       """- agy: an interactive session with two turns and /compact; /voice under --audio=mic; a sign-out, a sign-in and
         |  a message; a token refresh, forced by moving .token.expiry in
-        |  ~/.gemini/antigravity-cli/antigravity-oauth-token into the past; a launch under --egress=deny-unless-model,
-        |  with agy as its command""".stripMargin,
+        |  ~/.gemini/antigravity-cli/antigravity-oauth-token into the past; a launch under
+        |  --egress=deny-unless-selected, with agy as its command""".stripMargin,
     "kiro-cli" ->
       """- kiro-cli: the V3 TUI with two turns and /compact; kiro-cli logout, kiro-cli login --use-device-flow and a
         |  message; a turn after the token's expiry, an hour after the sign-in (a refresh forced by an earlier
         |  expires_at in ~/.local/share/kiro-cli/data.sqlite3 is answered 401 and signs kiro-cli out); a launch
-        |  under --egress=deny-unless-model, with kiro-cli as its command""".stripMargin,
+        |  under --egress=deny-unless-selected, with kiro-cli as its command""".stripMargin,
     "copilot" ->
       """- copilot: an interactive session with two turns and /compact; /login and a message (/logout fails in the
-        |  sandbox); a launch under --egress=deny-unless-model, with copilot as its command""".stripMargin,
+        |  sandbox); a launch under --egress=deny-unless-selected, with copilot as its command""".stripMargin,
     "opencode" ->
       s"""- opencode: the TUI on $OpencodeModel with two turns and /compact; opencode auth login --provider openai
         |  --method "ChatGPT Pro/Plus (headless)"; a turn after a token refresh, forced by moving openai.expires in
-        |  ~/.local/share/opencode/auth.json into the past; a launch under --egress=deny-unless-model
-        |  --model-provider=openai, with opencode as its command""".stripMargin,
+        |  ~/.local/share/opencode/auth.json into the past; a launch under --egress=deny-unless-selected
+        |  --egress-preset=openai, with opencode as its command""".stripMargin,
   )
 
   private def deleteTree(root: Path): Unit =

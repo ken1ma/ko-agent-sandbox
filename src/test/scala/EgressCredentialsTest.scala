@@ -50,7 +50,7 @@ class EgressCredentialsTest extends munit.FunSuite:
       List("--egress-cred", "X@a.example") ->
         ("error: the launch options are spelled " +
           "--workspace=read-only|live|bpf|fuse|unix-socket|no-unix-socket[,...], --egress=<profile>, " +
-          "--model-provider=<names>, " +
+          "--egress-preset=<names>, " +
           "--clipboard=<mode>, --audio=off|<devices>, --nesting=none|user-namespace|same-uid, " +
           "--session-start=pause|immediate, " +
           "--memory=<size>, --persistent-volume=<name>, --image=<reference>, --proxy-image=<reference>, " +

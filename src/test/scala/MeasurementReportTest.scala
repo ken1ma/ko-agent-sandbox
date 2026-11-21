@@ -90,15 +90,15 @@ class MeasurementReportTest extends munit.FunSuite:
 
   test("the shipped records parse, each with its paths, and every path names a host that a default file allows"):
     val shipped = records()
-    assertEquals(shipped.map(_.provider).toSet, RulesetHelperProviders)
+    assertEquals(shipped.map(_.preset).toSet, RulesetHelperPresets)
     // A record may name another file's host: Claude Code fetches its plugin marketplace from github.com.
     val catalog = java.nio.file.Files.readString(RecordDirectory.resolveSibling("host"))
     val allowed = shipped.flatMap(_.hosts).toSet ++ parseRecord("host", catalog).hosts
     shipped.foreach: measured =>
-      assert(measured.paths.nonEmpty, measured.provider)
-      measured.paths.foreach((host, path) => assert(allowed(host), s"${measured.provider}: $host $path"))
+      assert(measured.paths.nonEmpty, measured.preset)
+      measured.paths.foreach((host, path) => assert(allowed(host), s"${measured.preset}: $host $path"))
 
-  private val RulesetHelperProviders = agentsandbox.egress.RulesetHelper.ModelProviders.toSet
+  private val RulesetHelperPresets = agentsandbox.egress.RulesetHelper.Presets.toSet
 
   test("a recorded path, an accepted refusal and an accepted error leave no finding; the query is no part of a path"):
     val clean = reportOf(
@@ -179,7 +179,7 @@ class MeasurementReportTest extends munit.FunSuite:
     val unmeasured = parseRecord("forge", "allow https://forge.example/login/token method=POST\n")
     val other = report(
       Vector(
-        "egress profile: deny-unless-allowed; model provider: example",
+        "egress profile: deny-unless-allowed; egress presets: example",
         "allow https://api.example/ read method=POST,PUT,PATCH,DELETE",
         "allow forge.example GET /org/marketplace.git/info/refs?service=git-upload-pack id=1 client=git/2.47.3 " +
           "-> 1.2.3.4",

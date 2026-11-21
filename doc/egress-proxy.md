@@ -29,11 +29,11 @@ host has one of two treatments:
 The proxy logs handshake failures under both treatments. SECURITY.md defines the checks and audit
 events.
 
-The proxy's default rules are listed in the proxy image's `defaults/host` and
-`defaults/model-provider/*`, with the reason beside each line:
+The proxy's default rules are listed in the proxy image's `defaults/host` and in its presets, the
+named sets of default rules under `defaults/preset/`, with the reason beside each line:
 
-- for every supported model provider (`anthropic`, `openai`, `google`, `aws` and `github`), the
-  model, authentication and control-plane endpoints:
+- in the presets `anthropic`, `openai`, `google`, `aws` and `github`, one per supported model
+  provider, the provider's model, authentication and control-plane endpoints:
   - `api.anthropic.com`, `platform.claude.com`, `chatgpt.com`, `api.openai.com`,
     `auth.openai.com`, agy's two `cloudcode-pa.googleapis.com` hosts, `oauth2.googleapis.com`,
     Kiro's `runtime` and `management` hosts in both regions and its two sign-in hosts, and
@@ -47,25 +47,25 @@ The proxy's default rules are listed in the proxy image's `defaults/host` and
 - inspected documentation, package-registry and forge hosts, with `read` on every line and
   `git-fetch` on the three forges.
 
-A launch selects the model providers whose default rules it admits:
+A launch selects the presets whose rules it admits:
 
-- The command's first word selects one provider: `claude` selects `anthropic`, `codex` selects
+- The command's first word selects one preset: `claude` selects `anthropic`, `codex` selects
   `openai`, `agy` selects `google`, `kiro-cli` selects `aws`, and `copilot` selects `github`.
-- Each `--model-provider=<names>`, in the options file or on the command line, adds the providers
-  it names, separated by commas, from those under `defaults/model-provider/`.
+- Each `--egress-preset=<names>`, in the options file or on the command line, adds the presets
+  it names, separated by commas, from those under `defaults/preset/`.
   - The launch refuses the option under `deny-all`, where nothing is admitted.
-  - `opencode` has no fixed provider, and the launch refuses an `opencode` launch without the
+  - `opencode` has no fixed model provider, and the launch refuses an `opencode` launch without the
     option.
 - Only the basename of the directly launched command is classified. Any other command selects no
-  provider of its own, and a launch that selects none says so at startup.
+  preset of its own, and a launch that selects none says so at startup.
 
 The profiles:
 
-1. `deny-unless-allowed` (the default) — the inspected catalog and the selected providers' rules,
+1. `deny-unless-allowed` (the default) — the inspected catalog and the selected presets' rules,
    then every line of the workspace's file.
-1. `deny-unless-model` — the selected providers' rules, then the file's URL and model-provider
-   denials. This profile ignores `allow` and `deny defaults` lines. With no provider selected, it
-   allows no host.
+1. `deny-unless-selected` — the selected presets' rules, then the file's URL and preset denials.
+   This profile ignores `allow` and `deny defaults` lines. With no preset selected, it allows no
+   host.
 1. `deny-all` — nothing.
 
 ## The rule file
@@ -79,10 +79,10 @@ deny defaults
 allow https://HOST/PREFIX/ GRANT...                       tree
 allow https://HOST/PATH    GRANT...                       one path
 allow https://HOST/        tunnel                         alone, at the root
-allow model-provider NAME
+allow preset NAME
 deny  https://HOST/        [GRANT...]                     never a path
 deny  https://**.DOMAIN/   [GRANT...]
-deny  model-provider NAME
+deny  preset NAME
 
 GRANT: read | git-fetch | method=M,... | upgrade=websocket | tunnel     at least one; each once
 ```
@@ -185,29 +185,29 @@ literally and cannot know how the origin decodes:
 So a line is a boundary as well as a grant: a line whose grants its enclosing scope already holds
 still changes which path spellings are refused.
 
-The `defaults` and `model-provider` lines:
+The `defaults` and `preset` lines:
 
 - Under `deny-unless-allowed`, `deny defaults` removes the built-in rules from the starting
   ruleset. It must be the first line.
-- `allow model-provider NAME` expands to the provider's default rules at that position.
-- `deny model-provider NAME` expands to a whole-host denial for every host listed in those rules,
+- `allow preset NAME` expands to the preset's rules at that position.
+- `deny preset NAME` expands to a whole-host denial for every host listed in those rules,
   regardless of their paths or grants. The denial removes all earlier grants on those hosts,
   including grants from the catalog or the workspace's rules. A later allow grants only what it
   names.
 
-For example, `deny model-provider github` also denies repository access on `github.com` and API
-access on `api.github.com`. Hosts absent from GitHub's model-provider rules, such as
+For example, `deny preset github` also denies repository access on `github.com` and API
+access on `api.github.com`. Hosts absent from the `github` preset, such as
 `raw.githubusercontent.com`, are unaffected by that denial.
 
 - To restore repository reads and Git fetches, follow the denial with
   `allow https://github.com/ read git-fetch`.
 - To restore API reads, add `allow https://api.github.com/ read`.
 
-To permit only one provider's default rules under `deny-unless-allowed`:
+To permit only one preset under `deny-unless-allowed`:
 
 ```text
 deny defaults
-allow model-provider anthropic
+allow preset anthropic
 ```
 
 A host has one treatment:
@@ -229,7 +229,7 @@ The launch fails on every ambiguity, and prints the reason and the line:
 
 - an unrecognized configuration entry. `egress/` accepts only `rule`, and `.ko-agent-sandbox/`
   accepts `egress`, `file` and `run-on-host`. Dot-prefixed metadata entries are ignored;
-- a token outside the grammar, an unknown profile, provider, grant word or method, a `#` inside a
+- a token outside the grammar, an unknown profile, preset, grant word or method, a `#` inside a
   token, a host that is an IP literal or is not a hostname;
 - a path outside canonical form; a `deny` or a `tunnel` with a path; `https://HOST` without its
   slash; an `allow https://` line naming no grant, or a word twice; `tunnel` beside another word;
@@ -250,8 +250,7 @@ profile, so a misspelling cannot fail silently:
   means that a host-wide `deny` before it was intended. The boundary that the line opens remains;
 - a line whose every grant a later line takes back.
 
-A fourth warning names the hosts of the selected model provider that the resolved ruleset does
-not allow.
+A fourth warning names the hosts of a selected preset that the resolved ruleset does not allow.
 
 A line that restates a defaults line at its path draws no warning. That is how a file stays valid
 as the image adopts its hosts.
@@ -259,7 +258,7 @@ as the image adopts its hosts.
 1. Without a rule file, or with one holding only comments and blank lines, the selected profile
    applies without workspace overrides.
    - An empty ruleset is valid, and the launch reports it as empty. `deny-all` resolves empty by
-     design, and so does `deny-unless-model` under `bash`.
+     design, and so does `deny-unless-selected` under `bash`.
 1. An edit of the file takes effect on the next launch. A running session keeps its original
    ruleset.
 1. The sandbox cannot edit the file, under either workspace mode (`../SECURITY.md`, "Why the rules
@@ -276,7 +275,7 @@ proxy. Every start prints, in order:
 1. the line `.ko-agent-sandbox/egress/rule: <count> widening lines`, then those rule lines
    indented, when the file grants beyond the launch's defaults:
    - A line widens when it grants a host the defaults lack, a grant the defaults lack at the
-     line's path, or a provider the launch did not select, or when it is `deny defaults`.
+     line's path, or a preset the launch did not select, or when it is `deny defaults`.
    - The rule lines print one per line, except that `allow https://<host>/ <words>` lines that
      share their words join into `allow <words>: <host>, <host>`.
    - A file that only removes grants or narrows them prints neither.
@@ -286,11 +285,11 @@ proxy. Every start prints, in order:
 The proxy prints the ruleset itself at its start, and `--egress-effective` shows the ruleset whole.
 Both use the rule grammar, with hosts and paths sorted:
 
-1. the profile line, naming the selected providers under the two profiles that admit any;
+1. the profile line, naming the selected presets under the two profiles that admit any;
 1. one `allow` line per resolved scope, with the scope's whole grant set.
 
 ```text
-egress profile: deny-unless-allowed; model provider: anthropic
+egress profile: deny-unless-allowed; egress presets: anthropic
 allow https://api.anthropic.com/ read method=POST,PUT,PATCH,DELETE
 ...
 allow https://github.com/ read git-fetch
@@ -370,8 +369,8 @@ The proxy terminates TLS for every inspected host and checks each request agains
 Only hosts with the `tunnel` treatment stay opaque:
 
 - under `deny-unless-allowed`, the hosts of the workspace file's `tunnel` lines, since no
-  provider's file holds a tunnel;
-- under `deny-unless-model`, none, since that profile reads only the providers' files;
+  preset holds a tunnel;
+- under `deny-unless-selected`, none, since that profile reads only the presets;
 - under `deny-all`, none.
 
 The per-workspace CA is stored on the host, under

@@ -1,6 +1,6 @@
-# Evidence for model-provider/openai
+# Evidence for preset/openai
 
-[The defaults file](../../app/src/main/resources/defaults/model-provider/openai) inspects
+[The defaults file](../../app/src/main/resources/defaults/preset/openai) inspects
 the hosts of Codex, and of OpenCode signed in with ChatGPT, on this evidence.
 [`doc/agent-measurement.md`](../../../doc/agent-measurement.md) says how a client is measured,
 and how much a report establishes.
@@ -112,9 +112,9 @@ error chatgpt.com relay: client: Broken pipe
 
 ## OpenCode
 
-`opencode` 1.19.5, the image's version on 2026-11-14. OpenCode has no provider file: a launch
-names the providers that OpenCode connects, and those providers' lines carry its traffic. The
-"Documented" page was read on 2026-09-28.
+`opencode` 1.19.5, the image's version on 2026-11-14. OpenCode has no preset: a launch names
+the presets of the providers that OpenCode connects, and those presets' lines carry its traffic.
+The "Documented" page was read on 2026-09-28.
 
 - Documented: `HTTPS_PROXY`, `NO_PROXY`, and a custom CA through `NODE_EXTRA_CA_CERTS`, which
   the launcher sets (https://opencode.ai/docs/network/).
@@ -133,7 +133,7 @@ Signed in with "ChatGPT Pro/Plus (headless)", on `openai/gpt-6-astra`, under
   `opencode run --session` with a shell call; the TUI in this repository, with two turns,
   `/compact` and a message; the sign-in; a turn after a token refresh, forced by moving
   `openai.expires` in `~/.local/share/opencode/auth.json` into the past; the TUI with a turn under
-  `deny-unless-model`.
+  `deny-unless-selected`.
 - Every request went to a path that Codex's `path` lines list, as `opencode/1.19.5`: model calls to
   `/backend-api/codex/responses`, and the sign-in and the refresh to `auth.openai.com`. OpenCode
   tried no WebSocket.
@@ -144,7 +144,7 @@ Signed in with "ChatGPT Pro/Plus (headless)", on `openai/gpt-6-astra`, under
 - At its first start in the volume, opencode installed `@opencode-ai/plugin`, pinned to its own
   version, into `~/.config/opencode` with its own npm, and the install completed. The defaults'
   read-only line for the registry refused npm's audit, and one connection ended in the handshake.
-- Under `deny-unless-model`, opencode was refused at each start at its model catalog's host and at
+- Under `deny-unless-selected`, opencode was refused at each start at its model catalog's host and at
   the registry, and the turn completed.
 - One `opencode run`, started after the stored expiry moved, sent nothing after its catalog read
   from `models.opencode.ai`, and hung until killed after five minutes. The next run refreshed the
@@ -153,7 +153,7 @@ Signed in with "ChatGPT Pro/Plus (headless)", on `openai/gpt-6-astra`, under
 ### The lines that MeasurementReport accepts for OpenCode
 
 In order: the TUI's version check, npm's audit and handshake, and the refusals under
-`deny-unless-model`.
+`deny-unless-selected`.
 
 ```measurement-report
 error registry.npmjs.org tunnel: expected 5 bytes, got 0

@@ -136,7 +136,7 @@ object HostCommands:
    *     - A grant is the label and what it grants, such as `audio: mic`, with the explanation after it plain. A
    *       widening rule and the prompt are grants whole.
    *   - purple: what the user chose, on a line that states no weakened boundary (chosen). Examples are the workspace
-   *     root and mode, the egress profile and model providers, an upstream proxy, the forwarded variables, brokered
+   *     root and mode, the egress profile and presets, an upstream proxy, the forwarded variables, brokered
    *     credentials and AWS profile. Purple is a hue of its own, so that it is never read as a severity.
    *     - A value that the options file supplied is a bluer purple, and so is the file's `(from …)` after it
    *       (fromOptionsFile). The hue tells a choice made once for every launch from one made for this launch.

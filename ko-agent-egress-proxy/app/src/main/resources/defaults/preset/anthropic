@@ -16,4 +16,4 @@ allow https://platform.claude.com/ read method=POST,PUT,PATCH,DELETE  # OAuth to
 # - *.claudeusercontent.com serves the Chrome extension's bridge, and artifact content, which the CLI reads when the
 #   Artifact tool is available.
 
-# ko-agent-egress-proxy/doc/model-provider/anthropic-evidence.md holds the measurements behind these lines.
+# ko-agent-egress-proxy/doc/preset/anthropic-evidence.md holds the measurements behind these lines.

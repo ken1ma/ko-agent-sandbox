@@ -171,14 +171,14 @@ failing rule. `design.md` says why the relay does not change ("Model hosts inspe
 The agents are measured in the README's order. Each provider's evidence file holds what its agents'
 documentation and reported issues say, and the agents' measurement records:
 
-- `claude`: [`anthropic-evidence.md`](../ko-agent-egress-proxy/doc/model-provider/anthropic-evidence.md)
-- `codex`: [`openai-evidence.md`](../ko-agent-egress-proxy/doc/model-provider/openai-evidence.md)
-- `agy`: [`google-evidence.md`](../ko-agent-egress-proxy/doc/model-provider/google-evidence.md)
-- `kiro-cli`: [`aws-evidence.md`](../ko-agent-egress-proxy/doc/model-provider/aws-evidence.md)
-- `copilot`: [`github-evidence.md`](../ko-agent-egress-proxy/doc/model-provider/github-evidence.md)
-- `opencode`: [`openai-evidence.md`](../ko-agent-egress-proxy/doc/model-provider/openai-evidence.md),
+- `claude`: [`anthropic-evidence.md`](../ko-agent-egress-proxy/doc/preset/anthropic-evidence.md)
+- `codex`: [`openai-evidence.md`](../ko-agent-egress-proxy/doc/preset/openai-evidence.md)
+- `agy`: [`google-evidence.md`](../ko-agent-egress-proxy/doc/preset/google-evidence.md)
+- `kiro-cli`: [`aws-evidence.md`](../ko-agent-egress-proxy/doc/preset/aws-evidence.md)
+- `copilot`: [`github-evidence.md`](../ko-agent-egress-proxy/doc/preset/github-evidence.md)
+- `opencode`: [`openai-evidence.md`](../ko-agent-egress-proxy/doc/preset/openai-evidence.md),
   and for its Copilot sign-in
-  [`github-evidence.md`](../ko-agent-egress-proxy/doc/model-provider/github-evidence.md)
+  [`github-evidence.md`](../ko-agent-egress-proxy/doc/preset/github-evidence.md)
 
 A report establishes a transport that differed in the named release on the named platform. A
 report does not establish the installed client's behavior.
@@ -190,9 +190,9 @@ refresh.
   outlive the access tokens it sees on the model hosts.
 - `auth.openai.com`, `platform.claude.com`, `oauth2.googleapis.com` and Kiro's
   `prod.us-east-1.auth.desktop.kiro.dev` are inspected. `claude.ai` and `accounts.google.com` are
-  absent, since Claude Code and agy send them no request (`defaults/model-provider/anthropic` and
+  absent, since Claude Code and agy send them no request (`defaults/preset/anthropic` and
   `google`). `cognito-identity.us-east-1.amazonaws.com` is absent too: Kiro's Google sign-in sent
-  it nothing, and Kiro's turns complete with the host refused (`defaults/model-provider/aws`).
+  it nothing, and Kiro's turns complete with the host refused (`defaults/preset/aws`).
 - `oidc.us-east-1.amazonaws.com`, for Kiro's Builder ID and Identity Center sign-ins, is inspected
   unmeasured, on the evidence of kiro-cli's AWS SDK at `management.us-east-1.kiro.dev`.
 

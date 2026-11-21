@@ -2020,10 +2020,10 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         "deny https://**.blocked.example/"
     for
       profile <- agentsandbox.egress.RulesetHelper.Profiles
-      provider <- Vector(None, Some("openai"), Some("anthropic,google"))
+      preset <- Vector(None, Some("openai"), Some("anthropic,google"))
       ruleFile <- Vector(None, Some(workspaceRules))
     do
-      val resolved = resolveRuleset(Some(profile), provider, ruleFile)
+      val resolved = resolveRuleset(Some(profile), preset, ruleFile)
       val lines = rulesetLines(resolved)
       val output = (lines ++ metadataLines(resolved)).mkString("\n")
       assertEquals(EgressRules.rulesetLinesOf(output), lines.mkString("\n"))
@@ -2372,25 +2372,25 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     )
     assertEquals(parseCommandLine(Nil).map(_.workspaceSettings), Right(WorkspaceSettings.Default))
 
-  test("option parsing: --model-provider names providers for the proxy as written, repeatable, each once"):
-    def providers(args: String*): Either[String, Vector[String]] = parseCommandLine(args.toList).map(_.modelProviders)
-    assertEquals(providers("--model-provider=aws", "claude"), Right(Vector("aws")))
-    assertEquals(providers("--model-provider=anthropic,github", "opencode"), Right(Vector("anthropic", "github")))
+  test("option parsing: --egress-preset names presets for the proxy as written, repeatable, each once"):
+    def presets(args: String*): Either[String, Vector[String]] = parseCommandLine(args.toList).map(_.presets)
+    assertEquals(presets("--egress-preset=aws", "claude"), Right(Vector("aws")))
+    assertEquals(presets("--egress-preset=anthropic,github", "opencode"), Right(Vector("anthropic", "github")))
     assertEquals(
-      providers("--model-provider=anthropic", "--model-provider=openai,google", "claude"),
+      presets("--egress-preset=anthropic", "--egress-preset=openai,google", "claude"),
       Right(Vector("anthropic", "openai", "google")),
     )
-    assertEquals(providers("claude"), Right(Vector.empty))
+    assertEquals(presets("claude"), Right(Vector.empty))
     // The proxy image defines the names, and the empty value drops the names before it.
-    assertEquals(providers("--model-provider=meta"), Right(Vector("meta")))
+    assertEquals(presets("--egress-preset=meta"), Right(Vector("meta")))
     assertEquals(
-      providers("--model-provider=aws", "--model-provider=", "--model-provider=github"),
+      presets("--egress-preset=aws", "--egress-preset=", "--egress-preset=github"),
       Right(Vector("github")),
     )
-    for twice <- Vector(Vector("--model-provider=aws", "--model-provider=aws"), Vector("--model-provider=aws,aws")) do
-      assert(providers(twice*).swap.exists(_.contains("--model-provider=aws is given twice")), twice)
-    assert(providers("--model-provider=aws,,github").swap.exists(_.contains("separated by commas")))
-    assert(providers("--model-provider", "aws").swap.exists(_.contains("--model-provider=<names>")))
+    for twice <- Vector(Vector("--egress-preset=aws", "--egress-preset=aws"), Vector("--egress-preset=aws,aws")) do
+      assert(presets(twice*).swap.exists(_.contains("--egress-preset=aws is given twice")), twice)
+    assert(presets("--egress-preset=aws,,github").swap.exists(_.contains("separated by commas")))
+    assert(presets("--egress-preset", "aws").swap.exists(_.contains("--egress-preset=<names>")))
 
   test("option parsing: --run-on-host names programs from a closed set, each once, selected once"):
     assertEquals(

@@ -117,15 +117,16 @@ Start an agent from a trusted directory, such as `~/my-project`, which becomes t
 
 Insert these launcher options before the agent command (`claude` above):
 
-1. Use `--model-provider=<names>` to reach model providers other than the agent's own:
-   `anthropic`, `openai`, `google`, `aws` or `github`, separated by commas. `opencode` has no
-   fixed provider and is refused without the option.
+1. Use `--egress-preset=<names>` to reach model providers other than the agent's own, through the
+   presets `anthropic`, `openai`, `google`, `aws` or `github`, separated by commas. A preset is a
+   named set of default egress rules. `opencode` has no fixed model provider and is refused without
+   the option.
    For example, to run `claude` and review with `codex` through `/ko-review`:
 
-       java -jar "<path-to-jar>/ko-agent-sandbox.jar" --model-provider=openai claude
+       java -jar "<path-to-jar>/ko-agent-sandbox.jar" --egress-preset=openai claude
 
-1. Use `--egress=deny-unless-model` to limit network access to the selected model providers,
-   dropping the read-only sites.
+1. Use `--egress=deny-unless-selected` to limit network access to the selected presets, dropping
+   the read-only sites.
 1. On macOS, use `--run-on-host=sbt,mill,gradle,mvn`, selecting the programs the agent needs,
    to build without consuming the podman machine's memory, and at host speed.
 
@@ -140,7 +141,7 @@ credentials in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#
 1. To change a session option such as `--egress=`, quit, then relaunch with the new options and
    the agent's resume arguments:
 
-        java -jar "<path-to-jar>/ko-agent-sandbox.jar" --egress=deny-unless-model claude --continue
+        java -jar "<path-to-jar>/ko-agent-sandbox.jar" --egress=deny-unless-selected claude --continue
 
     1. The resume arguments are `claude --continue`, `codex resume --last`, `agy --continue`,
        `kiro-cli chat --resume`, `copilot --continue` or `opencode --continue`.
@@ -161,7 +162,7 @@ credentials in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#
    Choose Codex or a separate Claude Code session as the reviewer. Claude fixes or disputes each
    finding on the same reviewer thread until the reviewer approves every change in the scope or
    asks for a decision only you can make.
-   - A Codex reviewer needs `--model-provider` to name `openai` (the launch example above).
+   - A Codex reviewer needs `--egress-preset` to name `openai` (the launch example above).
    - Claude adopts or disputes the reviewer's suggestions, which are opinions on the design that
      do not block approval. Claude brings you the suggestions that are yours to decide, and names
      the adopted ones that changed the design.
@@ -193,7 +194,7 @@ credentials in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#
    ([doc/mic.md](doc/mic.md#codex)).
 1. `$ko-review` runs the same review as [`/ko-review`](#claude), with Codex fixing or disputing
    the findings. Codex asks its questions in replies, since it has no question tool outside Plan
-   mode. For a Claude reviewer, launch with `--model-provider=anthropic`.
+   mode. For a Claude reviewer, launch with `--egress-preset=anthropic`.
 
 #### `agy`
 
@@ -203,7 +204,7 @@ credentials in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#
    carries only through a tunnel.
 1. A `GEMINI_API_KEY` session or a Business sign-in with a Gemini Enterprise license needs its
    hosts as `tunnel` lines in `.ko-agent-sandbox/egress/rule`. The proxy image's
-   `defaults/model-provider/google` lists them with Google's pages; no measurement covers those
+   `defaults/preset/google` lists them with Google's pages; no measurement covers those
    modes yet.
 1. `agy`'s terminal sandbox fails to start in a session, so in Auto mode its commands run without
    that sandbox ([doc/limitations.md](doc/limitations.md#agys-terminal-sandbox-and-auto-mode)).
@@ -235,7 +236,7 @@ credentials in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#
 
 #### `opencode`
 
-1. Launch with `--model-provider=<names>` naming the providers you will connect.
+1. Launch with `--egress-preset=<names>` naming the presets of the providers you will connect.
 1. Run `/connect`, then `/models` to pick a model from the connected provider.
     1. Anthropic takes an API key.
     1. Google takes an API key, and needs the line
@@ -365,17 +366,17 @@ restore permission prompts and set the Claude Code status line.
                          Give one value from each pair, in any order, joined
                          with commas or as separate --workspace options, as in
                          --workspace=read-only,fuse
-      --egress=deny-all|deny-unless-model|deny-unless-allowed
+      --egress=deny-all|deny-unless-selected|deny-unless-allowed
                          which hosts the session reaches; the default,
                          deny-unless-allowed, allows the launcher-owned
                          defaults modified by .ko-agent-sandbox/egress/rule.
                          Each profile: doc/egress-proxy.md
-      --model-provider=<names>
-                         the model providers the session reaches beside the
-                         agent's own: anthropic, openai, google, aws or github,
-                         separated by commas. Repeatable, each name once. Required
-                         for opencode, which has no fixed provider; refused under
-                         --egress=deny-all
+      --egress-preset=<names>
+                         the presets, named sets of default egress rules, that the
+                         session admits beside the agent's own: anthropic, openai,
+                         google, aws or github, separated by commas. Repeatable,
+                         each name once. Required for opencode, which has no fixed
+                         model provider; refused under --egress=deny-all
       --clipboard=off|paste|bidirectional
                          off (default) keeps the host clipboard out; paste lets
                          the agent read a copied image; bidirectional also lets
@@ -492,7 +493,7 @@ restore permission prompts and set the Claude Code status line.
     session or Claude Code option per line, spelled as above; # starts a comment, "..." quotes a
     value, ${NAME} expands a variable of the launcher's environment. Every launch prints each
     option it supplies. A command-line option replaces the file's; --workspace replaces the parts
-    it states, --env and --egress-cred the file's entry of the same name, and --model-provider adds
+    it states, --env and --egress-cred the file's entry of the same name, and --egress-preset adds
     its names to the file's. Three
     actions also read some of the file's options, to match what a launch would do. See README.md
     "Options file"
@@ -531,8 +532,8 @@ restore permission prompts and set the Claude Code status line.
       --egress-effective [--] [<command> [args...]]
                          print the ruleset the accompanying --egress=<profile>
                          resolves to for this workspace, with per-line
-                         provenance; the command and --model-provider select
-                         the model providers without launching anything
+                         provenance; the command and --egress-preset select
+                         the presets without launching anything
       --egress-check=<host> [--] [<command> [args...]]
                          print the host's rule decision and DNS result using the proxy's
                          resolver; with HTTPS_PROXY, also check the upstream proxy's tunnel.
@@ -594,7 +595,7 @@ restore permission prompts and set the Claude Code status line.
 Put the options you give every launch in the options file, one per line, spelled as on the
 command line:
 
-    --model-provider=anthropic,openai
+    --egress-preset=anthropic,openai
     --memory=8g
     --clipboard=paste
     --env=GH_TOKEN          # forwards the host's value, read at each launch
@@ -611,11 +612,11 @@ command line:
        `fuse`.
     1. `--env` and `--egress-cred` replace the file's entry of the same name, and
        `--cache-overlay` the file's entry of the same kind; `--claude-plugin-dir` loads a directory
-       both spell alike once, and `--model-provider` adds its names to the file's.
+       both spell alike once, and `--egress-preset` adds its names to the file's.
     1. An empty value returns an option to its default: `--memory=`, `--run-on-host=`. A closed
        choice names its default instead: `--clipboard=off`, `--nesting=none`.
     1. The empty value of `--env`, `--egress-cred`, `--cache-overlay`, `--claude-plugin-dir` or
-       `--model-provider` drops the file's entries of that option; those after it on the command
+       `--egress-preset` drops the file's entries of that option; those after it on the command
        line still add.
 
 1. `--no-options-file`, before the command, skips the file for one launch or action.
@@ -623,7 +624,7 @@ command line:
    none.
 
     1. `--reset` reads `--persistent-volume` and leaves that shared volume in place.
-    1. `--egress-effective` reads `--egress`, `--model-provider`, `--egress-cred` and
+    1. `--egress-effective` reads `--egress`, `--egress-preset`, `--egress-cred` and
        `--proxy-image`, and prints the ruleset a launch would enforce.
     1. `--egress-check` reads the same options except `--egress-cred`, because it sends no
        credential.

@@ -188,7 +188,7 @@ have none (measured on macOS). A bare `/voice` toggles: with voice on in the set
   - A `GET /api/hello` probe precedes the WebSocket on the same host. The CLI passes its proxy
     setting to the WebSocket. The defaults' `read` on `api.anthropic.com` covers the probe, and
     their `upgrade=websocket` line at the stream's path covers the WebSocket
-    (`defaults/model-provider/anthropic`).
+    (`defaults/preset/anthropic`).
   - A profile without that host fails `/voice` with "Voice stream error" after the recorder starts
     (read from the CLI).
 - An API key, Bedrock, Vertex or Foundry session is refused before recording: "Voice mode requires

@@ -1,6 +1,6 @@
-# Evidence for model-provider/aws
+# Evidence for preset/aws
 
-[The defaults file](../../app/src/main/resources/defaults/model-provider/aws) inspects
+[The defaults file](../../app/src/main/resources/defaults/preset/aws) inspects
 Kiro CLI's hosts on this evidence.
 [`doc/agent-measurement.md`](../../../doc/agent-measurement.md) says how a client is measured,
 and how much a report establishes.
@@ -28,7 +28,7 @@ and how much a report establishes.
   - Every request to `runtime` and `management` carried `cred=`: a bearer token, not a SigV4
     signature.
   - V3's model calls are `POST /v1/responses` on `runtime`, and its other calls are `POST /`.
-  - Under `deny-unless-model`, which admits the provider file alone, a TUI turn completed.
+  - Under `deny-unless-selected`, which admits the preset alone, a TUI turn completed.
 - The V2 engine, kiro-cli's own `acp` child, sends its model calls to
   `q.us-east-1.amazonaws.com`, and its turns completed under inspection. Kiro removes V2 in
   January, so `q` has no line, and a workspace that runs V2 adds it (README, `kiro-cli`).
@@ -40,7 +40,7 @@ Signed in with a Google account in us-east-1, under `deny-unless-allowed`.
 - Modes: `kiro-cli chat --v3 --no-interactive` with a shell call and a subagent that makes its own
   shell call; `--resume-id` with a shell call; the V3 TUI in this repository, with two turns,
   `/compact` and a message; `kiro-cli logout`, `kiro-cli login --use-device-flow` and a turn; a
-  token refresh at the token's expiry; the TUI with a turn under `deny-unless-model`.
+  token refresh at the token's expiry; the TUI with a turn under `deny-unless-selected`.
 - Each mode ran in a Node child of kiro-cli, which sent the model calls as `KiroCLI/3.3.0` and the
   rest as `aws-sdk-js`. kiro-cli itself sent the sign-in requests as `Kiro-CLI`, and read the
   profile at `management` as `aws-sdk-rust`. Every client negotiated HTTP/1.1 and trusted the

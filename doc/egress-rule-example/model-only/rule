@@ -1,6 +1,6 @@
-# Use this file with --egress=deny-unless-allowed to permit only the model provider's default
-# rules. Other dependency downloads and documentation reads will fail.
-# Choose the launched agent's provider: anthropic for claude, openai for codex, google for agy,
+# Use this file with --egress=deny-unless-allowed to permit only the launched agent's preset.
+# Other dependency downloads and documentation reads will fail.
+# Choose the launched agent's preset: anthropic for claude, openai for codex, google for agy,
 # aws for kiro-cli, github for copilot.
 deny defaults
-allow model-provider anthropic
+allow preset anthropic

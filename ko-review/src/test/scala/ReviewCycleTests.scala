@@ -315,7 +315,7 @@ abstract class ReviewCycleTests extends HelperFixture:
     environment = Map("FAKE_REVIEWER_SIGNED_OUT" -> "1")
     startFailsWith("REVIEWER_AUTH_FAILED")
     environment = Map.empty
-    ruleset = s"egress profile: deny-unless-model\nallow https://$otherHost/ tunnel\n"
+    ruleset = s"egress profile: deny-unless-selected\nallow https://$otherHost/ tunnel\n"
     startFailsWith("REVIEWER_EGRESS_DENIED")
     assertEquals(helper("list").arr("reviews"), Vector.empty) // refused before a review exists
     ruleset = ""

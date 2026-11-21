@@ -1,4 +1,4 @@
-// Reads one run's proxy log against the measurement records in ko-agent-egress-proxy/doc/model-provider
+// Reads one run's proxy log against the measurement records in ko-agent-egress-proxy/doc/preset
 // (doc/agent-measurement.md, "The measurement suite"). src/test/measurement/MeasureAgents.scala runs the modes that
 // need no person; the manual items add to the same run. On the host:
 //
@@ -21,8 +21,8 @@ import agentsandbox.egress.LogHelper
 
 object MeasurementReport:
 
-  val RecordDirectory: Path = Paths.get("ko-agent-egress-proxy/app/src/main/resources/defaults/model-provider")
-  val EvidenceDirectory: Path = Paths.get("ko-agent-egress-proxy/doc/model-provider")
+  val RecordDirectory: Path = Paths.get("ko-agent-egress-proxy/app/src/main/resources/defaults/preset")
+  val EvidenceDirectory: Path = Paths.get("ko-agent-egress-proxy/doc/preset")
 
   /** A refusal that a record accepts: a host's CONNECT, or a request's method at a path. */
   final case class AcceptedRefusal(host: String, method: String, path: Option[String]):
@@ -31,7 +31,7 @@ object MeasurementReport:
         path.forall(pattern => line.target.exists(target => matches(pattern, pathOf(target), PathPart)))
 
   /**
-   * One provider's record: its defaults file's hosts, and what its evidence file accepts.
+   * One preset's record: its defaults file's hosts, and what its evidence file accepts.
    *
    * - `hosts` are the hosts of the defaults file's `allow` lines.
    * - `paths`, `refusals` and `errors` come from the lines `path <host> </path>...`, `refused <host> <method>
@@ -44,7 +44,7 @@ object MeasurementReport:
    *   npm installs read packages that no record lists.
    */
   final case class Record(
-    provider: String,
+    preset: String,
     hosts: Set[String],
     paths: Vector[(String, String)],
     refusals: Vector[AcceptedRefusal],
@@ -61,18 +61,18 @@ object MeasurementReport:
   private val RefusedLine = raw"refused (\S+) (\S+)(?: (/\S*))?".r
   private val ErrorLine = raw"error (\S+) (.+)".r
 
-  /** The record of `provider` from its defaults file's `rules` and its evidence file's Markdown. */
-  def parseRecord(provider: String, rules: String, evidence: String = ""): Record =
+  /** The record of `preset` from its defaults file's `rules` and its evidence file's Markdown. */
+  def parseRecord(preset: String, rules: String, evidence: String = ""): Record =
     val (block, open) = evidence.linesIterator.foldLeft((Vector.empty[String], false)):
       case ((kept, false), line) => (kept, line == BlockFence)
       case ((kept, true), "```") => (kept, false)
       case ((kept, true), line)  => (kept :+ line.trim, true)
-    if open then throw IllegalArgumentException(s"$provider: a $BlockFence block has no closing fence")
+    if open then throw IllegalArgumentException(s"$preset: a $BlockFence block has no closing fence")
     val lines = block.filter(_.nonEmpty)
     lines.filterNot(line => PathLine.matches(line) || RefusedLine.matches(line) || ErrorLine.matches(line))
-      .foreach(line => throw IllegalArgumentException(s"$provider: a block line in none of the three forms: $line"))
+      .foreach(line => throw IllegalArgumentException(s"$preset: a block line in none of the three forms: $line"))
     Record(
-      provider,
+      preset,
       rules.linesIterator.collect { case AllowLine(host) => host }.toSet,
       lines.flatMap:
         case PathLine(host, paths) => paths.trim.split(" ").toVector.map(host -> _)
@@ -81,12 +81,12 @@ object MeasurementReport:
       lines.collect { case ErrorLine(host, why) => host -> why.trim },
     )
 
-  /** Each provider's record, from its defaults file and the `<provider>-evidence.md` that every one must have. */
+  /** Each preset's record, from its defaults file and the `<preset>-evidence.md` that every one must have. */
   def records(rules: Path = RecordDirectory, evidence: Path = EvidenceDirectory): Vector[Record] =
     Using.resource(Files.list(rules))(_.iterator.asScala.toVector).sortBy(_.getFileName.toString).map: file =>
-      val provider = file.getFileName.toString
-      parseRecord(provider, Files.readString(file, UTF_8),
-        Files.readString(evidence.resolve(s"$provider-evidence.md"), UTF_8))
+      val preset = file.getFileName.toString
+      parseRecord(preset, Files.readString(file, UTF_8),
+        Files.readString(evidence.resolve(s"$preset-evidence.md"), UTF_8))
 
   private val HostPart = "[^./]+"
   private val PathPart = "[^/]+"
@@ -185,7 +185,7 @@ object MeasurementReport:
       entries.groupBy(identity).toVector.sortBy(_._1).map((entry, same) => s"$entry (${same.size})")
 
     measured.filter(record => lines.exists(line => record.names(line.host))).foreach: record =>
-      out += s"${record.provider}:"
+      out += s"${record.preset}:"
       val own = requests.filter(line => record.names(line.host) && !probe(line))
       own.groupBy(line => (line.host, line.method, pathOf(line.target.get))).toVector.sortBy(_._1).foreach:
         case ((host, method, path), same) =>
@@ -200,7 +200,7 @@ object MeasurementReport:
           // that names the host reports the finding, so that it shows once.
           val namers = measured.filter(_.names(host))
           if recordOf(host).contains(record) && !namers.exists(_.recordsPath(host, path)) then
-            val names = namers.map(_.provider)
+            val names = namers.map(_.preset)
             findings += s"$host $method $path (${same.size}): ${names.mkString(" and ")} " +
               s"${if names.size == 1 then "names" else "name"} no such path"
       val called = own.map(line => (line.host, pathOf(line.target.get)))

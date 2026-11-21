@@ -1156,7 +1156,7 @@ object AgentSandboxLauncher:
    * - `--egress-check` sends no credential, so it reads no `--egress-cred`.
    */
   val ResetReads: Set[String] = Set(PersistentVolumeOption)
-  val EgressEffectiveReads: Set[String] = Set("--egress", ModelProviderOption, "--egress-cred", ProxyImageOption)
+  val EgressEffectiveReads: Set[String] = Set("--egress", PresetOption, "--egress-cred", ProxyImageOption)
   val EgressCheckReads: Set[String] = EgressEffectiveReads - "--egress-cred"
 
   /**
@@ -1265,7 +1265,7 @@ object AgentSandboxLauncher:
         import options.parsed
         requirePodman(currentOs)
         egressEffective(
-          currentOs, parsed.egressProfile, parsed.modelProviders, parsed.proxyImage, rest, parsed.credentialBindings,
+          currentOs, parsed.egressProfile, parsed.presets, parsed.proxyImage, rest, parsed.credentialBindings,
         )
 
       case Some(("--egress-check", operands)) =>
@@ -1277,7 +1277,7 @@ object AgentSandboxLauncher:
         options.fileLines().foreach(System.err.println)
         import options.parsed
         requirePodman(currentOs)
-        egressCheck(currentOs, parsed.egressProfile, parsed.modelProviders, parsed.proxyImage, host, operands.tail)
+        egressCheck(currentOs, parsed.egressProfile, parsed.presets, parsed.proxyImage, host, operands.tail)
 
       // Reaching this case means that CommandLine.ManagementActions and this match drifted.
       case Some((action, _)) => fail(s"error: unhandled action $action")
@@ -1448,7 +1448,7 @@ object AgentSandboxLauncher:
     fileRulesInForce: Boolean,
     fileRulesText: String,
     readOnlyFileRules: Option[FileRules.Resolved],
-    provider: Option[String],
+    presets: Option[String],
     rulesetCacheDir: Path,
     rulesetText: String,
     rulesetWarnings: String,
@@ -1798,7 +1798,7 @@ object AgentSandboxLauncher:
     Set(
       Some("--workspace"),
       Some("--egress"),
-      Some(ModelProviderOption),
+      Some(PresetOption),
       Option.when(parsed.env.nonEmpty)("--env"),
       Option.when(settings.credentials.nonEmpty)("--egress-cred"),
       Option.when(settings.awsCredential.nonEmpty)(AwsCredential.OptionName),
@@ -2245,10 +2245,10 @@ object AgentSandboxLauncher:
       resolveFileRules(podman, os, workspaceId, mountPath, fileRulesText),
     )
 
-    // The providers that the launch selects (EgressRules.selectedProvider), and the one warning that the launcher
+    // The presets that the launch selects (EgressRules.launchPresets), and the one warning that the launcher
     // prints itself.
-    val provider = selectedProvider(parsed.modelProviders, command.headOption, egressProfile).fold(fail(_), identity)
-    if provider.isEmpty then noProviderLine(command.headOption.orElse(Some("bash")), egressProfile).foreach(warn)
+    val presets = launchPresets(parsed.presets, command.headOption, egressProfile).fold(fail(_), identity)
+    if presets.isEmpty then noPresetLine(command.headOption.orElse(Some("bash")), egressProfile).foreach(warn)
 
     // The launch validates the rules before anything is created. Invalid rules would otherwise appear as "could not
     // determine the egress proxy's address" after the --rm proxy died, with the reason buried in the proxy's log.
@@ -2264,18 +2264,18 @@ object AgentSandboxLauncher:
     val resolvedWarningsFile = rulesetCacheDir.resolve("resolved.warnings")
     // The stamp covers everything that the dry run reads:
     // - the image;
-    // - the selected options: the profile, and the provider variable's value as the proxy receives it, so no selection
+    // - the selected options: the profile, and the preset variable's value as the proxy receives it, so no selection
     //   and a value that the proxy would refuse never share a stamp;
     // - the files, hashed into the stamp's one line because they are multi-part.
     // The stamp is the first line of each cached file rather than a file of its own, and a hit needs both files to
     // hold the stamp. Concurrent launches of one workspace under different session options write here without a lock,
     // and a stamp beside the content could end up describing the other launch's content (FileHelper.stampedEntry).
     val rulesetStamp =
-      s"$proxyImageId $egressProfile ${provider.getOrElse("")} " +
+      s"$proxyImageId $egressProfile ${presets.getOrElse("")} " +
         sha256Hex(ruleFiles.map((name, text) => s"$name: $text").mkString("\n"))
 
     // The launch caches the dry run's warnings beside the hosts, so every launch reports an idle denial or an
-    // unreachable provider, not only the launch that missed the cache.
+    // unreachable preset, not only the launch that missed the cache.
     // - stampedEntry gives back exactly what was cached, with the trailing newline removed, so a hit and a miss yield
     //   one string.
     // - The hosts text is hashed into the agent instructions' stamp. Two spellings of the same ruleset would make every
@@ -2287,7 +2287,7 @@ object AgentSandboxLauncher:
       cachedRuleset match
         case (Some(hosts), Some(warnings)) => (hosts, warnings)
         case _ =>
-          val resolved = resolvedRuleset(podman, proxyImageId, egressProfile, provider, ruleFiles)
+          val resolved = resolvedRuleset(podman, proxyImageId, egressProfile, presets, ruleFiles)
           if !resolved.ok then
             fail(rulesetRefusal(resolved.err))
           val warnings = resolved.err.linesIterator.filter(_.startsWith("warning:")).mkString("\n")
@@ -2302,8 +2302,8 @@ object AgentSandboxLauncher:
     // starts.
     val egressLine = egressBanner(
       rulesetText, settings.options.from("--egress", os),
-      settings.options.providersFrom(provider.toVector.flatMap(_.split(",")), os),
-      providersFromFile = settings.options.fileValues(ModelProviderOption).toSet,
+      settings.options.presetsFrom(presets.toVector.flatMap(_.split(",")), os),
+      presetsFromFile = settings.options.fileValues(PresetOption).toSet,
       profileFrom = settings.options.egressProfileSource,
     ).fold(fail(_), identity)
 
@@ -2315,7 +2315,7 @@ object AgentSandboxLauncher:
     ).fold(fail(_), identity)
     val sessionCredentials = EgressCredentials.bindingsFor(credentials, inspectedHosts.toSet)
     LaunchRules(
-      ruleFiles, workspaceFileRules, fileRuleLines, fileRulesInForce, fileRulesText, readOnlyFileRules, provider,
+      ruleFiles, workspaceFileRules, fileRuleLines, fileRulesInForce, fileRulesText, readOnlyFileRules, presets,
       rulesetCacheDir, rulesetText, rulesetWarnings, inspectedHosts, egressLine, sessionCredentials,
     )
 
@@ -2385,7 +2385,7 @@ object AgentSandboxLauncher:
     import settings.{image, runOnHost}
     import workspace.{claudePlugins, mountPath, workspaceId, workspaceSlug, selinuxEnforcing}
     import images.{imageEnv, imageId, proxyImageId}
-    import rules.{inspectedHosts, provider, ruleFiles, rulesetCacheDir, rulesetText, sessionCredentials}
+    import rules.{inspectedHosts, presets, ruleFiles, rulesetCacheDir, rulesetText, sessionCredentials}
     import names.{egressNetwork, proxyContainer, sandboxNetwork}
     import git.gitInstruction
     // -----------------------------------------------------------------------
@@ -2419,7 +2419,7 @@ object AgentSandboxLauncher:
     // LaunchMessages.agentDocumentStamp keys the cached assembly.
     val agentDocFile = rulesetCacheDir.resolve("agents.md")
     val agentDocStampFile = rulesetCacheDir.resolve("agents.stamp")
-    // The profile and provider need no stamp input of their own, because the resolved text's first line names both.
+    // The profile and preset need no stamp input of their own, because the resolved text's first line names both.
     val agentDocStamp = agentDocumentStamp(
       imageId, parsed.workspaceSettings.spelled, rulesetText, runOnHost, gitInstruction, parsed.credentialBindings,
     )
@@ -2634,7 +2634,7 @@ object AgentSandboxLauncher:
             "--pids-limit=512",
             "--http-proxy=false",
             UidGidMapping,
-          ) ++ rulesetEnvArgs(egressProfile, provider, ruleFiles) ++ upstreamProxyArgs(env)
+          ) ++ rulesetEnvArgs(egressProfile, presets, ruleFiles) ++ upstreamProxyArgs(env)
           ++ proxyCredentialArgs(sessionCredentials)
           ++ proxyTls ++ proxyLogArgs(hostLogFile, selinuxEnforcing) ++ Vector(proxyImageId)*
       )

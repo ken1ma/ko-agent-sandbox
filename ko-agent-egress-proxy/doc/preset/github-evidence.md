@@ -1,6 +1,6 @@
-# Evidence for model-provider/github
+# Evidence for preset/github
 
-[The defaults file](../../app/src/main/resources/defaults/model-provider/github) inspects
+[The defaults file](../../app/src/main/resources/defaults/preset/github) inspects
 Copilot CLI's hosts on this evidence.
 [`doc/agent-measurement.md`](../../../doc/agent-measurement.md) says how a client is measured,
 and how much a report establishes.
@@ -48,7 +48,7 @@ Signed in on an individual plan, under `deny-unless-allowed`.
 - Modes: `copilot -p` with a shell call and a subagent that makes its own shell call;
   `copilot --resume -p` with a shell call; `copilot -p` with a read through the built-in GitHub MCP
   server; the interactive TUI in this repository, with three turns and a compaction, then `/login`
-  and a message; the TUI with a turn under `deny-unless-model`.
+  and a message; the TUI with a turn under `deny-unless-selected`.
 - Within each sign-in, every request to the plan host and `api.github.com` carried the same
   credential index: the token that `api.github.com` accepts also reaches the model host. The token
   from `/login` shows as a new index. No mode called the token exchange that the defaults allow.
@@ -59,7 +59,7 @@ Signed in on an individual plan, under `deny-unless-allowed`.
 - `/logout` fails in the sandbox before any request: the client deletes the token through the
   Secret Service, and the container has no D-Bus session ("Failed to connect to address
   `unix:path=/run/user/<uid>/bus`").
-- Under `deny-unless-model` with only the token exchange granted on `api.github.com`, the refused
+- Under `deny-unless-selected` with only the token exchange granted on `api.github.com`, the refused
   `/copilot_internal/user` left every message refused: "Authentication token found but could not be
   validated". With the defaults' three reads, the turn completed, and `api.github.com` refused the
   TUI's repository reads, its release check and `/graphql`.

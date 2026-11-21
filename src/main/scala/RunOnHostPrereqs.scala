@@ -1145,9 +1145,9 @@ object RunOnHostPrereqs:
 
   /**
    * The program's rule file grammar: `allow https://<host>/ read` lines and `#` comments, and nothing else. The
-   * grammar has no other grant, no path, no provider and no deny.
+   * grammar has no other grant, no path, no preset and no deny.
    *
-   *   - The proxy's full grammar would let one `allow model-provider` line expand into endpoints that are no artifact
+   *   - The proxy's full grammar would let one `allow preset` line expand into endpoints that are no artifact
    *     repository. A `tunnel` or `method=` word would let a host command write to a host.
    *   - Anything outside the subset is refused here, never passed through for the proxy to interpret.
    *   - The proxy's parser reads each line, so the hosts come back in the proxy's spelling, and two spellings of one

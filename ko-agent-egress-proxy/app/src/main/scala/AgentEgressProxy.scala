@@ -197,7 +197,7 @@ object AgentEgressProxy:
         catch case ex: IOException => println(s"upstream tunnel: failed: ${ex.getMessage}")
 
   def configuredRuleset(read: String => Option[String] = variable => Option(System.getenv(variable))): ResolvedEgress =
-    resolveRuleset(read(ProfileVariable), read(ModelProviderVariable), read(RuleVariable))
+    resolveRuleset(read(ProfileVariable), read(PresetVariable), read(RuleVariable))
 
   /**
    * EGRESS_BIND is the listen address: `<ip-literal>:<port>`, IPv6 in brackets, port 0 for an ephemeral port read

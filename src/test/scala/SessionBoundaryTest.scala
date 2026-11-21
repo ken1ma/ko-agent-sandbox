@@ -397,7 +397,7 @@ class SessionBoundaryTest extends munit.FunSuite:
     val allowed = run("ko-sandbox-egress-check", "api.github.com")
     assertEquals(allowed.exit, 0, allowed.err)
     assert(allowed.text.contains("HEAD / -> HTTP/1.1 "), allowed.text)
-    // This check needs a host granted only below /, when the session's providers list one. The proxy refuses the
+    // This check needs a host granted only below /, when the session's presets list one. The proxy refuses the
     // HEAD / inside the tunnel, and the check reports that answer as a refusal.
     val grants = raw"allow https://([^/\s]+)(/\S*)".r
       .findAllMatchIn(env("KO_AGENT_SANDBOX_EGRESS_RULESET").getOrElse(""))

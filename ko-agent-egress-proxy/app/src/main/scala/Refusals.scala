@@ -57,27 +57,27 @@ case class Refusal(
 object RefusalAdvice:
   /** The step depends on why the host is refused.
     *
-    * - A host that only unselected providers' rules name needs one of those providers, under either profile that
-    *   admits providers. The rule file's `allow model-provider` line counts under deny-unless-allowed alone.
+    * - A host that only unselected presets' rules name needs one of those presets, under either profile that
+    *   admits presets. The rule file's `allow preset` line counts under deny-unless-allowed alone.
     * - The rule file's allow lines count under deny-unless-allowed alone (resolveRuleset). So under deny-all or
-    *   deny-unless-model, the step is a relaunch, named as necessary and never as sufficient. This session's
+    *   deny-unless-selected, the step is a relaunch, named as necessary and never as sufficient. This session's
     *   resolution says nothing about what that profile would apply from the workspace's file, a denial of this
     *   very host included.
-    * - Under the default profile, a defaults host that a selected provider or the catalog names reaches this refusal
+    * - Under the default profile, a defaults host that a selected preset or the catalog names reaches this refusal
     *   only through `deny defaults`, so the step names `deny defaults`. A host that a deny line emptied is refused as
     *   denied instead, and that refusal names the line. */
   def hostNotAllowed(host: String, profile: String, selected: Seq[String]): String =
     val default = RulesetHelper.DefaultProfile
     val defaults = RulesetHelper.DefaultHosts.contains(host)
     val addition = s"'${RulesetHelper.hostReadLine(host)}' in ${RulesetHelper.WorkspaceRuleFile}"
-    val providers = RulesetHelper.providersAlone(host)
-    val unselected = providers.nonEmpty && !providers.exists(selected.contains)
+    val presets = RulesetHelper.presetsAlone(host)
+    val unselected = presets.nonEmpty && !presets.exists(selected.contains)
     if unselected && profile != RulesetHelper.DenyAll then
-      val names = providers.mkString(" or ")
-      val options = providers.map(name => s"--model-provider=$name").mkString(" or ")
-      val lines = providers.map(name => s"'allow model-provider $name'").mkString(" or ")
+      val names = presets.mkString(" or ")
+      val options = presets.map(name => s"--egress-preset=$name").mkString(" or ")
+      val lines = presets.map(name => s"'allow preset $name'").mkString(" or ")
       val ruleFile = RulesetHelper.WorkspaceRuleFile
-      s"Only the $names model provider's rules allow it, and this launch does not select it. Ask the user to " +
+      s"Only the $names preset's rules allow it, and this launch does not select it. Ask the user to " +
         (if profile == default then s"relaunch with $options, or to add $lines to $ruleFile on the host."
          else s"relaunch with $options.")
     else if profile == default then

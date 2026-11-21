@@ -125,8 +125,8 @@ The launcher:
   stays resident and waits for podman (`SandboxLifecycle.handOver`).
 - Every launch line goes to stderr, as do the entrypoint's warnings. The entrypoint's start pause
   needs a terminal on stdin.
-- Under egress, the command's first word and `--model-provider` select the model providers that a
-  launch admits (`EgressRules.selectedProvider`). `copilot` is recognized, and `opencode` is refused
+- Under egress, the command's first word and `--egress-preset` select the presets that a
+  launch admits (`EgressRules.launchPresets`). `copilot` is recognized, and `opencode` is refused
   without the option.
 - No host process accepts a connection from the sandbox: the clipboard relay and the runner read
   FIFOs through `podman exec` (SECURITY.md, "Clipboard" and "Run on host"). The listeners that
@@ -431,19 +431,19 @@ Step 4 is built only when steps 1 to 3 pass. Step 4's shape, to be settled then:
 
 `--protocol` selects the transport, the token and the filter; the command selects the host.
 
-The providers that the launch's egress admits come from `--model-provider`:
+The presets that the launch's egress admits come from `--egress-preset`:
 
-- `EgressRules.AgentProviders` maps the agent commands to their providers, and `code` is not among
+- `EgressRules.AgentPresets` maps the agent commands to their presets, and `code` is not among
   them.
-- A launch of `code agent host` without the option therefore selects no provider. That selection
-  allows no host under `deny-unless-model`, and the catalog alone under the default profile
+- A launch of `code agent host` without the option therefore selects no preset. That selection
+  allows no host under `deny-unless-selected`, and the catalog alone under the default profile
   (egress-proxy.md, "Choosing an egress profile").
 - Neither the command nor the harness could determine the provider: the Claude harness offers
   Anthropic-native and Copilot-routed models, and switches between them within a session.
 - The launch therefore names the permitted provider route or routes with the option. A harness's
   models on any other route fail at the proxy.
-- This step settles whether to refuse `code agent host` without the option, as a providerless agent
-  (`EgressRules.ProviderlessAgents`).
+- This step settles whether to refuse `code agent host` without the option, as an agent without a
+  preset (`EgressRules.AgentsWithoutPreset`).
 - The destinations each route needs are step 3's measurement.
 
 The launcher prints the address and token for "Add Remote Agent Host...", or writes the
@@ -455,7 +455,7 @@ Acceptance: the hostile host of step 2 obtains nothing on the host through VS Co
 matrix:
 
 - `--workspace=read-only` and `live`;
-- `--egress=deny-unless-model`;
+- `--egress=deny-unless-selected`;
 - the protected `.git` entries and `.ko-agent-sandbox`;
 - `--run-on-host`;
 - every ending of step 3.
@@ -507,13 +507,13 @@ directory. The launcher takes the workspace from that directory, as for a termin
 
 - `--protocol` selects the transport and the relay's policy.
 - The command after `--` selects the agent. As for a terminal launch, the command also selects the
-  providers that its egress admits, beside those that `--model-provider` names.
+  presets that its egress admits, beside those that `--egress-preset` names.
 - The other session options keep their meaning.
 
 The launcher keeps no alias from an agent name to its ACP command line.
 
 - The user configures the agent's own documented invocation, and its first word selects the
-  provider.
+  preset.
 - An alias would be a second place to keep both.
 
 Sign-in stays a terminal launch: run the agent's documented sign-in from the README in an ordinary
@@ -646,7 +646,7 @@ The launch matrix through the relay:
 
 - `--workspace=read-only` and `live`; a protected `.git` entry and `.ko-agent-sandbox` refused as
   in a terminal session;
-- `--egress=deny-unless-model` with the backend's providers named by `--model-provider`;
+- `--egress=deny-unless-selected` with the backend's presets named by `--egress-preset`;
 - a credential from a terminal-launch sign-in, found by the protocol launch;
 - `--run-on-host` through the relay, with its provisioning offer declined without a terminal;
 - end of file on stdin ending the session, and the reaper removing the run;

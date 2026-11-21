@@ -188,13 +188,13 @@ object CommandLine:
   val DefaultSessionStartMode = "pause"
 
   /**
-   * `--model-provider=<names>` adds model providers to the provider that the command's name selects for the session's
-   * egress (EgressRules.selectedProvider).
+   * `--egress-preset=<names>` adds presets to the preset that the command's name selects for the session's
+   * egress (EgressRules.launchPresets).
    * - The option is repeatable, so the command line adds to the options file's names rather than replacing them.
-   * - The names go to the proxy as written. The proxy image defines the provider names, and the proxy's refusal of a
-   *   name it does not define fails the launch (EgressRules.rulesetRefusal). The launcher keeps no list of providers.
+   * - The names go to the proxy as written. The proxy image defines the preset names, and the proxy's refusal of a
+   *   name it does not define fails the launch (EgressRules.rulesetRefusal). The launcher keeps no list of presets.
    */
-  final val ModelProviderOption = "--model-provider"
+  final val PresetOption = "--egress-preset"
 
   final val PersistentVolumeOption = "--persistent-volume"
   final val ProxyImageOption = "--proxy-image"
@@ -285,7 +285,7 @@ object CommandLine:
     /** `--audio=off` is `Some(Vector.empty)`. */
     audio: Option[Vector[String]] = None,
     claudePlugins: Vector[String] = Vector.empty,
-    modelProviders: Vector[String] = Vector.empty,
+    presets: Vector[String] = Vector.empty,
     cacheOverlays: Vector[CacheOverlay.Request] = Vector.empty,
     nesting: Option[String] = None,
     sessionStart: Option[String] = None,
@@ -400,8 +400,8 @@ object CommandLine:
       directory => s"${ClaudePlugins.OptionName}=$directory",
     ),
     Repeated[String](
-      ModelProviderOption, _.modelProviders, (p, v) => p.copy(modelProviders = v), identity,
-      name => s"$ModelProviderOption=$name",
+      PresetOption, _.presets, (p, v) => p.copy(presets = v), identity,
+      name => s"$PresetOption=$name",
     ),
     Repeated[CacheOverlay.Request](
       CacheOverlay.OptionName, _.cacheOverlays, (p, v) => p.copy(cacheOverlays = v), _.kind.name, _.spelled,
@@ -473,7 +473,7 @@ object CommandLine:
   /** The options that take a value, with what the value is. Each option is refused when spelled without its `=`. */
   val ValuedOptions: Map[String, String] = Map(
     "--workspace" -> "read-only|live|bpf|fuse|unix-socket|no-unix-socket[,...]", "--egress" -> "<profile>",
-    ModelProviderOption -> "<names>",
+    PresetOption -> "<names>",
     "--clipboard" -> "<mode>", AudioOption -> "off|<devices>", "--nesting" -> "none|user-namespace|same-uid",
     "--session-start" -> "pause|immediate", "--memory" -> "<size>", PersistentVolumeOption -> "<name>",
     "--image" -> "<reference>", ProxyImageOption -> "<reference>", "--env" -> "<name>[=<value>]",
@@ -483,7 +483,7 @@ object CommandLine:
 
   private val SpelledOptions: String =
     Vector(
-      "--workspace", "--egress", ModelProviderOption, "--clipboard", AudioOption, "--nesting", "--session-start",
+      "--workspace", "--egress", PresetOption, "--clipboard", AudioOption, "--nesting", "--session-start",
       "--memory", PersistentVolumeOption, "--image", ProxyImageOption, "--env",
     ).map(option => s"$option=${ValuedOptions(option)}").mkString(", ") +
       s", ${AwsCredential.OptionName}[=<profile>], --egress-cred=<name>@<host>, --run-on-host=<programs>, " +
@@ -595,17 +595,17 @@ object CommandLine:
                 else update(parsed.copy(cacheOverlays = parsed.cacheOverlays :+ request))
           },
         () =>
-          valueOf(ModelProviderOption).map {
-            case "" => drop(ModelProviderOption)(_.copy(modelProviders = Vector.empty))
+          valueOf(PresetOption).map {
+            case "" => drop(PresetOption)(_.copy(presets = Vector.empty))
             case spelled =>
               val names = spelled.split(",", -1).toVector
-              val selected = parsed.modelProviders ++ names
+              val selected = parsed.presets ++ names
               if names.contains("") then
-                Left(s"error: $ModelProviderOption=$spelled; the value is provider names separated by commas")
+                Left(s"error: $PresetOption=$spelled; the value is preset names separated by commas")
               else
                 selected.diff(selected.distinct).headOption match
-                  case Some(name) => Left(s"error: $ModelProviderOption=$name is given twice")
-                  case None       => update(parsed.copy(modelProviders = selected))
+                  case Some(name) => Left(s"error: $PresetOption=$name is given twice")
+                  case None       => update(parsed.copy(presets = selected))
           },
         () =>
           valueOf("--env").map {

@@ -99,12 +99,12 @@ class EgressSessionTest extends munit.FunSuite:
 
   private val OriginAttempts = 6
 
-  private def withSession(rule: Option[String], providers: Option[String] = None)(body: Session => Unit): Unit =
+  private def withSession(rule: Option[String], presets: Option[String] = None)(body: Session => Unit): Unit =
     val workspace = scratchWorkspace()
     var live: Option[Session] = None
     try
       ruleFile(workspace, rule)
-      val options = Vector("--egress=deny-unless-allowed") ++ providers.map(names => s"--model-provider=$names")
+      val options = Vector("--egress=deny-unless-allowed") ++ presets.map(names => s"--egress-preset=$names")
       val session = launchWith(workspace, workspace.resolve("session.log"), options)
       live = Some(session)
       body(session)
@@ -251,7 +251,7 @@ class EgressSessionTest extends munit.FunSuite:
     //         Params={"Bucket": "YOUR-BUCKET", "Key": "ko-agent-sandbox-probe"}, ExpiresIn=1800))')" \
     //         sbt --server "testWithPodman *EgressSessionTest"
     //
-    // - `boto3[crt]`: the credential provider behind `aws login` needs the CRT extra.
+    // - `boto3[crt]`: the credential preset behind `aws login` needs the CRT extra.
     // - s3v4: boto3 still generates deprecated SigV2 URLs in older regions.
     // - `--server`: a resident sbt server would keep the environment it started with, and would skip this
     //   test as if the variable were never set.
@@ -298,8 +298,8 @@ class EgressSessionTest extends munit.FunSuite:
   test("a deny defaults lockdown removes the defaults and still signs in"):
     requireTestWithPodman()
 
-    withSession(Some("deny defaults\nallow model-provider anthropic\n")): session =>
-      // Any status means that the provider answered, which is what "still signs in" means. Both hosts are inspected,
+    withSession(Some("deny defaults\nallow preset anthropic\n")): session =>
+      // Any status means that the preset answered, which is what "still signs in" means. Both hosts are inspected,
       // so curl trusted the leaf of each.
       Vector("https://platform.claude.com/", "https://api.anthropic.com/").foreach: url =>
         assert(curl(session, "-o", "/dev/null", url).ok, s"$url is unreachable under the lockdown")
@@ -322,7 +322,7 @@ class EgressSessionTest extends munit.FunSuite:
       exec(session, "openssl", "x509", "-noout", "-subject", "-in", "/etc/ko-agent-sandbox/egress-proxy-ca.crt")
         .text.stripPrefix("subject=").trim
     def launched(rule: Option[String])(body: Session => Unit): Unit =
-      withSession(rule, providers = Some("anthropic,openai,google,aws,github"))(body)
+      withSession(rule, presets = Some("anthropic,openai,google,aws,github"))(body)
 
     // The leaf names the host through the launcher's reading of the ruleset (EgressRules.inspectedHostsOf).
     launched(None): session =>
@@ -340,7 +340,7 @@ class EgressSessionTest extends munit.FunSuite:
     // The way back to the tunnel: deny defaults, then the whole ruleset (egress-proxy.md, "The rule file").
     launched(
       Some(
-        "deny defaults\nallow model-provider anthropic\ndeny https://api.anthropic.com/\n" +
+        "deny defaults\nallow preset anthropic\ndeny https://api.anthropic.com/\n" +
           "allow https://api.anthropic.com/ tunnel\n",
       ),
     ): session =>
@@ -350,21 +350,21 @@ class EgressSessionTest extends munit.FunSuite:
       // platform.claude.com stays inspected.
       assert(Files.readString(session.log).contains("1 inspected, 1 tunnel"), Files.readString(session.log))
 
-  test("--model-provider selects the providers a session reaches, over the catalog"):
+  test("--egress-preset selects the presets a session reaches, over the catalog"):
     requireTestWithPodman()
 
-    // The suite's command, `sleep`, selects no provider, so the option alone names one. The launcher
+    // The suite's command, `sleep`, selects no preset, so the option alone names one. The launcher
     // passes the option's value to the image as written, and the image resolves the value.
     val workspace = scratchWorkspace()
     var live: Option[Session] = None
     try
-      val session = launchWith(workspace, workspace.resolve("session.log"), Vector("--model-provider=openai"))
+      val session = launchWith(workspace, workspace.resolve("session.log"), Vector("--egress-preset=openai"))
       live = Some(session)
       assert(
         curl(session, "-o", "/dev/null", "https://api.openai.com/").ok,
-        "the selected provider's endpoint is unreachable",
+        "the selected preset's endpoint is unreachable",
       )
-      refusedAtConnect(session, "https://api.anthropic.com/", "an unselected provider's endpoint was admitted")
+      refusedAtConnect(session, "https://api.anthropic.com/", "an unselected preset's endpoint was admitted")
       assertEquals(status(session, "https://github.com/"), "200", "the catalog's forge read is lost")
     finally
       live.foreach(stop)
@@ -377,9 +377,9 @@ class EgressSessionTest extends munit.FunSuite:
     val refused = scratchWorkspace()
     try
       def refusal(value: String): Unit =
-        val (exit, output) = launchOutcome(refused, refused.resolve("launch.log"), Vector(s"--model-provider=$value"))
+        val (exit, output) = launchOutcome(refused, refused.resolve("launch.log"), Vector(s"--egress-preset=$value"))
         assertNotEquals(exit, 0, output)
-        assert(output.contains("error: --model-provider is not valid"), output)
+        assert(output.contains("error: --egress-preset is not valid"), output)
         assert(output.contains(s"'$value'"), output)
       refusal("meta")
       val (warmed, output) = launchOutcome(refused, refused.resolve("launch.log"))

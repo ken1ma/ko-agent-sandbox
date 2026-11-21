@@ -252,13 +252,13 @@ case class OptionsInForce(
     else if parsed.egress.isDefined then HostCommands.ValueSource.CommandLine
     else HostCommands.ValueSource.Default
 
-  /** What the egress line adds after the `selected` providers: `from` when the file supplied every selected provider,
-    * else the provider names that the file supplied. A provider that the command or the command line added is thus
+  /** What the egress line adds after the `selected` presets: `from` when the file supplied every selected preset,
+    * else the preset names that the file supplied. A preset that the command or the command line added is thus
     * not credited to the file. */
-  def providersFrom(
+  def presetsFrom(
     selected: Vector[String], os: HostCommands.Os = HostCommands.currentOs, color: Boolean = HostCommands.colorStderr,
   ): String =
-    val fromFile = fileValues(CommandLine.ModelProviderOption)
+    val fromFile = fileValues(CommandLine.PresetOption)
     file.filter(_ => fromFile.nonEmpty).fold(""): path =>
       if selected.forall(fromFile.contains) then OptionsFile.fromFile(path, os, color)
       else OptionsFile.valuesFromFile(fromFile, path, os, color)

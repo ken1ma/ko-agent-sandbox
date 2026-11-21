@@ -45,6 +45,6 @@ allow https://lh3.googleusercontent.com/            read
 # https://github.com/google-antigravity/antigravity-cli/blob/main/CHANGELOG.md
 
 # play.googleapis.com serves telemetry and experiment polling. The host is absent, as ab.chatgpt.com is absent from
-# model-provider/openai.
+# preset/openai.
 
-# ko-agent-egress-proxy/doc/model-provider/google-evidence.md holds the measurements behind these lines.
+# ko-agent-egress-proxy/doc/preset/google-evidence.md holds the measurements behind these lines.

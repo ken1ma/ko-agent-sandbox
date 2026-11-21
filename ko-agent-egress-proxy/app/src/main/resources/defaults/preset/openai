@@ -6,4 +6,4 @@ allow https://auth.openai.com/ read method=POST,PUT,PATCH,DELETE  # issues the d
 # ab.chatgpt.com serves A/B configuration and telemetry. The host is absent: codex works without it, and a refusal
 # produces a log line.
 
-# ko-agent-egress-proxy/doc/model-provider/openai-evidence.md holds the measurements behind these lines.
+# ko-agent-egress-proxy/doc/preset/openai-evidence.md holds the measurements behind these lines.

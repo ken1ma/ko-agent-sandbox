@@ -98,24 +98,24 @@ object EgressRules:
    *   writes them into this session's own log.
    * - A thousand characters of hostnames in the banner make a line that people learn to skip. A ruleset
    *   that nobody expected then goes unnoticed.
-   * - The method refuses a dry run that lacks the profile line, the summary's counts, or the provider
+   * - The method refuses a dry run that lacks the profile line, the summary's counts, or the preset
    *   field that every profile but deny-all carries (RulesetHelper.rulesetLines). No launch therefore
    *   starts without this line stating its egress.
    *
    * @param profileSource what the line adds after the profile when the options file supplied `--egress`
-   *   (OptionsInForce.from). `providerSource` is what the line adds after the provider selection when
-   *   the options file supplied provider names (OptionsInForce.providersFrom).
-   * @param color tints the profile in the shade of `profileFrom` (HostCommands.stated), and the provider selection as
-   *   chosen, in the file's shade for each provider in `providersFromFile` (HostCommands.chosen). The command's own
-   *   provider counts as the command line's, since the user typed the command. `no provider` is a default: no source
+   *   (OptionsInForce.from). `presetSource` is what the line adds after the preset selection when
+   *   the options file supplied preset names (OptionsInForce.presetsFrom).
+   * @param color tints the profile in the shade of `profileFrom` (HostCommands.stated), and the preset selection as
+   *   chosen, in the file's shade for each preset in `presetsFromFile` (HostCommands.chosen). The command's own
+   *   preset counts as the command line's, since the user typed the command. `no preset` is a default: no source
    *   named one.
    */
   def egressBanner(
     resolved: String,
     profileSource: String = "",
-    providerSource: String = "",
+    presetSource: String = "",
     color: Boolean = colorStderr,
-    providersFromFile: Set[String] = Set.empty,
+    presetsFromFile: Set[String] = Set.empty,
     profileFrom: ValueSource,
   ): Either[String, String] =
     val lines = resolved.linesIterator.toVector
@@ -132,18 +132,18 @@ object EgressRules:
     for
       head <- lines.headOption.filter(_.startsWith(RulesetHelper.ProfileLineHead)).toRight(NoProfileLine)
       profile = head.stripPrefix(RulesetHelper.ProfileLineHead).takeWhile(_ != ';')
-      provider = head.split(RulesetHelper.ModelProviderLabel, 2).lift(1).map(_.trim).filter(_.nonEmpty)
-      _ <- Either.cond(profile == RulesetHelper.DenyAll || provider.nonEmpty, (), noProviderField(profile))
+      presets = head.split(RulesetHelper.PresetLabel, 2).lift(1).map(_.trim).filter(_.nonEmpty)
+      _ <- Either.cond(profile == RulesetHelper.DenyAll || presets.nonEmpty, (), noPresetField(profile))
       inspected <- counts.get(RulesetHelper.InspectedHostsField).toRight(NoSummaryCounts)
       tunnel <- counts.get(RulesetHelper.TunnelHostsField).toRight(NoSummaryCounts)
     yield
-      def named(name: String) = chosen(name, color, providersFromFile(name))
-      val selected = provider.map:
-        case "none"                       => s"${defaulted("no provider", color)} selected"
-        case names if names.contains(",") => s"model providers ${names.split(",").map(named).mkString(", ")}"
-        case name                         => s"model provider ${named(name)}"
+      def named(name: String) = chosen(name, color, presetsFromFile(name))
+      val selected = presets.map:
+        case "none"                       => s"${defaulted("no preset", color)} selected"
+        case names if names.contains(",") => s"presets ${names.split(",").map(named).mkString(", ")}"
+        case name                         => s"preset ${named(name)}"
       val profileLine = s"egress: ${stated(profile, profileFrom, color)}$profileSource"
-      (Vector(profileLine) ++ selected.map(_ + providerSource)
+      (Vector(profileLine) ++ selected.map(_ + presetSource)
         :+ s"$inspected inspected, $tunnel tunnel")
         .mkString("; ")
 
@@ -182,16 +182,16 @@ object EgressRules:
     SandboxWorkspace.readBoundaryRuleFiles(egressDir, RuleFiles.map(_(0)), "doc/egress-proxy.md", normalizeRuleText)
 
   /**
-   * The model provider of each agent command, keyed by the basename of the directly launched command.
+   * The preset of each agent command, keyed by the basename of the directly launched command.
    *
    * - The launcher classifies only that basename. The launcher does not inspect a script's arguments
    *   or guess what the script may later execute.
-   * - A script that starts an agent therefore selects no provider, and gets the startup warning instead
-   *   of a guessed grant, unless the launch names its providers (selectedProvider).
-   * - The provider names are the proxy's (RulesetHelper.ModelProviders). The proxy checks them, so this
-   *   file keeps no list of providers.
+   * - A script that starts an agent therefore selects no preset, and gets the startup warning instead
+   *   of a guessed grant, unless the launch names its presets (launchPresets).
+   * - The preset names are the proxy's (RulesetHelper.Presets). The proxy checks them, so this
+   *   file keeps no list of presets.
    */
-  val AgentProviders: Map[String, String] =
+  val AgentPresets: Map[String, String] =
     Map(
       "codex" -> "openai",
       "claude" -> "anthropic",
@@ -200,27 +200,27 @@ object EgressRules:
       "copilot" -> "github",
     )
 
-  /** The agents that run against any provider, so no classification can stand in for a choice. A launch
-    * of such an agent names its providers or is refused. */
-  val ProviderlessAgents: Set[String] = Set("opencode")
+  /** The agents that run against any model provider, so no classification can stand in for a choice. A launch
+    * of such an agent names its presets or is refused. */
+  val AgentsWithoutPreset: Set[String] = Set("opencode")
 
   private def commandName(command: Option[String]): Option[String] = command.map(_.split("[/\\\\]").last)
 
-  def commandProvider(command: Option[String]): Option[String] = commandName(command).flatMap(AgentProviders.get)
+  def commandPreset(command: Option[String]): Option[String] = commandName(command).flatMap(AgentPresets.get)
 
   /**
-   * The provider selection that a launch hands the proxy (RulesetHelper.selectedProviders): the
-   * command's classification, followed by the `--model-provider` names that the classification does
+   * The preset selection that a launch hands the proxy (RulesetHelper.selectedPresets): the
+   * command's classification, followed by the `--egress-preset` names that the classification does
    * not repeat. The proxy would refuse a repeated name as named twice.
    *
-   * - An options file's `--model-provider` applies to every agent. A selection that replaced the
-   *   classification would cut each other agent off from its own provider.
+   * - An options file's `--egress-preset` applies to every agent. A selection that replaced the
+   *   classification would cut each other agent off from its own preset.
    * - The method refuses the option under deny-all, where the option would select nothing.
-   * - Under the other profiles, the method refuses a providerless agent without the option. Every
-   *   other agent's launch selects a provider there, and the providerless agent's launch would
-   *   silently select none.
+   * - Under the other profiles, the method refuses a launch of an agent without a preset (AgentsWithoutPreset)
+   *   that lacks the option. Every other agent's launch selects a preset there, and such a launch would silently
+   *   select none.
    */
-  def selectedProvider(
+  def launchPresets(
     named: Vector[String],
     command: Option[String],
     profile: String,
@@ -228,35 +228,35 @@ object EgressRules:
     val name = commandName(command)
     if profile == RulesetHelper.DenyAll && named.nonEmpty then
       Left(
-        s"error: ${CommandLine.ModelProviderOption} selects no host under --egress=${RulesetHelper.DenyAll}; drop it",
+        s"error: ${CommandLine.PresetOption} selects no host under --egress=${RulesetHelper.DenyAll}; drop it",
       )
     else
-      val own = commandProvider(command)
+      val own = commandPreset(command)
       val selected = own.toVector ++ named.filterNot(own.contains)
       Option.when(selected.nonEmpty)(selected.mkString(",")) match
-        case None if profile != RulesetHelper.DenyAll && name.exists(ProviderlessAgents) =>
+        case None if profile != RulesetHelper.DenyAll && name.exists(AgentsWithoutPreset) =>
           Left(
-            s"error: ${name.get} has no fixed model provider; name the session's providers with " +
-              s"${CommandLine.ModelProviderOption}=<names>, separated by commas",
+            s"error: ${name.get} has no fixed model provider; name the session's presets with " +
+              s"${CommandLine.PresetOption}=<names>, separated by commas",
           )
         case selected => Right(selected)
 
-  /** The launch's warning that no provider is selected, under a profile where a provider could be. The
+  /** The launch's warning that no preset is selected, under a profile where a preset could be. The
     * proxy never sees the command or the option, so the warning cannot come from the proxy's resolution.
     * `command` is the command's first word; a launch without a command runs the image's default. */
-  def noProviderLine(command: Option[String], profile: String): Option[String] =
+  def noPresetLine(command: Option[String], profile: String): Option[String] =
     Option.when(profile != RulesetHelper.DenyAll):
       val subject = command.fold("no command is given")(name => s"'$name' is not a recognized agent command")
       val effect =
-        if profile == RulesetHelper.DenyUnlessModel then "allows no host"
+        if profile == RulesetHelper.DenyUnlessSelected then "allows no host"
         else "starts from the catalog alone; the workspace's rule file applies after it"
-      s"$subject and no ${CommandLine.ModelProviderOption} is given, so $profile selects no model provider and $effect"
+      s"$subject and no ${CommandLine.PresetOption} is given, so $profile selects no preset and $effect"
 
   /** The launch's failure when the dry run refuses. The proxy names the variable it refused, and the
     * launcher names the option or file that the variable carries. */
   def rulesetRefusal(err: String): String =
     val subject =
-      if err.contains(RulesetHelper.ModelProviderVariable) then s"${CommandLine.ModelProviderOption} is not valid"
+      if err.contains(RulesetHelper.PresetVariable) then s"${CommandLine.PresetOption} is not valid"
       else "this workspace's egress rules are not valid"
     s"error: $subject\n$err"
 
@@ -273,13 +273,13 @@ object EgressRules:
     podman: String,
     proxyImage: String,
     profile: String,
-    provider: Option[String],
+    presets: Option[String],
     ruleFiles: Vector[(String, String)],
     provenance: Boolean = false,
   ): Run =
     run(
       (Vector(podman, "run", "--rm", "--pull=never", "--network=none")
-        ++ rulesetEnvArgs(profile, provider, ruleFiles)
+        ++ rulesetEnvArgs(profile, presets, ruleFiles)
         ++ Vector(proxyImage, AgentEgressProxy.PrintRulesetFlag)
         ++ Option.when(provenance)(AgentEgressProxy.ProvenanceFlag))*
     )
@@ -303,16 +303,16 @@ object EgressRules:
     log.linesIterator.flatMap(agentsandbox.egress.LogHelper.unstamped)
       .find(_.startsWith(agentsandbox.egress.TransportHelper.TransportLineHead))
 
-  /** The --env arguments that pass the selected profile, provider and rule files to the proxy. The dry
+  /** The --env arguments that pass the selected profile, preset and rule files to the proxy. The dry
     * run and the real container get identical arguments, so the proxy enforces what the dry run vetted. */
   def rulesetEnvArgs(
     profile: String,
-    provider: Option[String],
+    presets: Option[String],
     ruleFiles: Vector[(String, String)],
   ): Vector[String] =
     Vector(
       s"--env=${RulesetHelper.ProfileVariable}=$profile",
-      s"--env=${RulesetHelper.ModelProviderVariable}=${provider.getOrElse("")}",
+      s"--env=${RulesetHelper.PresetVariable}=${presets.getOrElse("")}",
     ) ++ ruleFiles.map: (name, text) =>
       val variable = RuleFiles.find(_(0) == name).fold(fail(s"error: no rule file $name"))(_(1))
       s"--env=$variable=$text"
@@ -339,8 +339,8 @@ object EgressRules:
 
   private val OtherFormat = "An image built by another launcher version prints another format; rebuild with --build."
   private val NoProfileLine = s"error: the proxy image's --print-ruleset has no 'egress profile' line\n$OtherFormat"
-  private def noProviderField(profile: String): String =
-    s"error: the proxy image's --print-ruleset names no model provider under the $profile profile\n$OtherFormat"
+  private def noPresetField(profile: String): String =
+    s"error: the proxy image's --print-ruleset names no preset under the $profile profile\n$OtherFormat"
   private val NoSummaryCounts =
     s"error: the proxy image's --print-ruleset has no '${RulesetHelper.SummaryLineHead}' line with both host counts\n" +
       OtherFormat
@@ -415,7 +415,7 @@ object EgressRules:
       val command = List(podman, "logs") ++ extra ++ proxies
       sys.exit(if stepOk(command*) then 0 else 1)
 
-  /** The front half that the egress preflights share: this workspace's vetted rule files, the provider
+  /** The front half that the egress preflights share: this workspace's vetted rule files, the preset
     * that the given command selects, and the Id of the proxy image to consult. The proxy image is under
     * the same version lock as a launch (proxyImageLock). The method prints the command-selection notes
     * that a launch would print. `operands` is the action's optional `[--] [command [arguments...]]`,
@@ -423,7 +423,7 @@ object EgressRules:
   private def egressPreflight(
     os: Os,
     profile: String,
-    modelProviders: Vector[String],
+    presets: Vector[String],
     proxyImageOption: Option[String],
     operands: List[String],
   ): (String, String, Vector[(String, String)], Option[String]) =
@@ -448,14 +448,14 @@ object EgressRules:
     boundaryDirRefusal(boundaryDir).foreach(fail(_))
     val ruleFiles = readRuleFiles(boundaryDir.resolve("egress")).fold(fail(_), identity)
 
-    val provider = selectedProvider(modelProviders, command.headOption, profile).fold(fail(_), identity)
-    if provider.isEmpty then
-      noProviderLine(command.headOption, profile).foreach(line => System.err.println(s"egress: $line"))
+    val selection = launchPresets(presets, command.headOption, profile).fold(fail(_), identity)
+    if selection.isEmpty then
+      noPresetLine(command.headOption, profile).foreach(line => System.err.println(s"egress: $line"))
 
     if ruleFiles.nonEmpty then printRuleFiles(ruleFiles)
     else System.err.println("egress rules: no workspace rule file; the launcher-owned defaults")
 
-    (workspaceId, proxyImageId, ruleFiles, provider)
+    (workspaceId, proxyImageId, ruleFiles, selection)
 
   private def ruleFileSource(name: String): String = s"${RulesetHelper.WorkspaceRuleDirectory}/$name"
 
@@ -489,15 +489,15 @@ object EgressRules:
   def egressEffective(
     os: Os,
     profile: String,
-    modelProviders: Vector[String],
+    presets: Vector[String],
     proxyImage: Option[String],
     operands: List[String],
     bindings: Vector[CredentialBinding] = Vector.empty,
   ): Nothing =
-    val (workspaceId, proxyImageId, ruleFiles, provider) =
-      egressPreflight(os, profile, modelProviders, proxyImage, operands)
+    val (workspaceId, proxyImageId, ruleFiles, selection) =
+      egressPreflight(os, profile, presets, proxyImage, operands)
 
-    val resolved = resolvedRuleset(podman, proxyImageId, profile, provider, ruleFiles, provenance = true)
+    val resolved = resolvedRuleset(podman, proxyImageId, profile, selection, ruleFiles, provenance = true)
     System.out.write(resolved.out)
     System.out.flush()
     if !resolved.ok then
@@ -519,13 +519,13 @@ object EgressRules:
   def egressCheck(
     os: Os,
     profile: String,
-    modelProviders: Vector[String],
+    presets: Vector[String],
     proxyImage: Option[String],
     host: String,
     operands: List[String],
   ): Nothing =
-    val (workspaceId, proxyImageId, ruleFiles, provider) =
-      egressPreflight(os, profile, modelProviders, proxyImage, operands)
+    val (workspaceId, proxyImageId, ruleFiles, selection) =
+      egressPreflight(os, profile, presets, proxyImage, operands)
 
     val network = egressRunNetwork(workspaceId, newRunSuffix())
     createNetwork(network, internal = false)
@@ -533,7 +533,7 @@ object EgressRules:
       try
         run(
           (Vector(podman, "run", "--rm", "--pull=never", s"--network=$network")
-            ++ rulesetEnvArgs(profile, provider, ruleFiles) ++ upstreamProxyArgs(env)
+            ++ rulesetEnvArgs(profile, selection, ruleFiles) ++ upstreamProxyArgs(env)
             ++ Vector(proxyImageId, AgentEgressProxy.CheckHostFlag, host))*
         )
       finally

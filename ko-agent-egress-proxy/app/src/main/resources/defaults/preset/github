@@ -7,7 +7,7 @@ allow https://api.business.githubcopilot.com/   read method=POST,PUT,PATCH,DELET
 allow https://api.enterprise.githubcopilot.com/ read method=POST,PUT,PATCH,DELETE  # enterprise plan
 
 # The forge stays TLS-inspected here as in the catalog, and these rules grant no read of the forge. This file is what
-# deny-unless-model allows for copilot, and it must not allow git push or browsing the forge.
+# deny-unless-selected allows for copilot, and it must not allow git push or browsing the forge.
 # In Copilot CLI's device flow, the first endpoint issues the code that the agent prints. The CLI polls the second
 # endpoint for the token once the browser has approved the code.
 allow https://github.com/login/device/code             method=POST
@@ -19,4 +19,4 @@ allow https://api.github.com/copilot_internal/user                read
 allow https://api.github.com/copilot_internal/managed_settings    read
 allow https://api.github.com/copilot_internal/team_customizations read
 
-# ko-agent-egress-proxy/doc/model-provider/github-evidence.md holds the measurements behind these lines.
+# ko-agent-egress-proxy/doc/preset/github-evidence.md holds the measurements behind these lines.

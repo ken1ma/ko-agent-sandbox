@@ -128,8 +128,23 @@ spells out:
 - a few fixed grant words;
 - no pattern except the taking-away subtree;
 - no open vocabulary;
-- no profile per provider set: a launch selects its providers with `--model-provider`, over the
-  same three profiles.
+- no `--egress` profile for each combination of presets: the three profiles stay, and
+  `--egress-preset` selects the presets that `deny-unless-selected` and `deny-unless-allowed`
+  admit.
+  - Every preset holds a model provider's endpoints, so `deny-unless-selected` admits what the
+    selected providers' hosts serve, such as Copilot's forge writes through its MCP endpoint
+    (`defaults/preset/github`). A preset of any other service widens that profile, and is a
+    decision to record here first.
+  - A workspace defines no preset: `egress/` accepts only `rule`, and the proxy image fixes the
+    names (`RulesetHelper.Presets`).
+    - Under `deny-unless-allowed`, a workspace preset would only name lines that the rule file can
+      already hold.
+    - Under `deny-unless-selected`, `--egress-preset` would admit hosts that the repository chose.
+      The profile ignores the file's `allow` lines to refuse exactly that widening.
+    - The cost: each workspace's rule file repeats its host list, and a session that needs a host
+      beyond its presets uses `deny-unless-allowed` with `deny defaults`.
+    - Revisit with a preset directory that the host user owns beside the options file, never in
+      the workspace.
 
 The model is a small part of OpenBSD's policy languages, chosen as precedent, not as a
 compatibility target:
@@ -148,7 +163,7 @@ That history is why this grammar has textual order and no specificity precedence
 
 - A later root `deny` beats an earlier `/api/` allow of the same grant, however specific the path.
   A most-specific-wins rule would allow the request.
-- Provider rules follow the same ordering, regardless of where earlier grants came from
+- Preset rules follow the same ordering, regardless of where earlier grants came from
   (`egress-proxy.md`, "The rule file", defines their expansion).
 
 The lessons kept:
@@ -489,7 +504,7 @@ headers. Chosen instead: the `upgrade=websocket` grant, at a path that a line na
   as one line each. The defaults grant at a path, never at a root (`agent-measurement.md`,
   "Rules").
 - The Codex CLI's built-in provider opens a WebSocket to its model host, and falls back to HTTP
-  after the refusal (`ko-agent-egress-proxy/doc/model-provider/openai-evidence.md` has the
+  after the refusal (`ko-agent-egress-proxy/doc/preset/openai-evidence.md` has the
   measurement). Its hosts take no grant while the fallback works: with the grant, the log would
   show one line per connection in place of a line per request.
   - A `403` costs each new Codex process about seven seconds and seven refused upgrades before the
@@ -507,7 +522,7 @@ headers. Chosen instead: the `upgrade=websocket` grant, at a path that a line na
     `supports_websockets = false` either. The image would then select a provider for every user,
     and follow Codex's configuration schema across releases.
 - Copilot CLI opens a WebSocket at its plan host's `/responses`, and after the `403` sends the
-  turn over HTTP at once (`ko-agent-egress-proxy/doc/model-provider/github-evidence.md` has the
+  turn over HTTP at once (`ko-agent-egress-proxy/doc/preset/github-evidence.md` has the
   measurement). Its hosts take no grant, for Codex's reason above.
 - The binaries of the other installed agents hold no `wss://` literal for a model host.
   - `claude` holds one for its Remote Control bridge, `bridge.claudeusercontent.com`, which no
@@ -535,8 +550,8 @@ over an inspected connection (`agent-measurement.md`).
   calls are.
 
 Inspection reads no conversation for intent ("No DLP/entropy/LLM firewall"). Inspection refuses no
-foreign key either: refusing that key needs the session's own key, and so the brokered overlay
-(`TODO.md`, "Credential brokering", the `require-placeholder` item).
+foreign key either: refusing that key needs the session's own key, which a preset credential
+selected at launch supplies (`plan-preset-credential-proxy.md`).
 
 The costs, accepted:
 
@@ -544,15 +559,15 @@ The costs, accepted:
   plaintext, whether or not the launch selects a credential. No launch asks for consent, and the
   banner's `N inspected, M tunnel` counts are its only mention.
 - Returning a host to a tunnel takes a workspace's whole ruleset: `deny defaults` and a `tunnel`
-  line of its own (`egress-proxy.md`, "The rule file"). `deny-unless-model` ignores both lines, so
-  under that profile an inspected host has no way back. A client release that fails over
+  line of its own (`egress-proxy.md`, "The rule file"). `deny-unless-selected` ignores both lines,
+  so under that profile an inspected host has no way back. A client release that fails over
   inspection leaves the user no lighter way back.
 
 Not done:
 
 - Refusing paths on a model host, such as a Files API endpoint. Such a refusal is a per-release
   contract with each CLI ("Credential brokering at the egress proxy"), and a storage behavior added
-  at an allowed endpoint reopens the attack (`TODO.md`, the `require-placeholder` item).
+  at an allowed endpoint reopens the attack (`plan-preset-credential-proxy.md`).
 - Logging a credential's value, prefix or digest. The credential index tells a reader the one fact
   needed: that the credential changed.
 - Removing query values from the logged target. The URL is the message that an allowed `GET`
@@ -750,7 +765,6 @@ The binding:
   launcher asking the proxy's dry run:
   - The dry run mounts nothing by design.
   - A value handed to the dry run would be one more place holding the secret.
-  - `plan-provider-credential-proxy.md`'s management actions must validate before any run exists.
 
 The value travels by pipe and is held in memory alone (SECURITY.md, "Who holds a brokered value"):
 
@@ -779,6 +793,10 @@ Left out:
 - Brokering at a tunnel host, where no substitution can happen.
   - The launcher refuses such a binding, such as `AWS_BEARER_TOKEN_BEDROCK` at a workspace's
     `bedrock-runtime.<region>.amazonaws.com`.
+  - Terminating a tunnel host's TLS for a selected credential is left out too. A workspace's
+    `tunnel` line keeps the host out of the proxy's plaintext view ("No inspecting every allowed
+    host"), and a launch option would override that line where no reviewer of the rule file sees
+    it.
 - Brokering the agents' own logins:
   - Claude Code's login is an OAuth pair with local expiry bookkeeping and a refresh exchange. The
     proxy would mirror that lifecycle per release.
@@ -787,10 +805,15 @@ Left out:
   - The Codex CLI trusts the CA in `SSL_CERT_FILE`. The CLI's built-in provider opens a websocket
     first, which the proxy refuses on an inspected connection. Codex then falls back to HTTP, and
     its turns complete under a ChatGPT login and under an API key
-    (`ko-agent-egress-proxy/doc/model-provider/openai-evidence.md` records the measurement).
+    (`ko-agent-egress-proxy/doc/preset/openai-evidence.md` records the measurement).
+  - A host-side OAuth flow needs a public-client registration that the project owns. Reusing an
+    agent's client identity or copying its refresh token would impersonate that agent.
+  - A static subscription token is not such a login and is brokered: `claude setup-token`'s
+    one-year token and a Copilot personal access token have no refresh exchange to mirror
+    (`plan-preset-credential-proxy.md`).
   - Which credential may reach a model host is a rule that an inspected host could apply and a
-    tunnel cannot (SECURITY.md, "Exfiltration through allowed network traffic"). `TODO.md` has
-    that item ("Credential brokering").
+    tunnel cannot (SECURITY.md, "Exfiltration through allowed network traffic"). The same plan
+    applies it.
 - AWS SigV4 re-signing, which sandbox-runtime does. Every AWS login (`aws login`, `aws sso login`,
   a static key) ends in an access key that the client signs with and never sends. So no header
   carries a placeholder.
@@ -804,11 +827,17 @@ Left out:
     retyped at every login, and the launcher checks what the pipeline cannot: that the set expires.
   - A GCP or Azure resolver can follow on the same terms: one CLI command, forwarded by name,
     refused when what it resolves does not expire.
+- Storing a credential on the host across runs, and refreshing one during a run.
+  - Storage needs locks, published generations and cleanup on removal, and those are where Docker
+    Sandboxes fail: a removed credential was still injected after a restart (docker/sbx-releases
+    #492), and refresh raced across processes (#402). A per-run value needs none of these.
+  - Revisit when a session needs a token that expires before the run ends.
 - Rotation or revocation on exit:
   - The value is in no file for an exit to leave.
   - The issuer's own revocation covers a leak.
   - An automatic revoke needs a provider API call that the launcher does not make.
-- Copilot CLI's forge-credential sign-in: `plan-provider-credential-proxy.md`, "OAuth mechanisms".
+- Copilot CLI's `copilot login`. A personal access token in `COPILOT_GITHUB_TOKEN` takes its place
+  (`plan-preset-credential-proxy.md`).
 
 ### No gVisor or microVM isolation layer
 

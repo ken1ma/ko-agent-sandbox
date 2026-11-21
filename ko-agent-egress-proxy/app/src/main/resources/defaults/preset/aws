@@ -38,4 +38,4 @@ allow https://oidc.us-east-1.amazonaws.com/         read method=POST,PUT,PATCH,D
 #   desktop-release.
 # - cli.kiro.dev serves the install script.
 
-# ko-agent-egress-proxy/doc/model-provider/aws-evidence.md holds the measurements behind these lines.
+# ko-agent-egress-proxy/doc/preset/aws-evidence.md holds the measurements behind these lines.

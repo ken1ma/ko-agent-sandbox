@@ -1,5 +1,5 @@
 // Runs src/test/measurement/MeasureAgents.scala in a session of this workspace and reads the session's proxy log
-// against the records in ko-agent-egress-proxy/doc/model-provider (doc/agent-measurement.md, "The measurement suite"):
+// against the records in ko-agent-egress-proxy/doc/preset (doc/agent-measurement.md, "The measurement suite"):
 //
 //     sbt "testWithPodman *AgentMeasurementTest"
 //
@@ -31,7 +31,7 @@ class AgentMeasurementTest extends munit.FunSuite:
     val logs = Files.createTempDirectory("agent-measurement")
     val session = launchWith(
       workspace, logs.resolve("session.log"),
-      Vector("--egress=deny-unless-allowed", "--model-provider=anthropic,openai,google,aws,github"),
+      Vector("--egress=deny-unless-allowed", "--egress-preset=anthropic,openai,google,aws,github"),
     )
     try
       assume(signedIn(session), s"$agent is not signed in in this workspace's volume; sign in in a session first")

@@ -1,6 +1,6 @@
-# Evidence for model-provider/anthropic
+# Evidence for preset/anthropic
 
-[The defaults file](../../app/src/main/resources/defaults/model-provider/anthropic) inspects
+[The defaults file](../../app/src/main/resources/defaults/preset/anthropic) inspects
 Claude Code's hosts on this evidence.
 [`doc/agent-measurement.md`](../../../doc/agent-measurement.md) says how a client is measured,
 and how much a report establishes.

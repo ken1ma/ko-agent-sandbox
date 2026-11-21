@@ -5,7 +5,7 @@ model. This file also lists ideas whose benefit is uncertain, each with the cond
 whether to build it. design.md records each idea examined and found without benefit, with its
 reason, so that nobody proposes it again.
 
-## Credential brokering — `--egress-cred`, then the provider plan
+## Credential brokering — `--egress-cred`, then the preset plan
 
 - [ ] Run `sbt "testWithPodman *ProxyContainerTest"` on Linux. The proxy's attached `podman start`
   is measured, and passes, on macOS (podman 6.1.4, fdf1d04, 2026-11-02) and on Windows (f3d413d).
@@ -24,49 +24,11 @@ reason, so that nobody proposes it again.
 - [ ] Give a value without a recognized prefix a placeholder that its program accepts. A program
   that checks the value's syntax before sending the value refuses the placeholder of 22 letters
   and digits (`egress-proxy.md`, "Where the value goes").
-- [ ] Run real sessions on `--egress-cred` before taking up `plan-provider-credential-proxy.md`.
-  - Take that plan's steps one at a time, each on a use case those sessions produced, never as
-    `--egress-cred`'s automatic second half.
-  - What that plan adds, storage, generations, refresh and removal, is where the field failures
-    are (docker/sbx-releases #492: a removed credential was still injected after a restart).
-  - A per-run static value needs none of these.
+- [ ] Implement `plan-preset-credential-proxy.md` in its delivery order. At the hosts that a
+  selected credential marks, its refusal stops uploads under a foreign key (SECURITY.md,
+  "Exfiltration through allowed network traffic").
 - AWS is in neither: `design.md`, "Credential brokering at the egress proxy", explains why, and
   what a session forwards instead.
-- [ ] Refuse a credential that is not the session's at a model host (SECURITY.md, "Exfiltration
-  through allowed network traffic", has the attack).
-  - This item is an exception to the order above: its use case came from a review of the
-    documents, not from a session on `--egress-cred`.
-  - A target of a service definition gains a property, `require-placeholder`. On a brokered target
-    that carries the property, the proxy forwards a request only if one authentication form the
-    target declares holds this run's placeholder and no other declared form is present.
-  - The proxy refuses any other request with a fixed reason and a `deny` audit line, at every path.
-  - The target declares every form the provider accepts, not only the one the client sends: a
-    request without the client's header is not thereby unauthenticated.
-    - Anthropic accepts an API key as `Authorization: Bearer` and as `x-api-key`
-      (https://platform.claude.com/docs/en/manage-claude/authentication), so checking one header
-      does not exclude a foreign key in the other.
-    - The tests send a foreign key in each declared form, alone and beside the placeholder.
-    - A form the provider adds later reopens the attack until the catalog declares it.
-  - The property needs a selected service instance, so it needs the provider plan's delivery steps
-    1, 2 and 5: the catalog, storage with per-run generations for a static key, the brokered
-    overlay and one API-key client.
-    - The property needs neither executable sources and refresh (step 4) nor OAuth (step 6).
-    - An `--egress-cred=NAME@HOST` binding does not carry the property. That plan keeps the binding
-      separate from a selected service. A binding also forwards a token that is not a placeholder
-      and names one header, so a binding cannot refuse the placeholder beside a foreign key in
-      another declared form.
-  - The property protects an API-key session only. A subscription login gets the property with
-    OAuth, the provider plan's step 6.
-  - A workspace that tests against the provider with its own key selects no credential for that
-    host, or accepts the refusal. Every other host keeps the rule that the proxy forwards a token
-    that is not a placeholder (`egress-proxy.md`, "Where the value goes").
-  - Measure first, with the model host inspected at the root (`agent-measurement.md`,
-    "Measurement").
-  - Rejected: exact-path grants on the model host without brokering (`/v1/messages` alone).
-    - The path list is the per-release contract with the CLI that brokering declines.
-    - A retrievable-storage behavior added at an allowed endpoint reopens the attack.
-    - The cost of the rejection: a subscription session gets no path-based protection before
-      step 6, since exact-path grants refuse the storage endpoints whatever credential is sent.
 
 ## Host process observations without helper processes
 
@@ -1176,7 +1138,7 @@ bans sources`, compilation, binary identity, and the installed FUSE backend's mo
   inspect (`agent-measurement.md`, "Measurement"), signed in to that agent with a test
   account. The measurement suite runs it ("The measurement suite").
   - A run that passes at another client version is the evidence for recording that version in
-    `ko-agent-egress-proxy/doc/model-provider/<name>-evidence.md`.
+    `ko-agent-egress-proxy/doc/preset/<name>-evidence.md`.
   - CI runs no `/voice`, which needs a microphone. `/voice` is measured by hand.
 
 ## Before the first release — the published identity

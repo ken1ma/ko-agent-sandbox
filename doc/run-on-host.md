@@ -193,9 +193,9 @@ To allow artifact downloads beyond Maven Central, add repository hosts to this w
 - Each program has its own file, so a workspace that builds with more than one program grants each
   program only the hosts that the program resolves from.
 - The file takes a narrower grammar than the proxy's rule file: `allow https://<host>/ read` lines
-  and comments, nothing else. Validation refuses any other grant, a path, a provider or a deny,
+  and comments, nothing else. Validation refuses any other grant, a path, a preset or a deny,
   rather than passing it through.
-  - The full grammar would let one `allow model-provider` line expand into endpoints that serve no
+  - The full grammar would let one `allow preset` line expand into endpoints that serve no
     artifacts.
   - A `tunnel` or `method=` word would let a host command write to a host, and no host command may
     write to a host.

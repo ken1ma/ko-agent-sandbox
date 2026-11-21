@@ -1,6 +1,6 @@
-# Evidence for model-provider/google
+# Evidence for preset/google
 
-[The defaults file](../../app/src/main/resources/defaults/model-provider/google) inspects
+[The defaults file](../../app/src/main/resources/defaults/preset/google) inspects
 Antigravity's hosts on this evidence.
 [`doc/agent-measurement.md`](../../../doc/agent-measurement.md) says how a client is measured,
 and how much a report establishes.
@@ -39,7 +39,7 @@ Signed in with a consumer account, under `deny-unless-allowed`.
   `agy --conversation -p` with a shell call; the interactive TUI in this repository, with two turns
   and `/compact`, a sign-out, a sign-in and a message, then `/voice` under `--audio=mic`; a token
   refresh, forced by moving the token file's expiry into the past; the TUI with a turn under
-  `deny-unless-model`.
+  `deny-unless-selected`.
 - The client negotiated HTTP/1.1 and trusted the launch CA. The language server sends the model
   requests as `antigravity/cli/1.5.8`; the sign-in, userinfo and picture requests are
   `Go-http-client/1.1`.
@@ -49,7 +49,7 @@ Signed in with a consumer account, under `deny-unless-allowed`.
   declared a `Content-Length`. No query held a credential.
 - After each turn, `recordTrajectoryAnalytics` uploaded 37 to 208 KB to the model host.
 - In this repository, the TUI sent `github.com` a `HEAD` of the repository's own path, without a
-  credential, after a turn. Under `deny-unless-model`, which admits no catalog host, the proxy
+  credential, after a turn. Under `deny-unless-selected`, which admits no catalog host, the proxy
   refused that `CONNECT`, and the turn completed.
 - The sign-out sent no request. The sign-in exchanged its code at `oauth2.googleapis.com/token`;
   without a D-Bus session, agy keeps the token in

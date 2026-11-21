@@ -326,8 +326,9 @@ working-tree edits like any other, and the user commits them when and as they ch
     - `REVIEWER_AUTH_FAILED`: `codex login status` or `claude auth status` reports no sign-in,
       whichever credential store the CLI uses. Sign in to that CLI in this workspace's sandbox.
     - `REVIEWER_EGRESS_DENIED`: the ruleset in `KO_AGENT_SANDBOX_EGRESS_RULESET` allows none of
-      the reviewer's hosts, as when the launch admitted the coordinator's provider alone. Relaunch
-      with `--model-provider` naming both providers, such as `--model-provider=anthropic,openai`.
+      the reviewer's hosts, as when the launch admitted the coordinator's preset alone. Relaunch
+      with `--egress-preset` naming both agents' presets, such as
+      `--egress-preset=anthropic,openai`.
       - Codex's hosts are `api.openai.com` and `chatgpt.com`. Claude's hosts are
         `api.anthropic.com` and `platform.claude.com`.
     - `REVIEWER_FAILED`: any other failure of the reviewer.

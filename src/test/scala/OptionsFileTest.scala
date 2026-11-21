@@ -219,7 +219,7 @@ class OptionsFileTest extends munit.FunSuite:
         |--session-start=immediate
         |--env-aws-cred=team
         |--run-on-host=sbt
-        |--model-provider=aws
+        |--egress-preset=aws
         |--persistent-volume=shared
         |--memory=8g
         |--image=sandbox:mine
@@ -230,7 +230,7 @@ class OptionsFileTest extends munit.FunSuite:
         |--cache-overlay=coursier""".stripMargin
     val defaults = Vector(
       "--workspace=live,bpf,no-unix-socket", "--egress=deny-unless-allowed", "--clipboard=off", "--audio=off",
-      "--nesting=none", "--session-start=pause", "--env-aws-cred=", "--run-on-host=", "--model-provider=",
+      "--nesting=none", "--session-start=pause", "--env-aws-cred=", "--run-on-host=", "--egress-preset=",
       "--persistent-volume=", "--memory=", "--image=", "--proxy-image=", "--env=", "--egress-cred=",
       "--claude-plugin-dir=", "--cache-overlay=",
     )
@@ -252,7 +252,7 @@ class OptionsFileTest extends munit.FunSuite:
     )
     assertEquals((reset.image, reset.proxyImage), (None, None))
     assertEquals(
-      (reset.env, reset.credentialBindings, reset.claudePlugins, reset.modelProviders, reset.cacheOverlays),
+      (reset.env, reset.credentialBindings, reset.claudePlugins, reset.presets, reset.cacheOverlays),
       (Vector.empty, Vector.empty, Vector.empty, Vector.empty, Vector.empty),
     )
     // --env-aws-cred alone keeps reading AWS_PROFILE.
@@ -283,15 +283,15 @@ class OptionsFileTest extends munit.FunSuite:
         .claudePlugins,
       Vector("/a", "/b", "/c"),
     )
-    // The command line's --model-provider adds to the file's names; its empty value drops them.
-    val fileProviders = "--model-provider=anthropic,openai"
+    // The command line's --egress-preset adds to the file's names; its empty value drops them.
+    val filePresets = "--egress-preset=anthropic,openai"
     assertEquals(
-      inForce(fileProviders, "--model-provider=google").modelProviders,
+      inForce(filePresets, "--egress-preset=google").presets,
       Vector("anthropic", "openai", "google"),
     )
-    assertEquals(inForce(fileProviders, "--model-provider=openai").modelProviders, Vector("anthropic", "openai"))
+    assertEquals(inForce(filePresets, "--egress-preset=openai").presets, Vector("anthropic", "openai"))
     assertEquals(
-      inForce(fileProviders, "--model-provider=", "--model-provider=google").modelProviders,
+      inForce(filePresets, "--egress-preset=", "--egress-preset=google").presets,
       Vector("google"),
     )
     // The checks across options run on the merged set, whichever source each option comes from.
@@ -380,14 +380,14 @@ class OptionsFileTest extends munit.FunSuite:
     assert(!options.fileLines(os = Os.Linux, color = false).exists(_.contains("hunter2")))
     assertEquals(options.from("--nesting", Os.Linux, color = false).replace("/home/me/.config", "~/.config"), FromFile)
     assertEquals(options.from("--image", Os.Linux, color = false), "")
-    // The egress line credits the file with the file's own provider names alone.
-    val (withProviders, providersSupplied) =
-      merged("--model-provider=anthropic,openai", "--model-provider=google").fold(fail(_), identity)
-    def providersFrom(selected: String*): String =
-      OptionsInForce(withProviders, providersSupplied, Some(Path.of("/home/me/.config/ko-agent-sandbox/options")))
-        .providersFrom(selected.toVector, Os.Linux, color = false).replace("/home/me/.config", "~/.config")
-    assertEquals(providersFrom("anthropic", "openai"), FromFile)
-    assertEquals(providersFrom("anthropic", "openai", "google"), s" (anthropic, openai from $Shown)")
+    // The egress line credits the file with the file's own preset names alone.
+    val (withPresets, presetsSupplied) =
+      merged("--egress-preset=anthropic,openai", "--egress-preset=google").fold(fail(_), identity)
+    def presetsFrom(selected: String*): String =
+      OptionsInForce(withPresets, presetsSupplied, Some(Path.of("/home/me/.config/ko-agent-sandbox/options")))
+        .presetsFrom(selected.toVector, Os.Linux, color = false).replace("/home/me/.config", "~/.config")
+    assertEquals(presetsFrom("anthropic", "openai"), FromFile)
+    assertEquals(presetsFrom("anthropic", "openai", "google"), s" (anthropic, openai from $Shown)")
     assertEquals(OptionsInForce(parsed, Vector.empty, None).fileLines(color = false), Vector.empty)
     assertEquals(
       LaunchMessages.sharedVolumeLine("team", FromFile, color = false),
@@ -402,7 +402,7 @@ class OptionsFileTest extends munit.FunSuite:
     val text =
       """--persistent-volume=shared
         |--egress=deny-all
-        |--model-provider=openai
+        |--egress-preset=openai
         |--egress-cred=X@a.example
         |--proxy-image=proxy:mine
         |--memory=8g
@@ -416,7 +416,7 @@ class OptionsFileTest extends munit.FunSuite:
     // The file's --env and --egress-cred of one name conflict only in an action that reads both options.
     val effective = read(EgressEffectiveReads, "--egress-effective")
     assertEquals(
-      (effective.parsed.egress, effective.parsed.modelProviders, effective.parsed.proxyImage),
+      (effective.parsed.egress, effective.parsed.presets, effective.parsed.proxyImage),
       (Some("deny-all"), Vector("openai"), Some("proxy:mine")),
     )
     assertEquals(effective.parsed.credentialBindings.map(_.name), Vector("X"))
@@ -427,9 +427,9 @@ class OptionsFileTest extends munit.FunSuite:
     val check = read(EgressCheckReads, "--egress-check=pypi.org")
     assertEquals((check.parsed.egress, check.parsed.proxyImage), (Some("deny-all"), Some("proxy:mine")))
     assertEquals(check.parsed.credentialBindings, Vector.empty)
-    assertEquals(check.supplied.map(_.option).toSet, Set("--egress", "--model-provider", "--proxy-image"))
+    assertEquals(check.supplied.map(_.option).toSet, Set("--egress", "--egress-preset", "--proxy-image"))
     // The command line's options replace the file's for an action too.
     assertEquals(
-      read(EgressCheckReads, "--egress=deny-unless-model", "--egress-check=x").parsed.egress,
-      Some("deny-unless-model"),
+      read(EgressCheckReads, "--egress=deny-unless-selected", "--egress-check=x").parsed.egress,
+      Some("deny-unless-selected"),
     )

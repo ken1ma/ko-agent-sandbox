@@ -197,7 +197,7 @@ user's decisions of 2026-10-26):
 - The values are accepted in any order, and each part is optional. The command line's parts replace
   the options file's parts, by the user's decision of 2026-11-02 (`CommandLine.WorkspaceValue`).
 - One source may give the parts in one `--workspace` or across several, each part once, by the
-  user's decision of 2026-11-02, matching `--model-provider` (`CommandLine.joinWorkspace`).
+  user's decision of 2026-11-02, matching `--egress-preset` (`CommandLine.joinWorkspace`).
 - The container label holds one canonical spelling, so the refusal beside a live session compares
   settings, not spellings.
 

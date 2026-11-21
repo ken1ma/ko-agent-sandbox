@@ -623,7 +623,7 @@ final class Commands(ctx: CommandContext):
         throw reviewer.error(
           "REVIEWER_EGRESS_DENIED",
           s"the egress ruleset allows none of ${reviewer.hosts.mkString(", ")}: relaunch the session with " +
-            "--model-provider naming both agents' providers, such as --model-provider=anthropic,openai, and retry",
+            "--egress-preset naming both agents' presets, such as --egress-preset=anthropic,openai, and retry",
           "profile" -> ruleset.linesIterator.nextOption().asJson,
         )
     program

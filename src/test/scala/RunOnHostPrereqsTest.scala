@@ -766,8 +766,8 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     for
       line <- Seq(
         "deny defaults",
-        "allow model-provider openai",
-        "deny model-provider openai",
+        "allow preset openai",
+        "deny preset openai",
         "allow https://repo.example.org/ read git-fetch",
         "allow https://repo.example.org/ git-fetch",
         "allow https://repo.example.org/ tunnel",
@@ -1098,9 +1098,9 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
   test("a line outside the program's grammar is refused, quoted with what a terminal acts on spelled out"):
     val workspace = workspaceWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
     val rule = workspace.resolve(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
-    Files.writeString(rule, "allow model-provider openai\n")
+    Files.writeString(rule, "allow preset openai\n")
     val refused = readProgramRules(workspace, Program.Sbt)
-    assert(refused.swap.exists(_.contains("allow model-provider openai")), refused.toString)
+    assert(refused.swap.exists(_.contains("allow preset openai")), refused.toString)
     assert(refused.swap.exists(_.contains(ProgramRuleForm)), refused.toString)
     Files.writeString(rule, "allow https://a.example/ read now‮\n")
     val escaped = readProgramRules(workspace, Program.Sbt)
@@ -1200,7 +1200,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
       paths.foreach: path =>
         val full = workspace.resolve(path)
         Files.createDirectories(full.getParent)
-        Files.writeString(full, "allow model-provider openai\n")
+        Files.writeString(full, "allow preset openai\n")
       workspace
     val grammar = readProgramRules(workspaceNamed(".ko-agent-sandbox/run-on-host/sbt/egress/rule"), Program.Sbt)
     val stray = readProgramRules(workspaceNamed(".ko-agent-sandbox/run-on-host/sbt/egress/rules", "x"), Program.Sbt)

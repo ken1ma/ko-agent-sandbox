@@ -311,8 +311,8 @@ class HostileInputTest extends munit.FunSuite:
       "allow https://github.com/ read git-fetch", "deny https://github.com/", "deny https://**.github.com/",
       "allow https://pypi.org/ read", "deny https://pypi.org/ read", "allow https://mirror.example/ tunnel",
       "allow https://mirror.example/ git-fetch", "allow https://mirror.example/ allow=lfs",
-      "allow https://mirror.example/ writable", "deny defaults", "allow model-provider anthropic",
-      "deny model-provider google", "allow", "deny", "allow https://a..b/ read",
+      "allow https://mirror.example/ writable", "deny defaults", "allow preset anthropic",
+      "deny preset google", "allow", "deny", "allow https://a..b/ read",
       "allow https://10.0.0.1/ tunnel", "allow https://[github.com]/ read", "allow https://github.com./ read",
       "+host github.com", "pypi.org", "host pypi.org", "allow=git-fetch",
       "allow https://github.com/octocat/ read", "allow https://github.com/octocat/ git-fetch",
@@ -380,9 +380,9 @@ class HostileInputTest extends munit.FunSuite:
   // The evaluator is deliberately plain: it applies each line's contributions and removals to one request in textual
   // order and builds no resolved scope. The evaluator is property-tested against the ruleset's authorization over a
   // drawn domain that names every equation:
-  // - each profile, with the provider selected and not;
+  // - each profile, with the preset selected and not;
   // - files with `deny defaults` and without;
-  // - providers allowed and denied, and `tunnel` taken and re-granted;
+  // - presets allowed and denied, and `tunnel` taken and re-granted;
   // - hosts the defaults lack and hosts the defaults inspect (the defaults hold no tunnel);
   // - requests to hosts that no line names, to inspected hosts under a denied subtree, and at both sides of a
   //   boundary.
@@ -392,16 +392,16 @@ class HostileInputTest extends munit.FunSuite:
   private enum Drawn:
     case DenyDefaults
     case Allow(host: String, path: String, grants: Set[String])
-    case AllowProvider(name: String)
+    case AllowPreset(name: String)
     case Deny(host: String, subtree: Boolean, grants: Set[String])
-    case DenyProvider(name: String)
+    case DenyPreset(name: String)
 
     def text: String = this match
       case DenyDefaults               => "deny defaults"
       case Allow(host, path, grants)   => s"allow https://$host$path ${spell(grants)}"
-      case AllowProvider(name)         => s"allow model-provider $name"
+      case AllowPreset(name)           => s"allow preset $name"
       case Deny(host, subtree, grants) => s"deny https://${if subtree then "**." else ""}$host/ ${spell(grants)}".trim
-      case DenyProvider(name)          => s"deny model-provider $name"
+      case DenyPreset(name)            => s"deny preset $name"
 
   private def spell(grants: Set[String]): String =
     val methods = Vector("POST", "PUT", "PATCH", "DELETE").filter(grants)
@@ -421,7 +421,7 @@ class HostileInputTest extends munit.FunSuite:
     case Rule.Allow(host, path, grants) => Given(host, path, grants)
     case other                          => throw IllegalStateException(other.toString)
 
-  private def providerGiven(name: String): Vector[Given] = ModelProviderLines(name).map(givenOf)
+  private def presetGiven(name: String): Vector[Given] = PresetLines(name).map(givenOf)
 
   /** What a request is, hand-labelled: the evaluator classifies nothing. */
   private enum Kind:
@@ -461,7 +461,7 @@ class HostileInputTest extends munit.FunSuite:
   /** The evaluator: "tunnel", "allowed" or "refused" for one request under one file. */
   private def evaluate(
     profile: String,
-    provider: Option[String],
+    preset: Option[String],
     lines: Vector[Drawn],
     host: String,
     request: Request,
@@ -469,25 +469,25 @@ class HostileInputTest extends munit.FunSuite:
     import Drawn.*
     val clears = lines.headOption.contains(DenyDefaults)
     if profile == "deny-all" then return "refused"
-    val selected = provider.toVector.flatMap(_.split(",").toVector)
+    val selected = preset.toVector.flatMap(_.split(",").toVector)
     var contributions: Vector[Given] = profile match
-      case "deny-unless-model" => selected.flatMap(providerGiven)
-      case _ => if clears then Vector.empty else CatalogLines.map(givenOf) ++ selected.flatMap(providerGiven)
+      case "deny-unless-selected" => selected.flatMap(presetGiven)
+      case _ => if clears then Vector.empty else CatalogLines.map(givenOf) ++ selected.flatMap(presetGiven)
     def consult(line: Drawn): Boolean = (profile, line) match
-      case ("deny-unless-model", Deny(_, _, _) | DenyProvider(_)) => true
-      case ("deny-unless-model", _)                            => false
-      case _                                                   => true
+      case ("deny-unless-selected", Deny(_, _, _) | DenyPreset(_)) => true
+      case ("deny-unless-selected", _)                              => false
+      case _                                                        => true
     lines.filter(consult).foreach:
       case DenyDefaults => ()
       case Allow(h, p, g) => contributions :+= Given(h, p, g)
-      case AllowProvider(name) =>
-        contributions ++= providerGiven(name).filter(g => consult(Allow(g.host, g.path, g.grants)))
+      case AllowPreset(name) =>
+        contributions ++= presetGiven(name).filter(g => consult(Allow(g.host, g.path, g.grants)))
       case Deny(h, subtree, g) =>
         contributions = contributions.map: entry =>
           if !hostMatches(h, subtree, entry.host) then entry
           else entry.copy(grants = if g.isEmpty then Set.empty else entry.grants -- g)
-      case DenyProvider(name) =>
-        val deniedHosts = providerGiven(name).map(_.host).toSet
+      case DenyPreset(name) =>
+        val deniedHosts = presetGiven(name).map(_.host).toSet
         contributions = contributions.map: entry =>
           if deniedHosts(entry.host) then entry.copy(grants = Set.empty) else entry
     val active = contributions.filter(entry => entry.host == host && entry.grants.nonEmpty)
@@ -550,20 +550,20 @@ class HostileInputTest extends munit.FunSuite:
         yield Deny(host, subtree = false, grants))
         ++ Vector(Deny("github.com", subtree = true, Set.empty), Deny("new.example", subtree = true, Set.empty),
           Deny("new.example", subtree = true, Set("tunnel")), Deny("github.com", subtree = true, Set("read")))
-        ++ ModelProviders.flatMap(name => Vector(AllowProvider(name), DenyProvider(name)))
-    val providers =
-      Vector(None, Some(ModelProviders.mkString(",")), Some("anthropic,google")) ++ ModelProviders.map(Some(_))
+        ++ Presets.flatMap(name => Vector(AllowPreset(name), DenyPreset(name)))
+    val presets =
+      Vector(None, Some(Presets.mkString(",")), Some("anthropic,google")) ++ Presets.map(Some(_))
     val outcomes = scala.collection.mutable.Map.empty[String, Int].withDefaultValue(0)
     var files = 0
     var refusedFiles = 0
     (1 to 2500).foreach: _ =>
       val profile = Profiles(random.nextInt(Profiles.size))
-      val provider = providers(random.nextInt(providers.size))
+      val preset = presets(random.nextInt(presets.size))
       val body = (0 until random.nextInt(6)).map(_ => pool(random.nextInt(pool.size))).toVector
       val lines = if random.nextInt(4) == 0 then DenyDefaults +: body else body
       val text = lines.map(_.text).mkString("\n")
       val resolved =
-        try Some(resolveRuleset(Some(profile), provider, Some(text)))
+        try Some(resolveRuleset(Some(profile), preset, Some(text)))
         catch case _: IllegalArgumentException => None
       resolved match
         case None => refusedFiles += 1
@@ -571,12 +571,12 @@ class HostileInputTest extends munit.FunSuite:
           files += 1
           Hosts.foreach: host =>
             Requests.foreach: request =>
-              val expected = evaluate(profile, provider, lines, host, request)
+              val expected = evaluate(profile, preset, lines, host, request)
               val actual = production(ruleset, host, request)
               assertEquals(
                 actual,
                 expected,
-                s"$profile provider=$provider\n$text\n$host ${request.method} ${request.target}",
+                s"$profile preset=$preset\n$text\n$host ${request.method} ${request.target}",
               )
               outcomes(expected) += 1
     assert(files > 0 && refusedFiles > 0, s"$files files resolved, $refusedFiles refused")
