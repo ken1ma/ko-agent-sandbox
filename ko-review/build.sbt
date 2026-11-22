@@ -66,8 +66,8 @@ dist := Def.uncached {
 
 // The suites drive the helper in their own JVM. A turn makes that JVM Linux's child subreaper and kills every child it
 // has once the reviewer ends, which must never happen to sbt's own JVM.
-// - Under the run-on-host sandbox, Xcode's /usr/bin/git shim fails and the suites' killpg gets EPERM, so the suites
-//   run in a session container or on a host outside the sandbox, as the egress proxy's do.
+// - Under the run-on-host sandbox, Xcode's /usr/bin/git shim fails, so the suites run in a session container or on a
+//   host outside the sandbox, as the egress proxy's do.
 // - The forked JVM starts in this directory, where the suites read plugin/.
 Test / fork := true
 // - A turn kills every child of the JVM once the reviewer ends, so two suites' turns at once would kill each other's

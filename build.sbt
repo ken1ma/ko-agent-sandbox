@@ -42,14 +42,6 @@ lazy val root = project.in(file(".")).dependsOn(egressProxy).settings(
   // Uncached, as dist is: a TestResult has no JSON format.
   Test / testFull := Def.uncached((Test / testFull).dependsOn(egressProxy / Test / testFull, koReview / Test / testFull)
     .value),
-  // sbt 2.1.0 lists every file under a project's base directory while the build loads, and the run-on-host profile
-  // refuses to list .git, which this project's base holds, so a launch's server would not load the build
-  // (https://github.com/sbt/sbt/issues/10006).
-  // - Without the digests, every test command in a launch's server reruns all of this project's tests. Elsewhere,
-  //   and in the subprojects, whose bases hold no .git, `test` stays incremental.
-  // - Elsewhere the setting is absent rather than reset: with sbt's own definedTestDigests, the listing runs at load.
-  // - TODO.md, "sbt 2.1 builds under --run-on-host", says when the setting goes.
-  if (KoAgentSandboxHelper.inHostCommand) Seq(Test / definedTestDigests := Map.empty) else Seq.empty[Def.Setting[?]],
 
   // The container-launching suites share one podman, and each suite asserts on resources scoped to a workspace it
   // created. Run in parallel, the suites interleave: one suite's launch observes another suite's container, and one

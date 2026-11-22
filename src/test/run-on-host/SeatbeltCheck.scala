@@ -92,12 +92,13 @@ class SeatbeltRows(run: CheckRun, folding: Boolean, jobs: Option[Int] = None):
     val listener = unrelatedListener()
     val held = heldJdk()
     run.cleanup.add("remove the markers"):
+      // A linked worktree's .git is a pointer file, which holds no marker; the scratch trees go with their own cleanup.
       val markerDirs =
         profiles.flatMap(emitted => Seq(emitted.coursierV1, emitted.sessionTmp, emitted.gradleUserHome)) ++ Seq(
-          root / ".git", hostPaths.home / ".sbt" / "boot", hostPaths.userV1, hostPaths.millDownloads,
+          hostPaths.home / ".sbt" / "boot", hostPaths.userV1, hostPaths.millDownloads,
           hostPaths.home / ".gradle", hostPaths.home / ".m2" / "repository", hostPaths.javaHome,
           hostPaths.userJvm,
-        )
+        ) ++ Option.when(Files.isDirectory(root / ".git"))(root / ".git")
       markerDirs.foreach(dir => Files.deleteIfExists(dir / marker))
     // The profiles' rows run in parallel, since each profile's rows touch only its own profile, run-on-host cache,
     // temporary directory and scratch tree. Each profile reports to a transcript of its own, `<id>.log`.
@@ -194,9 +195,18 @@ class SeatbeltRows(run: CheckRun, folding: Boolean, jobs: Option[Int] = None):
     // The profile grants a granted path's ancestors file-read-metadata alone, because a listing would reveal sibling
     // names.
     denied("list an ancestor of a granted path", s"ls ${q(hostPaths.home / "Library" / "Caches")}")
-    denied("read WORKSPACE/.git", s"cat ${q(root / ".git" / "HEAD")}")
-    denied("read a nested .git", s"cat ${q(scratch / "sub" / "nested" / ".git" / "config")}")
-    denied("read via WORKSPACE/link -> WORKSPACE/.git", s"cat ${q(scratch / "link" / "config")}")
+    // The guard denies writes and links alone, so the guarded names stay readable (SeatbeltProfile, the guard). Only
+    // the sbt profile's workspace is the repository root; a fixture's profile must still be denied the repository's
+    // .git, which lies outside its workspace.
+    // In a linked worktree, the repository's .git is a pointer file rather than a directory.
+    val rootGit = if Files.isDirectory(root / ".git") then root / ".git" / "HEAD" else root / ".git"
+    if workspace == root then allowed("read WORKSPACE/.git", s"cat ${q(rootGit)} > /dev/null")
+    else denied("read the repository's .git, outside this workspace", s"cat ${q(rootGit)}")
+    allowed("list a .git directory", s"ls ${q(scratch / "sub" / "nested" / ".git")} > /dev/null")
+    allowed("read a nested .git", s"cat ${q(scratch / "sub" / "nested" / ".git" / "config")} > /dev/null")
+    allowed("read via WORKSPACE/link -> WORKSPACE/.git", s"cat ${q(scratch / "link" / "config")} > /dev/null")
+    allowed("read WORKSPACE/.ko-agent-sandbox/...",
+      s"cat ${q(scratch / ".ko-agent-sandbox" / "egress" / "rule")} > /dev/null")
     // The trailing slash on each listed symlink forces resolution into the target. ls on a link whose target cannot
     // even be stat'ed prints the link's own name and succeeds, exactly like a broken link, so a denial so complete
     // that it covers the stat would otherwise read as a grant.
@@ -216,8 +226,11 @@ class SeatbeltRows(run: CheckRun, folding: Boolean, jobs: Option[Int] = None):
     presentThenDenied("write ~/.m2/repository", hostPaths.home / ".m2" / "repository",
       s": > ${q(hostPaths.home / ".m2" / "repository" / marker)}")
     denied("write the Coursier-installed sbt script", s": >> ${q(hostPaths.sbtExecutable)}")
-    denied("write WORKSPACE/.git/config", s": >> ${q(root / ".git" / "config")}")
-    denied("create under WORKSPACE/.git", s": > ${q(root / ".git" / marker)}")
+    // A path below a linked worktree's pointer file fails with ENOTDIR before Seatbelt decides, which the rows would
+    // count as a denial. The scratch tree's .git is a directory in either layout.
+    val gitDir = if Files.isDirectory(root / ".git") then root / ".git" else scratch / "sub" / "nested" / ".git"
+    denied("write WORKSPACE/.git/config", s": >> ${q(gitDir / "config")}")
+    denied("create under WORKSPACE/.git", s": > ${q(gitDir / marker)}")
     denied("write WORKSPACE/sub/nested/.git/hooks/x", s": > ${q(scratch / "sub" / "nested" / ".git" / "hooks" / "x")}")
     denied("write existing .git/config through .GIT", s": >> ${q(scratch / "sub" / "nested" / ".GIT" / "config")}")
     denied("create WORKSPACE/.git during the command", s"mkdir ${q(scratch / ".git")}")
@@ -301,9 +314,20 @@ class SeatbeltRows(run: CheckRun, folding: Boolean, jobs: Option[Int] = None):
     allowed("read a child the command starts: the same sandbox",
       s"$reader --child=${q(tmp / "ProcArgs.java")} > $report && " +
         s"grep -q '^a child of the reader (pid [0-9]*): ENVIRONMENT READ ' $report")
+    // A build ends what it started, a process or a whole group, as the ko-review suites' killpg does.
+    allowed("signal a child the command starts", "/bin/sleep 30 & kill -TERM $!")
+    // Job control gives the background job a group of its own; perl cannot run here, since the profile grants no
+    // read of /System/Library/Perl.
+    allowed("signal a process group the command starts",
+      "/bin/bash -c 'set -m; /bin/sleep 30 & kill -TERM -$!'")
+    // CONT changes nothing for a running process, so a wrongly allowed row harms nothing.
+    denied("signal a process outside the command's sandbox", s"kill -CONT ${held.pid}")
 
     transcript.step(s"allowed writes, under the $id profile")
     allowed("write run-on-host cache coursier/v1/...", s": > ${q(emitted.coursierV1 / marker)}")
+    val cached = q(emitted.coursierV1 / marker)
+    allowed("run a program written in the run-on-host cache",
+      s"printf '#!/bin/sh\\nexit 0\\n' > $cached && chmod +x $cached && $cached")
     allowed("write WORKSPACE/...", s": > ${q(scratch / "ok")}")
     allowed("write command's temporary directory", s": > ${q(tmp / marker)}")
     if emitted.target.program == Program.Gradle then

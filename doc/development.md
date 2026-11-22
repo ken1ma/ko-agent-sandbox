@@ -25,8 +25,7 @@ Run the commands in this section from the repository root.
 
    Inside that session, run `sbt testFull`, which also runs `SessionBoundaryTest`.
 
-1. `testFull` runs every test every time, while `test` is incremental, except for the launcher's
-   tests under `ko-sandbox-run-on-host`, which it reruns every time (`build.sbt`).
+1. `testFull` runs every test every time, while `test` is incremental.
 
 ## egress-proxy
 

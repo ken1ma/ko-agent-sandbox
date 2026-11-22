@@ -1739,9 +1739,11 @@ commands execute outside the container, so the profile provides their confinemen
     confines whatever they select.
 
   A command's access:
-  - the workspace, read-write, except `.git` and `.ko-agent-sandbox`:
-    - those two names are denied at any depth after path resolution, link creation included, with
+  - the workspace, read-write, except `.git` and `.ko-agent-sandbox`, which are read-only:
+    - writes and links under those two names are denied at any depth after path resolution, with
       the unmeasured spellings that `doc/run-on-host-internals.md` records;
+    - reads stay allowed: the agent reads both in the container, and sbt 2.1 lists every file under
+      a project's base while its build loads (sbt/sbt#10006);
     - writes and links are also denied to what the launch's file rules make read-only, and to the
       paths that the workspace policy's guard added;
   - the command's own per-workspace run-on-host caches;
@@ -1844,6 +1846,9 @@ commands execute outside the container, so the profile provides their confinemen
     environment among them (`SeatbeltProfile.ProcessReadRule`; `doc/seatbelt.md`, "Processes").
     - The one exception is a mill client reading its own daemon's, whose environment the runner
       built from the same closed set.
+  - The command may signal the processes of its own sandbox, and no other
+    (`(allow signal (target same-sandbox))`). So a build ends what it started, and cannot end
+    yours.
 - **A workspace script runs unconfined only on your explicit yes.** Before its start prompt, the
   launcher finds the missing mill launchers, the JDKs that mill's launcher resolves for the builds,
   and the Gradle and Maven distributions: those without which the launch's commands would be
@@ -1964,6 +1969,14 @@ commands execute outside the container, so the profile provides their confinemen
   what the sandbox wrote", above:
   - the session's backend, BPF or FUSE, for writes through the workspace mount;
   - this profile's deny rules, for writes by the command.
+- **A symlink that a command creates may lead outside the workspace.** The session's backends
+  refuse a new link with an absolute target or one that climbs above the workspace root ("Not
+  defended", on symlinks). The profile has no rule for a link's target.
+  - sbt 2 needs such links: it leaves `target/` outputs as links into its store in the run-on-host
+    cache (`doc/run-on-host-internals.md`, "sbt").
+  - The link gives the command nothing, because the profile judges the resolved path. It exposes a
+    file when a later process of yours follows it.
+  - `doc/TODO.md`, "Symlinks that host commands create", tracks a check.
 - **Cache poisoning stops at the workspace.** The command writes its own per-workspace caches, never
   yours:
   - the Coursier cache;

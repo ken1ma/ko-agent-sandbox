@@ -158,11 +158,11 @@ object SeatbeltProfile:
     val prereqs = inputs.prereqs
     // Distinct, because a mill build's java-home file may record the JDK that JAVA_HOME names.
     val readOnly = (Seq(prereqs.jdkHome) ++ inputs.distribution ++ Seq(prereqs.executable)).distinct
-    // Tests write and run stubs in the workspace and the command's temporary directory. Children inherit the profile.
-    // Caches need no process-exec grant, because the JVM loads their code by reading it.
-    val readWriteExec = Seq(prereqs.workspaceRoot, inputs.sessionTmp)
-    val readWrite =
-      Seq(prereqs.coursierV1) ++ inputs.sbtGlobal ++ inputs.ivyHome ++ inputs.gradleUserHome ++ inputs.m2Repository
+    // Tests write and run stubs in the workspace and the command's temporary directory, and a build may run a native
+    // tool that it fetched into a cache. Children inherit the profile, so a program run from any of these paths gains
+    // nothing: the command can write and run its own anyway.
+    val readWriteExec = Seq(prereqs.workspaceRoot, inputs.sessionTmp, prereqs.coursierV1) ++ inputs.sbtGlobal ++
+      inputs.ivyHome ++ inputs.gradleUserHome ++ inputs.m2Repository
     val serverTmp = inputs.network match
       case Network.SbtClient(tmp) => Some(tmp)
       case _                      => None
@@ -176,7 +176,7 @@ object SeatbeltProfile:
       case _                             => (None, None)
     val trustFiles = Seq(RunOnHostInspection.caBundle(inputs.trust), RunOnHostInspection.trustStore(inputs.trust))
     val everyPath =
-      readOnly ++ readWriteExec ++ readWrite ++ inputs.systemPaths.reads ++ inputs.systemPaths.executes ++ serverTmp
+      readOnly ++ readWriteExec ++ inputs.systemPaths.reads ++ inputs.systemPaths.executes ++ serverTmp
         :+ inputs.trust
 
     val program = prereqs.program
@@ -231,7 +231,7 @@ object SeatbeltProfile:
         // /dev/urandom, and SecureRandom then fails with "NativePRNG not available", which names the algorithm rather
         // than the path.
         (ancestorLiterals(
-          readOnly ++ readWriteExec ++ readWrite ++ inputs.systemPaths.reads ++ inputs.systemPaths.executes
+          readOnly ++ readWriteExec ++ inputs.systemPaths.reads ++ inputs.systemPaths.executes
             ++ DevicePaths ++ serverTmp ++ trustFiles,
         ))
           .foreach(path => lines += s"(allow file-read-metadata file-test-existence ${literal(path)})")
@@ -241,6 +241,8 @@ object SeatbeltProfile:
         lines += ";; No other process's arguments and environment: the read succeeds while either"
         lines += ";; the name or pidinfo is allowed, and (deny default) does not cover process-info*."
         lines ++= ProcessReadRule
+        lines += ";; Signals to the command's own processes, as a build ends what it started; none to another."
+        lines += "(allow signal (target same-sandbox))"
         lines += MachLookup
         lines += Devices
         lines += ""
@@ -254,8 +256,6 @@ object SeatbeltProfile:
         lines += ""
         lines += ";; What the command may change, and run: a child inherits this profile."
         readWriteExec.foreach(path => lines += s"(allow file-read* file-write* process-exec* ${subpath(path)})")
-        lines += ";; Caches: reads and writes, but no direct process execution; the JVM can load their code."
-        readWrite.foreach(path => lines += s"(allow file-read* file-write* ${subpath(path)})")
         lines += ""
         lines += ";; The CA of the command's proxy: outside tmp/, so no command replaces what the next one trusts."
         trustFiles.foreach(path => lines += s"(allow file-read* ${literal(path)})")
@@ -328,10 +328,10 @@ object SeatbeltProfile:
         lines += ";; The guard, last: repository state a later host git command would execute,"
         lines += ";; and the boundary configuration a later launch would read. Scoped to the workspace:"
         lines += ";; a .git a test builds in the command's temporary directory is removed with it, and no"
-        lines += ";; host git ever runs there."
+        lines += ";; host git ever runs there. Reads stay allowed: the agent reads both names in the container,"
+        lines += ";; and sbt 2.1 lists every file under a project's base while its build loads (sbt/sbt#10006)."
         FileRules.GuardedComponents.foreach: name =>
-          lines +=
-            s"(deny file-write* file-read* file-link (require-all ${subpath(prereqs.workspaceRoot)} ${anyDepth(name)}))"
+          lines += s"(deny file-write* file-link (require-all ${subpath(prereqs.workspaceRoot)} ${anyDepth(name)}))"
         Right(lines.result().mkString("\n") + "\n")
 
   /**

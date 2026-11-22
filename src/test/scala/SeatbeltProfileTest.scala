@@ -100,11 +100,10 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(render(inputs().copy(prereqs = millPrereqs, distribution = None)).isLeft)
     assert(render(inputs().copy(prereqs = millPrereqs, distribution = None, sbtGlobal = None)).isLeft)
 
-  test("the sbt global base and Ivy home permit reads and writes without a process-exec grant"):
+  test("the sbt global base and Ivy home permit reads, writes and direct execution"):
     val text = rendered()
     for cache <- Seq(sbtGlobal, ivyHome) do
-      assert(text.contains(s"""(allow file-read* file-write* (subpath "$cache"))"""), text)
-      assert(!text.contains(s"""process-exec* (subpath "$cache")"""), text)
+      assert(text.contains(s"""(allow file-read* file-write* process-exec* (subpath "$cache"))"""), text)
 
   test("a port outside the range is refused"):
     assert(render(inputs(port = 0)).isLeft)
@@ -132,11 +131,16 @@ class SeatbeltProfileTest extends munit.FunSuite:
   // The guard
   // --------------------------------------------------------------------------
 
-  test("both guarded names are denied at any depth under the workspace root, with their dots escaped"):
+  test("both guarded names are denied writes and links at any depth under the workspace root, with their dots escaped"):
     val text = rendered()
-    val scope = "(deny file-write* file-read* file-link (require-all (subpath \"" + workspace + "\") "
+    val scope = "(deny file-write* file-link (require-all (subpath \"" + workspace + "\") "
     assert(clue(text).contains(scope + """(regex #"/\.git(/|$)")))"""))
     assert(text.contains(scope + """(regex #"/\.ko-agent-sandbox(/|$)")))"""))
+
+  test("the guard denies no read: the workspace's read grant reaches both guarded names"):
+    val guard = rendered().linesIterator.filter(_.contains("(/|$)")).toSeq
+    assertEquals(guard.size, FileRules.GuardedComponents.size)
+    assert(guard.forall(line => line.startsWith("(deny file-write* file-link ") && !line.contains("file-read")), guard)
 
   test("the guard does not reach the command's temporary directory: a test's throwaway .git is under it"):
     // The workspace root is the only path in the guard. The guard names it in a subpath filter, never in the regex.
@@ -180,21 +184,17 @@ class SeatbeltProfileTest extends munit.FunSuite:
     assert(writable.exists(_.contains("ivy-home")))
     assert(writable.exists(_.contains("/tmp/")))
 
-  test("every program permits direct execution from the writable workspace and temporary paths, but not caches"):
+  test("every program permits direct execution from each path it may write: the workspace, its tmp and its caches"):
     for profile <- Seq(inputs(), millInputs, gradleInputs, mvnInputs) do
       val writable = rendered(profile).linesIterator
-        .filter(line => line.startsWith("(allow") && line.contains("file-write*"))
+        .filter(line => line.startsWith("(allow") && line.contains("file-write*") && line.contains("(subpath "))
         .toVector
-      val executable = writable.filter(_.contains("process-exec*"))
-      assertEquals(executable.size, 2, profile.prereqs.program.name)
-      assert(executable.exists(_.contains(s"(subpath \"$workspace\")")))
-      assert(executable.exists(_.contains(s"(subpath \"${profile.sessionTmp}\")")))
       val caches = Seq(prereqs.coursierV1) ++ profile.sbtGlobal ++ profile.ivyHome ++ profile.gradleUserHome ++
         profile.m2Repository
-      for cache <- caches do
-        val grants = writable.filter(_.contains(s"(subpath \"$cache\")"))
-        assert(grants.nonEmpty, cache.toString)
-        assert(grants.forall(line => line.contains("file-read*") && !line.contains("process-exec*")), cache.toString)
+      for path <- Seq(workspace, profile.sessionTmp) ++ caches do
+        val grants = writable.filter(_.contains(s"(subpath \"$path\")"))
+        assert(grants.nonEmpty, path.toString)
+        assert(grants.forall(_.contains("process-exec*")), s"${profile.prereqs.program.name}: $path")
 
   test("every ancestor of a granted path is a literal metadata read, never a listing"):
     // Measured:
@@ -226,6 +226,10 @@ class SeatbeltProfileTest extends munit.FunSuite:
     val afterGrant = lines.drop(grant + 1).filterNot(_.startsWith(";;"))
     assertEquals(afterGrant.take(3), SeatbeltProfile.ProcessReadRule)
     assertEquals(lines.filterNot(_.startsWith(";;")).count(_.contains("process-info")), 2)
+
+  test("signals reach the command's own sandbox alone"):
+    val signals = rendered().linesIterator.filter(line => !line.startsWith(";;") && line.contains("signal")).toSeq
+    assertEquals(signals, Seq("(allow signal (target same-sandbox))"))
 
   test("file-map-executable is absent: measurement says it is not needed"):
     assert(!clue(rendered()).contains("file-map-executable"))
@@ -441,11 +445,10 @@ class SeatbeltProfileTest extends munit.FunSuite:
     network = Network.Gradle,
   )
 
-  test("gradle grants its distribution to run and its user home to write, and no other program's cache"):
+  test("gradle grants its distribution to run and its user home to write and run, and no other program's cache"):
     val text = render(gradleInputs).fold(reason => fail(reason), identity)
     assert(clue(text).contains(s"""(allow process-exec* file-read* (subpath "$gradleHome"))"""))
-    assert(text.contains(s"""(allow file-read* file-write* (subpath "$gradleUserHome"))"""))
-    assert(!text.contains(s"""process-exec* (subpath "$gradleUserHome")"""))
+    assert(text.contains(s"""(allow file-read* file-write* process-exec* (subpath "$gradleUserHome"))"""))
     assert(!text.contains("sbt-global") && !text.contains("ivy-home") && !text.contains("m2/repository"))
 
   test("gradle's network is the mill daemon's grant plus outbound to any port of this host"):
@@ -473,11 +476,10 @@ class SeatbeltProfileTest extends munit.FunSuite:
   private def mvnInputs =
     millInputs.copy(prereqs = mvnPrereqs, distribution = Some(mvnHome), m2Repository = Some(m2Repository))
 
-  test("mvn grants its distribution to run and its local repository to write, and no sbt cache"):
+  test("mvn grants its distribution to run and its local repository to write and run, and no sbt cache"):
     val text = render(mvnInputs).fold(reason => fail(reason), identity)
     assert(clue(text).contains(s"""(allow process-exec* file-read* (subpath "$mvnHome"))"""))
-    assert(text.contains(s"""(allow file-read* file-write* (subpath "$m2Repository"))"""))
-    assert(!text.contains(s"""process-exec* (subpath "$m2Repository")"""))
+    assert(text.contains(s"""(allow file-read* file-write* process-exec* (subpath "$m2Repository"))"""))
     assert(!text.contains("sbt-global"))
     assert(!text.contains("ivy-home"))
 

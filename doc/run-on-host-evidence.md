@@ -12,13 +12,15 @@ podman 6.1.1 on libkrun (2026-11-22), every row passes and none is skipped:
 
 | Check | Rows | Time |
 |---|---|---|
-| `SeatbeltCheck.scala` | 346 | 24s  |
-| `BuildsCheck.scala` | 41 | 60s  |
+| `SeatbeltCheck.scala` | 382 | 24s  |
+| `BuildsCheck.scala` | 41 | 65s  |
 | `CommandLifecycleCheck.scala` | 6 | 45s  |
 | `ChannelCheck.scala` | 45 | 6min  |
 
 - Each time runs from the machine block to the totals, the setup's emitting included. Scala CLI's
   compile of the driver comes before it.
+- `CommandLifecycleCheck` and `ChannelCheck` ran before the profile let a command read `.git`, run
+  programs from its caches and signal its own processes.
 - In `ChannelCheck`, the mill 1.1.10 group is the longest: Mill's bound for a busy daemon of
   yours (`RunOnHostMillDaemons.ForeignIdleDeadlineMillis`) holds one of its rows for two minutes.
 

@@ -99,22 +99,6 @@ only the tasks that the build wraps.
   1.1 and earlier, and whether a terminal's `gradle` stays off the launch's daemon, whose registry
   is under the runner's `tmp/`.
 
-## sbt 2.1 builds under `--run-on-host`
-
-sbt 2.1.0 lists every file under a project's base directory while the build loads
-(`IncrementalTest.definedTestDigestTask`, sbt/sbt#10006). The command profile denies reading `.git`
-and `.ko-agent-sandbox` at any depth, so a build whose base holds either fails to load with
-`Operation not permitted`. This repository's `build.sbt` sets
-`Test / definedTestDigests := Map.empty` for its root project in a launch's server, to load.
-
-- [ ] Make a user's sbt 2.1 build load under `--run-on-host` without that setting. Measure on macOS
-  what the walk needs under `.git`, then choose between:
-  - granting the walk's directory listings and file attributes under `.git`, which shows a
-    command the repository's file names and sizes;
-  - the runner adding the setting to every sbt 2.1 build through its sbt global base, which makes
-    each test command there rerun every test.
-- [ ] Remove the setting from `build.sbt` once an sbt release no longer walks the base directory.
-
 ## Forked sbt tests under `--run-on-host`
 
 sbt 2 reaches a forked test JVM on JDK 16 or later through a Unix socket under `$XDG_RUNTIME_DIR`,
@@ -130,6 +114,56 @@ listener (`run-on-host-internals.md`, "Network"):
 - [ ] Add a forked-test row for each configuration to the run-on-host checks and run them on macOS.
   Record the outcome in "Network"; if the fork fails, say there what a build with
   `Test / fork := true` does instead.
+
+## What the container allows and a host command's profile denies
+
+A host command's profile starts from `(deny default)`. Comparing it with the container found three
+denials with no recorded reason. The profile grants them, and SeatbeltCheck has rows for each:
+reads under `.git` and `.ko-agent-sandbox`, running programs from the run-on-host caches, and
+signals to the command's own processes. Writes to `.git`'s listed state have an entry of their own,
+below. Listeners and other processes' arguments stay denied for the reasons in `SECURITY.md`, "Run
+on host".
+
+- [ ] Check every SBPL operation that the profile leaves under `(deny default)` against what the
+  container allows. For each one the container allows, grant it with a SeatbeltCheck row, or record
+  why it stays denied. Chromium's and WebKit's profiles name the operations in use.
+  - Not yet checked: POSIX shared memory and semaphores (`ipc-posix-*`), pseudo-terminals,
+    `file-ioctl`, and the Mach services beyond those that the profile grants.
+
+## Writable Git state under `--run-on-host`
+
+In the container, the agent writes the Git state that the workspace policy lists: refs, objects,
+the index, HEAD and the like. A host command's profile denies every write under `.git`, so a build
+or test that commits, tags or stages in the workspace's repository fails on the host and works in
+the container.
+
+- [ ] Grant a host command the writes that the workspace policy allows under `.git`, and keep
+  config, hooks and the other frozen entries denied. Take the entries from the policy, not from a
+  copy, and carry over its cases, such as a symlink at `objects` that leads back into the workspace
+  (`SECURITY.md`, "The host's git executing what the sandbox wrote";
+  `ko-agent-fs/policy/doc/git-metadata.md`). Add SeatbeltCheck rows for a granted write and a
+  frozen one.
+
+## Symlinks that host commands create
+
+A host command can create a symlink in the workspace that leads outside it, which the session's
+backends refuse (`SECURITY.md`, "Run on host"). sbt 2 does so by design: its `target/` outputs link
+into its store in the run-on-host cache.
+
+No profile of Chromium (`sandbox/policy/mac`), WebKit (`Source/WebKit/*/…sb.in`), Nix or Codex
+filters on a link's target. WebKit's process profiles and Chromium's WebNN profile refuse every new
+link with `(deny file-write-create (vnode-type SYMLINK))`, and Chromium's network profile does so
+unless a parameter allows it. That rule would break sbt 2.
+
+- [ ] After each command, remove the links that it created whose target resolves outside the
+  workspace and the run-on-host caches, and report each one. Add a ChannelCheck row with a planted
+  `x -> ~/.ssh`.
+  - A walk of the whole workspace finds this repository's links in 0.3s, measured in a session
+    over 6,773 entries. Two thirds of those entries are build output under `target/`, so the walk
+    grows with a project's build output.
+  - Per-file FSEvents events may limit the check to the paths that the command changed; whether
+    their flags tell a created symlink apart is unread. Nothing in this repository uses FSEvents
+    yet: the supervisor would need a binding to `FSEventStream`, through FFM or a library.
 
 ## IDE integration through VS Code's Agent Host
 

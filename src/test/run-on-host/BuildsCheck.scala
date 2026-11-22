@@ -159,11 +159,19 @@ class BuildsRows(run: CheckRun, emitted: Map[String, Emitted]):
           case None => run.fail(label, excerpt(result, "^\\[error\\]"))
       forked("a process forked by the command cannot read ~",
         """eval { val code = scala.sys.process.Process(Seq("/bin/ls", sys.env("HOME"))).!; "forked-exit=" + code }""")
+      // A path below a linked worktree's pointer file fails with ENOTDIR before Seatbelt decides, which the row would
+      // count as a denial. There the row writes into a .git directory of its own.
+      val gitDir =
+        if Files.isDirectory(root / ".git") then root / ".git"
+        else
+          val scratch = Files.createTempDirectory(root, "run-on-host-scratch")
+          run.cleanup.add("remove the forked row's scratch tree")(removeTree(scratch))
+          Files.createDirectory(scratch / ".git")
       forked("a process forked by the command cannot write WORKSPACE/.git",
-        s"""eval { val code = scala.sys.process.Process(Seq("/usr/bin/touch", "${root / ".git" / "run-on-host-marker"
+        s"""eval { val code = scala.sys.process.Process(Seq("/usr/bin/touch", "${gitDir / "run-on-host-marker"
           }")).!; "forked-exit=" + code }""")
       sbt(Some("--jvm-client"), "shutdown")
-      run.cleanup.add("remove the forked row's marker")(Files.deleteIfExists(root / ".git" / "run-on-host-marker"))
+      run.cleanup.add("remove the forked row's marker")(Files.deleteIfExists(gitDir / "run-on-host-marker"))
       // sbtn returns with nothing built, and this row keeps asking whether that changes. A build's success is the
       // measure: sbtn's --version passes and proves nothing.
       val sbtn = sbt(None, "compile")

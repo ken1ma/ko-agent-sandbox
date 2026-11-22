@@ -81,11 +81,11 @@ AppContainer cannot express the denials:
 
 The filesystem rules define what a host command can access:
 
-- **Commands can start programs they write in the workspace or their temporary directory.** A
-  child inherits the profile, so running those programs grants nothing more.
+- **Commands can start programs they write in the workspace, their temporary directory or the
+  run-on-host caches.** A child inherits the profile, so running those programs grants nothing
+  more.
   - Tests routinely write and run stubs.
-  - The run-on-host cache permits reads and writes but not direct process execution. The JVM can
-    still load and execute code from cached JARs.
+  - A build may run a native tool that it fetched into a cache.
 - **Seatbelt has no mount namespace**, so the profile cannot replace `$HOME` with an empty
   directory the way a container image would. The profile denies `$HOME` instead.
   - A command cannot create `$HOME/.netrc`, a Coursier mirror file, or any other configuration a
