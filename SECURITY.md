@@ -1984,7 +1984,7 @@ commands execute outside the container, so the profile provides their confinemen
     cache (`doc/run-on-host-internals.md`, "sbt").
   - The link gives the command nothing, because the profile judges the resolved path. It exposes a
     file when a later process of yours follows it.
-  - `doc/TODO.md`, "Symlinks that host commands create", tracks a check.
+  - `doc/TODO-run-on-host.md`, "Symlinks that host commands create", tracks a check.
 - **Cache poisoning stops at the workspace.** The command writes its own per-workspace caches, never
   yours:
   - the Coursier cache;
@@ -2004,7 +2004,8 @@ commands execute outside the container, so the profile provides their confinemen
     - A build can refuse such a task in that server (`doc/run-on-host.md`, "Telling a host command
       apart in a build"). This repository's `dist` and `assembly` refuse there, and stop that
       server.
-    - `doc/TODO.md`, "A terminal's sbt in a launch's server", tracks a fix in the launcher.
+    - `doc/TODO-run-on-host.md`, "A terminal's sbt in a launch's server", tracks a fix in the
+      launcher.
   - The build output in the workspace has no such separation. A session writes `target/` and
     `dist/` as it writes the sources, and `git diff` shows neither the class files nor the jars
     there. Your own server's incremental build reuses `target/`, so run `sbt clean dist` when a

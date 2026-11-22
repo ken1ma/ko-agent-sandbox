@@ -273,8 +273,8 @@ A host command's recurring cost is the program's start. Each program starts anew
   directory ("Where a host command deviates from the stock program"). Either program starts:
   - at the first command from a directory;
   - after `ko-sandbox-run-on-host <program> shutdown`;
-  - after the program's own idle exit: seven days for sbt (`TODO.md`, "an idle bound for the sbt
-    server"), thirty minutes for Mill.
+  - after the program's own idle exit: seven days for sbt (`TODO-run-on-host.md`, "an idle bound for
+    the sbt server"), thirty minutes for Mill.
 - An sbt server keeps the `sbt.version` and options it started with until `shutdown`, as in a
   terminal. A cancelled sbt command leaves its server warm.
 - `mill` also starts anew after a cancel, which ends the daemon as stock Mill does.
@@ -353,8 +353,8 @@ operability, since the caller is not interactive. A quoted section name in this 
   - The runner fails the start, with the log's tail, when neither the server's log nor the proxy
     log grows and no portfile appears for two minutes.
   - A `mill` starter that neither ends nor writes for as long, while the proxy log stays still,
-    fails the same way. `doc/TODO.md`, "a bound on a silent host command", tracks a bound for every
-    silent host command.
+    fails the same way. `TODO-run-on-host.md`, "a bound on a silent host command", tracks a bound
+    for every silent host command.
 
 ### Under sbt
 

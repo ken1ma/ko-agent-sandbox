@@ -945,7 +945,7 @@ object RunOnHostSandbox:
     *
     *   - The bound is on progress rather than time, because a first start resolves sbt's own dependencies through the
     *     proxy.
-    *   - sbt's own client waits with no bound at all (doc/TODO.md, "a bound on a silent host command"). */
+    *   - sbt's own client waits with no bound at all (doc/TODO-run-on-host.md, "a bound on a silent host command"). */
   val ServerStartSilenceMillis = 120_000L
 
   def sandboxExec(profileFile: Path, command: Seq[String]): Seq[String] =

@@ -10,6 +10,7 @@ part:
 | the security properties and their costs | `SECURITY.md` "Run on host" |
 | the Seatbelt behavior that the profiles depend on, measured | [seatbelt.md](seatbelt.md) |
 | the run-on-host checks' recorded results and other measurements | [run-on-host-evidence.md](run-on-host-evidence.md) |
+| the remaining work | [TODO-run-on-host.md](TODO-run-on-host.md) |
 | option syntax and write access | [README.md](../README.md#reference), `--run-on-host` |
 | the channel protocol and its teardown | `RunOnHostChannel.scala`, `ko-sandbox-run-on-host` |
 | the command lifecycle: publish, lock, scavenge | `RunOnHostSession.scala` |
@@ -930,7 +931,7 @@ Which program reads each variable, by each program's documentation:
   The table is for a program the build brings.
   - `/usr/bin/curl` stops at LibreSSL's `fopen('/private/etc/ssl/openssl.cnf')`, `Operation not
     permitted`, printed as `Auto configuration failed`. The file is not among the profile's system
-    paths (`SeatbeltProfile.SystemPaths.txt`; `doc/TODO.md`, "read grants a user adds").
+    paths (`SeatbeltProfile.SystemPaths.txt`; `TODO-run-on-host.md`, "read grants a user adds").
   - `/usr/bin/git`, Xcode's shim, ends with "See `man xcode-select` for more details".
 - The CA is the whole store and the whole PEM file. No public root is beside it, since the proxy
   inspects every host it allows and no origin's own certificate reaches a command.
