@@ -108,7 +108,7 @@ object SeatbeltProfile:
   case class SystemPaths(reads: Seq[Path], executes: Seq[Path])
 
   /** The network authority beyond the proxy and the session's own UNIX sockets. The type shows in the dispatch which
-    * program gets which authority. src/probe/run-on-host-runner-session.sh L1–L4, G1 and G7–G10 measured the cases.
+    * program gets which authority. src/probe/RunOnHostRunnerSession.scala L1–L4, G1 and G7–G10 measured the cases.
     *
     *   - An sbt server and Maven get nothing more.
     *   - An sbt client gets the sockets under the runner's `tmp/`, where its server listens.

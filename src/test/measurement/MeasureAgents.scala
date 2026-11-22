@@ -1,4 +1,4 @@
-//> using scala 3.10.0
+//> using scala 3.10.1
 //> using file ../../main/scala/JsonText.scala
 //> using file ../scala/AgentEvents.scala
 

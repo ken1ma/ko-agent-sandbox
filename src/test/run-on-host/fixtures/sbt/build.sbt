@@ -3,7 +3,7 @@
 // - The root project has one passing test class.
 // - `failing` has one failing test class. The root does not aggregate it, so only `failing/testFull` runs it, for the
 //   row that checks a failure's exit code.
-ThisBuild / scalaVersion := "3.10.0"
+ThisBuild / scalaVersion := "3.10.1"
 
 val munit = "org.scalameta" %% "munit" % "1.3.6" % Test
 

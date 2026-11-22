@@ -1,6 +1,6 @@
 name := "ko-agent-egress-proxy"
 version := "0.1.0"
-scalaVersion := "3.10.0"
+scalaVersion := "3.10.1"
 
 scalacOptions ++= Seq(
   "-deprecation",

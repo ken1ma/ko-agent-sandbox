@@ -751,8 +751,8 @@ with a test's `CommandContext`, against a fake reviewer: a test program installe
 and `claude` on `PATH` that imitates each CLI's events. A test that signals the helper, or runs it
 beside another command, starts the helper as a process of its own.
 
-- The suites fork a JVM and run one at a time, for the reasons in `../build.sbt`. So they run in a
-  session container or on a host outside the run-on-host sandbox, which refuses a forked JVM.
+- The suites fork a JVM, run one at a time, and run in a session container or on a host outside
+  the run-on-host sandbox, for the reasons in `../build.sbt`.
 - The tests cover thread continuity and mismatch, every failure class, the digest over each kind
   of change, the base range, the coverage of an earlier approval and the changed paths each turn
   names, the transcript, the lock, the limit of answered turns, escalation, state namespacing,

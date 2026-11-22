@@ -202,11 +202,11 @@ object RunOnHostSandbox:
       val read = java.util.concurrent.FutureTask[Option[A]]: () =>
         try buildFileRead(buildDirectory, relative, raced)(use)
         finally readers.release()
-      try Thread.ofPlatform().daemon().name(threadName).start(read)
-      catch
-        case ex: Throwable =>
-          readers.release()
-          throw ex
+      var started = false
+      try
+        Thread.ofPlatform().daemon().name(threadName).start(read)
+        started = true
+      finally if !started then readers.release()
       try read.get(millis, java.util.concurrent.TimeUnit.MILLISECONDS)
       catch case _: (java.util.concurrent.TimeoutException | java.util.concurrent.ExecutionException) => None
 
@@ -1375,6 +1375,14 @@ object RunOnHostSandbox:
       "XDG_RUNTIME_DIR" -> socketDir.toString,
       "SBT_GLOBAL_SERVER_DIR" -> socketDir.toString,
       "COURSIER_CACHE" -> prereqs.coursierV1.toString,
+      // The sbt script has the launcher export the JDK's runtime into the launcher's cache on every start. Launcher
+      // 1.7.1, in the sbt 2.1.0 runner, ignores sbt.global.base and uses ~/Library/Caches/sbt, which the profile
+      // denies (sbt/launcher Pre.localCacheBase).
+      // - The launcher reads sbt.global.localcache before this variable, so a request's --sbt-cache, which the script
+      //   turns into that property, still wins. The property in _JAVA_OPTIONS would override the flag.
+      // - sbt itself reads <sbt.global.base>/cache before this variable (SysProp.globalLocalCache), so the server's
+      //   cache stays where it was.
+      "SBT_LOCAL_CACHE" -> sbtGlobal.resolve("cache").toString,
       "GRADLE_USER_HOME" -> gradleUserHome.toString,
       "USER" -> userName,
       "LOGNAME" -> userName,

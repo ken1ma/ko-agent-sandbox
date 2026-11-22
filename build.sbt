@@ -1,6 +1,6 @@
 name := "ko-agent-sandbox"
 version := "0.1.0"
-scalaVersion := "3.10.0"
+scalaVersion := "3.10.1"
 
 scalacOptions ++= Seq(
   "-deprecation",
@@ -42,6 +42,14 @@ lazy val root = project.in(file(".")).dependsOn(egressProxy).settings(
   // Uncached, as dist is: a TestResult has no JSON format.
   Test / testFull := Def.uncached((Test / testFull).dependsOn(egressProxy / Test / testFull, koReview / Test / testFull)
     .value),
+  // sbt 2.1.0 lists every file under a project's base directory while the build loads, and the run-on-host profile
+  // refuses to list .git, which this project's base holds, so a launch's server would not load the build
+  // (https://github.com/sbt/sbt/issues/10006).
+  // - Without the digests, every test command in a launch's server reruns all of this project's tests. Elsewhere,
+  //   and in the subprojects, whose bases hold no .git, `test` stays incremental.
+  // - Elsewhere the setting is absent rather than reset: with sbt's own definedTestDigests, the listing runs at load.
+  // - TODO.md, "sbt 2.1 builds under --run-on-host", says when the setting goes.
+  if (KoAgentSandboxHelper.inHostCommand) Seq(Test / definedTestDigests := Map.empty) else Seq.empty[Def.Setting[?]],
 
   // The container-launching suites share one podman, and each suite asserts on resources scoped to a workspace it
   // created. Run in parallel, the suites interleave: one suite's launch observes another suite's container, and one
@@ -56,10 +64,9 @@ lazy val root = project.in(file(".")).dependsOn(egressProxy).settings(
   // - the launcher's re-invocation of itself as `java -cp`, for the runner, supervisor and proxy that the launcher
   //   starts (RunOnHostSandbox.CertificateBuilderExports);
   // - the native-image command in doc/TODO.md, for the binary;
-  // - .jvmopts, for the tests, which run in sbt's own JVM. A forked test JVM would need sbt's TCP listener to reach it,
-  //   and the host command sandbox does not grant that listener (doc/run-on-host-internals.md, "Network"). The proxy's
-  //   suites fork regardless (ko-agent-egress-proxy/app/build.sbt): they bind listeners, which that sandbox refuses
-  //   too, so they run in a session container.
+  // - .jvmopts, for the tests, which run in sbt's own JVM. The proxy's suites fork
+  //   (ko-agent-egress-proxy/app/build.sbt) and bind listeners, which the host command sandbox refuses
+  //   (doc/run-on-host-internals.md, "Network"), so they run in a session container.
   Compile / run / javaOptions ++= Seq(
     "--enable-native-access=ALL-UNNAMED",
     "--add-exports=java.base/sun.security.x509=ALL-UNNAMED",

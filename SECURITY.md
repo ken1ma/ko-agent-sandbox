@@ -1778,7 +1778,7 @@ commands execute outside the container, so the profile provides their confinemen
     TCP or UDP listener, where a test under sbt or Maven gets `EPERM`.
   - The bind is at any address of this host, not loopback alone. SBPL's `localhost` class admits a
     bind to the wildcard or to the LAN address, and a socket so bound answers at the LAN address
-    (measured from this host, `src/probe/run-on-host-runner-session.sh` G1, G9, G10). The filter
+    (measured from this host, `src/probe/RunOnHostRunnerSession.scala` G1, G9, G10). The filter
     admits by the local address, so a LAN peer's connection is the same case.
   - The cost is Mill's and Gradle's. The table at the end of this section states the cost beside the
     other programs':

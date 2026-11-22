@@ -1,5 +1,5 @@
 #!/usr/bin/env -S scala shebang
-//> using scala 3.10.0
+//> using scala 3.10.1
 //> using file ../../../src/main/scala/SourceDigest.scala
 
 // Checks the source digests that ko-agent-fs/bpf/doc/evidence.md names ("Suites"). Each measurement

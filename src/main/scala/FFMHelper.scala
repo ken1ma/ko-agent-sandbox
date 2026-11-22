@@ -6,6 +6,7 @@ import java.lang.foreign.{
   Arena, FunctionDescriptor, Linker, MemoryLayout, MemorySegment, StructLayout, SymbolLookup, ValueLayout,
 }
 import scala.util.Using
+import scala.util.control.NonFatal
 
 object FFMHelper:
 
@@ -53,7 +54,7 @@ object FFMHelper:
           else
             val accepted: Int = setConsoleMode.invokeExact(console, current | EscapeProcessing)
             accepted != 0
-      catch case _: Throwable => false
+      catch case NonFatal(_) => false
 
     /** `SetEnvironmentVariableW(name, NULL)`: removes the variable from what a process this one creates
       * inherits. Throws on failure, because a value a child should not inherit must not stay there
@@ -133,7 +134,7 @@ object FFMHelper:
               Option.when(answered != 0)(information.get(ValueLayout.JAVA_INT, NumberOfLinksOffset))
             finally
               val _: Int = closeHandle.invokeExact(handle)
-      catch case _: Throwable => None
+      catch case NonFatal(_) => None
 
     /** `text` as the NUL-terminated UTF-16 string the `W` entry points read. */
     private def wide(arena: Arena, text: String): MemorySegment =
@@ -161,7 +162,7 @@ object FFMHelper:
         // The ascription is necessary for the same reason as in execvp below.
         val answer: Int = handle.invokeExact(fd)
         answer != 0
-      catch case _: Throwable => false
+      catch case NonFatal(_) => false
 
     /** `unsetenv`: removes the variable from what a process this one starts inherits. Throws on
       * failure, as kernel32.clearEnvironmentVariable does. */

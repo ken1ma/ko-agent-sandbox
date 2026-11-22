@@ -9,6 +9,7 @@ package agentsandbox.launcher
 
 import java.io.IOException
 import scala.annotation.tailrec
+import scala.util.control.NonFatal
 
 import HostCommands.*
 
@@ -43,7 +44,7 @@ object SandboxLifecycle:
       sys.exit(1)
     if viaExec && currentOs != Os.Windows then
       try FFMHelper.libc.execvp(command)
-      catch case _: Throwable => ()
+      catch case NonFatal(_) => ()
     val process =
       try ProcessBuilder(command*).inheritIO().start()
       catch

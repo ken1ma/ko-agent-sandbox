@@ -1,5 +1,5 @@
 #!/usr/bin/env -S scala shebang
-//> using scala 3.10.0
+//> using scala 3.10.1
 //> using file ../test/scala/HostDriver.scala
 //> using file ../test/scala/RunOnHostIdle.scala
 //> using file ../test/scala/RunOnHostChecks.scala
@@ -156,6 +156,7 @@ object RunOnHostProfileIterate:
           "SBT_GLOBAL_SERVER_DIR" -> tmp.toString,
           "_JAVA_OPTIONS" -> (s"-Djava.io.tmpdir=$tmp -Djava.util.prefs.userRoot=$tmp " +
             s"-Dsbt.global.base=$tmp/sbt-global -Dsbt.ivy.home=$tmp/ivy-home"),
+          "SBT_LOCAL_CACHE" -> s"$tmp/sbt-global/cache",
         ))
       Files.writeString(log, output.text)
       output.ok

@@ -578,7 +578,7 @@ object RunOnHostPrereqs:
    *   - The native image takes no `_JAVA_OPTIONS`, so the environment's `preferIPv4Stack` never reaches it. The image's
    *     connect is the dual-stack one that the "localhost" class denies (run-on-host-internals.md, "Network").
    *   - `-Djava.net.preferIPv4Stack=true` on the native image's command line changes nothing (measured,
-   *     src/probe/run-on-host-runner-session.sh M2).
+   *     src/probe/RunOnHostRunnerSession.scala M2).
    *   - A `<v>-native` pin asks for that one launcher by name, and is refused.
    */
   def millLauncherVersion(pinned: String): Either[Refusal, String] =

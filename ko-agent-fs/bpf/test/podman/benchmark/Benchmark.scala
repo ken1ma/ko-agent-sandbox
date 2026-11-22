@@ -1,5 +1,5 @@
 #!/usr/bin/env -S scala shebang
-//> using scala 3.10.0
+//> using scala 3.10.1
 //> using file ../PodmanTestHelper.scala
 //> using file ../../../../../src/main/scala/SourceDigest.scala
 //> using file ../../../../../src/test/scala/HostDriver.scala

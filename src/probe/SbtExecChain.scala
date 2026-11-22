@@ -1,5 +1,5 @@
 #!/usr/bin/env -S scala shebang
-//> using scala 3.10.0
+//> using scala 3.10.1
 //> using file ../test/scala/HostDriver.scala
 //> using file ../test/scala/RunOnHostIdle.scala
 //> using file ../test/scala/RunOnHostChecks.scala

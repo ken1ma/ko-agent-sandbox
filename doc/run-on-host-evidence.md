@@ -6,15 +6,15 @@ mechanism depends on beside that mechanism.
 
 ## The run-on-host checks
 
-The four checks under `src/test/run-on-host/` measure the exit criteria. On macOS 27.2 arm64 with
-Temurin 25.0.4, sbt 2.0.12, Mill 1.3.1 and 1.1.10, Gradle 9.8.2 and 8.14.6, Maven 3.9.16 and
-podman 6.1.4 on libkrun (2026-11-09), every row passes and none is skipped:
+The four checks under `src/test/run-on-host/` measure the exit criteria. On macOS 26.6.2 arm64
+with Temurin 25.0.4, sbt 2.1.0, Mill 1.3.1 and 1.1.10, Gradle 9.8.2 and 8.14.6, Maven 3.9.16 and
+podman 6.1.1 on libkrun (2026-11-22), every row passes and none is skipped:
 
 | Check | Rows | Time |
 |---|---|---|
 | `SeatbeltCheck.scala` | 346 | 24s  |
-| `BuildsCheck.scala` | 40 | 55s  |
-| `CommandLifecycleCheck.scala` | 6 | 42s  |
+| `BuildsCheck.scala` | 41 | 60s  |
+| `CommandLifecycleCheck.scala` | 6 | 45s  |
 | `ChannelCheck.scala` | 45 | 6min  |
 
 - Each time runs from the machine block to the totals, the setup's emitting included. Scala CLI's

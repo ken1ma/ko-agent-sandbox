@@ -38,7 +38,7 @@ class KoAgentSandboxHelperTest extends munit.FunSuite:
 
   // sbt 1's plain `sbt` runs a JVM of its own, so only its thin client meets a launch's server; sbt 2's `sbt` is a thin
   // client already. Both take --client.
-  for sbtVersion <- Seq("2.0.12", "1.13.1") do
+  for sbtVersion <- Seq("2.1.0", "1.13.1") do
     test(s"under sbt $sbtVersion, a refused task beside a slower one reaches the client before the server ends"):
       assume(sbt.isDefined, "needs sbt on PATH")
       // A server started from a host command would be confined as the launch's own, which refuses another server.

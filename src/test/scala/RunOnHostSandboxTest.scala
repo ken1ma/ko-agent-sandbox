@@ -81,6 +81,9 @@ class RunOnHostSandboxTest extends munit.FunSuite:
     assertEquals(environment("COURSIER_CACHE"), "/cache/v1")
     assertEquals(environment("GRADLE_USER_HOME"), "/cache/gradle")
     assert(environment("_JAVA_OPTIONS").contains("-Dsbt.global.base=\"/cache/sbt\""))
+    // The launcher's cache, as a variable: a property in _JAVA_OPTIONS would override a request's --sbt-cache.
+    assertEquals(environment("SBT_LOCAL_CACHE"), "/cache/sbt/cache")
+    assert(!environment("_JAVA_OPTIONS").contains("sbt.global.localcache"))
     assert(environment("_JAVA_OPTIONS").contains("-Dsbt.ivy.home=\"/cache/ivy\""))
     assert(environment("_JAVA_OPTIONS").contains("-Dmaven.repo.local=\"/cache/m2\""))
     // A forward reaches the command. A forward that names a variable the supervisor sets loses to the supervisor.
@@ -107,8 +110,8 @@ class RunOnHostSandboxTest extends munit.FunSuite:
       environment.keySet,
       Set(
         "HOME", "LANG", "TOKEN", "PATH", "JAVA_HOME", "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "TMPDIR", "XDG_RUNTIME_DIR",
-        "SBT_GLOBAL_SERVER_DIR", "COURSIER_CACHE", "GRADLE_USER_HOME", "USER", "LOGNAME", "MILL_FINAL_DOWNLOAD_FOLDER",
-        "MILL_VERSION", HostCommandVariable,
+        "SBT_GLOBAL_SERVER_DIR", "COURSIER_CACHE", "SBT_LOCAL_CACHE", "GRADLE_USER_HOME", "USER", "LOGNAME",
+        "MILL_FINAL_DOWNLOAD_FOLDER", "MILL_VERSION", HostCommandVariable,
       ) ++ commandProxyVariables(4711).keySet ++ AgentSandboxLauncher.CaBundleVariables,
     )
     // Without a derivable download folder, the variable is absent. The launcher version is absent too for a program

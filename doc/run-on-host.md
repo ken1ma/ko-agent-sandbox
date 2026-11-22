@@ -242,7 +242,7 @@ result you run outside the sandbox.
     built in a new server.
   - Under sbt 1, only `sbt --client` reaches the launch's server: a plain `sbt` runs a JVM of its
     own, and builds from your caches.
-  - `KoAgentSandboxHelperTest` checks the refusal under sbt 2.0.12 and 1.13.1, in a build of its
+  - `KoAgentSandboxHelperTest` checks the refusal under sbt 2.1.0 and 1.13.1, in a build of its
     own, with the refused task beside a slower one.
 - A task whose result you run outside the sandbox, such as a launcher jar, needs the refusal
   because the launch's server builds from the run-on-host caches, which the agent's commands write

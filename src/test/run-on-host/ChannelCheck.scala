@@ -1,5 +1,5 @@
 #!/usr/bin/env -S scala shebang
-//> using scala 3.10.0
+//> using scala 3.10.1
 //> using file ../scala/HostDriver.scala
 //> using file ../scala/RunOnHostIdle.scala
 //> using file ../scala/RunOnHostChecks.scala
@@ -876,7 +876,7 @@ class GroupRows(run: CheckRun, emitted: Map[String, Emitted], ch: Channel):
         daemonInGroup(ch.record("daemon-mill", workspace), workspace).mkString(" "))
 
     // After a client disconnect mid-command, the next command runs, whatever the daemon did on the disconnect. Stock
-    // Mill shuts the daemon down (Server.scala; measured by src/probe/run-on-host-runner-session.sh M5), and the wait
+    // Mill shuts the daemon down (Server.scala; measured by src/probe/RunOnHostRunnerSession.scala M5), and the wait
     // lets that shutdown finish.
     val cancelled = ch.startShim(s"$id-cancel", workspace, Seq("mill", "run", "sleep", tag))
     val ready = within(300, intervalMillis = 500)(ch.outputOf(s"$id-cancel").out.contains("fixture-main") ||

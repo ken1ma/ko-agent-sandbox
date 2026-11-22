@@ -180,7 +180,7 @@ port:
   take on.
 
 These grants depend on how Seatbelt matches network rules, which [seatbelt.md](seatbelt.md),
-"Network", records. `src/probe/run-on-host-runner-session.sh` measures each consequence below:
+"Network", records. `src/probe/RunOnHostRunnerSession.scala` measures each consequence below:
 
 - The command's environment sets `-Djava.net.preferIPv4Stack=true`, because the `localhost` class
   denies a JVM's dual-stack connect to `127.0.0.1`.
@@ -411,7 +411,7 @@ suffix, because the image takes no `_JAVA_OPTIONS`:
 - the image's connect to the daemon is the dual-stack one that the "localhost" class denies
   ("Network");
 - the property on the image's command line changes nothing (measured,
-  `src/probe/run-on-host-runner-session.sh` M2).
+  `src/probe/RunOnHostRunnerSession.scala` M2).
 
 A `<v>-native` pin asks for that image by name, and is refused with the reason.
 
@@ -861,6 +861,7 @@ What the supervisor supplies:
 | `TMPDIR` | `<command directory>/tmp`; under `mill` and `gradle` the runner's `tmp/` |
 | `XDG_RUNTIME_DIR`, `SBT_GLOBAL_SERVER_DIR` | the runner's `tmp/`, or the command's under Maven |
 | `COURSIER_CACHE` | `<run-on-host cache>/coursier/v1` |
+| `SBT_LOCAL_CACHE` | `<run-on-host cache>/sbt-global/cache`, else sbt launcher 1.7.1 exports the JDK's runtime to `~/Library/Caches/sbt` |
 | `GRADLE_USER_HOME` | `<run-on-host cache>/gradle-user-home` |
 | `USER`, `LOGNAME` | the account's name, the JVM's `user.name` |
 | `KO_AGENT_SANDBOX_RUN_ON_HOST_COMMAND` | `1`, for builds (`run-on-host.md`, "Telling a host command apart in a build") |

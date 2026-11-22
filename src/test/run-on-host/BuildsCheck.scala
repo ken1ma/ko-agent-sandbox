@@ -1,5 +1,5 @@
 #!/usr/bin/env -S scala shebang
-//> using scala 3.10.0
+//> using scala 3.10.1
 //> using file ../scala/HostDriver.scala
 //> using file ../scala/RunOnHostIdle.scala
 //> using file ../scala/RunOnHostChecks.scala
@@ -25,9 +25,9 @@
 
   The groups:
 
-  - sbt: this repository's compile; sbt's own clients under the emitted profile, the server's JDK, and the processes
-    that the command forks; then the command's proxy: a re-fetch, a refused PUT, and which CA variables curl and git
-    read.
+  - sbt: this repository's compile and the launcher's runtime export; sbt's own clients under the emitted profile, the
+    server's JDK, and the processes that the command forks; then the command's proxy: a re-fetch, a refused PUT, and
+    which CA variables curl and git read.
   - sbt-fixtures: a test run in fixtures/sbt, since this repository's own tests bind TCP listeners, which the profile
     refuses; packageBin across a dependsOn edge in fixtures/ivy, on sbt 1; and an unlisted host in fixtures/deny.
   - mill, and mill on the last Mill with a daemon: compile and test; the JDK that a pinned or unset mill-jvm-version
@@ -116,6 +116,17 @@ class BuildsRows(run: CheckRun, emitted: Map[String, Emitted]):
     val compile = run.supervisor("sbt-compile", Program.Sbt, root, Seq("compile"))
     run.check("sbt compile (supervisor)", compile.ok, excerpt(compile, if compile.ok then "^\\[success\\]"
       else "^\\[error\\]|^refused|Exception"))
+    // The sbt script has the launcher export the JDK's runtime on every start, into the cache that SBT_LOCAL_CACHE
+    // names (RunOnHostSandbox.commandEnvironment). A launcher writing elsewhere is denied, and every command then
+    // prints the launcher's error.
+    val launcherDenial = "error during sbt launcher|Library/Caches/sbt"
+    val runtimeJar = scala.util.Using.resource(Files.find(profile.sbtGlobal, 4,
+      (path, _) => path.getFileName.toString == "rt.jar"))(_.findFirst())
+    run.check("the sbt launcher exports the JDK's runtime inside the granted cache",
+      runtimeJar.isPresent && launcherDenial.r.findFirstIn(compile.text).isEmpty,
+      if launcherDenial.r.findFirstIn(compile.text).isDefined then excerpt(compile, launcherDenial)
+      else if runtimeJar.isPresent then profile.sbtGlobal.relativize(runtimeJar.get).toString
+      else s"no rt.jar under ${profile.sbtGlobal}")
 
     transcript.step("sbt's own clients under the emitted profile")
     // These rows use the same profile with no proxy behind it; the supervisor rows above warmed the run-on-host cache

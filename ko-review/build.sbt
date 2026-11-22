@@ -2,8 +2,6 @@ name := "ko-review"
 // The plugin's version, which the assembly writes into .claude-plugin/plugin.json and the jar's manifest. The review
 // files carry a format version of their own (ReviewFiles.FormatVersion).
 version := "0.2.0"
-// Scala 3.10.1 adds warning E235, which the launcher's sources raise under -Werror; the rest of the repository's
-// build stays on 3.10.0 until they are fixed.
 scalaVersion := "3.10.1"
 
 scalacOptions ++= Seq(
@@ -68,8 +66,8 @@ dist := Def.uncached {
 
 // The suites drive the helper in their own JVM. A turn makes that JVM Linux's child subreaper and kills every child it
 // has once the reviewer ends, which must never happen to sbt's own JVM.
-// - A forked JVM needs sbt's TCP listener, which the run-on-host sandbox refuses, so the suites run in a session
-//   container or on a host outside the sandbox, as the egress proxy's do.
+// - Under the run-on-host sandbox, Xcode's /usr/bin/git shim fails and the suites' killpg gets EPERM, so the suites
+//   run in a session container or on a host outside the sandbox, as the egress proxy's do.
 // - The forked JVM starts in this directory, where the suites read plugin/.
 Test / fork := true
 // - A turn kills every child of the JVM once the reviewer ends, so two suites' turns at once would kill each other's

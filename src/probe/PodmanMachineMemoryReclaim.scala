@@ -1,5 +1,5 @@
 #!/usr/bin/env -S scala shebang
-//> using scala 3.10.0
+//> using scala 3.10.1
 
 /*
   Measures whether the podman machine gives a build's memory back to the host, on macOS and on Windows. The section

@@ -99,6 +99,38 @@ only the tasks that the build wraps.
   1.1 and earlier, and whether a terminal's `gradle` stays off the launch's daemon, whose registry
   is under the runner's `tmp/`.
 
+## sbt 2.1 builds under `--run-on-host`
+
+sbt 2.1.0 lists every file under a project's base directory while the build loads
+(`IncrementalTest.definedTestDigestTask`, sbt/sbt#10006). The command profile denies reading `.git`
+and `.ko-agent-sandbox` at any depth, so a build whose base holds either fails to load with
+`Operation not permitted`. This repository's `build.sbt` sets
+`Test / definedTestDigests := Map.empty` for its root project in a launch's server, to load.
+
+- [ ] Make a user's sbt 2.1 build load under `--run-on-host` without that setting. Measure on macOS
+  what the walk needs under `.git`, then choose between:
+  - granting the walk's directory listings and file attributes under `.git`, which shows a
+    command the repository's file names and sizes;
+  - the runner adding the setting to every sbt 2.1 build through its sbt global base, which makes
+    each test command there rerun every test.
+- [ ] Remove the setting from `build.sbt` once an sbt release no longer walks the base directory.
+
+## Forked sbt tests under `--run-on-host`
+
+sbt 2 reaches a forked test JVM on JDK 16 or later through a Unix socket under `$XDG_RUNTIME_DIR`,
+else `java.io.tmpdir`, which the command profile permits: ko-review's forked suites start on the
+host. Two configurations bind a TCP listener for the fork instead, and the profile grants sbt no
+listener (`run-on-host-internals.md`, "Network"):
+
+- sbt 1, whose `ForkTests` binds a port on every address:
+  https://github.com/sbt/sbt/blob/v1.13.1/main-actions/src/main/scala/sbt/ForkTests.scala#L82
+- sbt 2.1 with `testPersistentWorker := true`:
+  https://github.com/sbt/sbt/blob/v2.1.0/main-actions/src/main/scala/sbt/internal/WorkerExchange.scala#L205
+
+- [ ] Add a forked-test row for each configuration to the run-on-host checks and run them on macOS.
+  Record the outcome in "Network"; if the fork fails, say there what a build with
+  `Test / fork := true` does instead.
+
 ## IDE integration through VS Code's Agent Host
 
 - [ ] Carry out `plan-ide-integration.md` from its phase 1, in this order:
@@ -175,12 +207,12 @@ Why the refusals cover more than the creation:
 ## `src/probe/`: the shell probes as Scala CLI scripts
 
 `development.md`, "Probes", says to write a host-side probe as a standalone Scala CLI script.
-Six probes in `src/probe/` are shell scripts. Five run on the macOS host, and
+Five probes in `src/probe/` are shell scripts. Four run on the macOS host, and
 `podman-attach-stdin.sh` runs on any host with podman.
 
 - [ ] Rewrite each shell probe as a Scala CLI script, and update the documents and code comments
   that cite its path: `jvm-proxy-rule.sh`, `loopback-rule.sh`, `podman-attach-stdin.sh`,
-  `run-on-host-runner-session.sh`, `seatbelt-semantics.sh` and `session-recovery.sh`.
+  `seatbelt-semantics.sh` and `session-recovery.sh`.
 
 ## Open questions under the `--nesting=none` seccomp profile
 

@@ -45,7 +45,7 @@ open is denied. No row of that probe measures this. The runner met it with Mill'
 ## Network
 
 Measured, and none chosen from documentation (`src/probe/loopback-rule.sh`,
-`src/probe/jvm-proxy-rule.sh`, `src/probe/run-on-host-runner-session.sh`):
+`src/probe/jvm-proxy-rule.sh`, `src/probe/RunOnHostRunnerSession.scala`):
 
 - A network rule's host is `*` or `localhost`. The compiler refuses an ip-literal host ("host must
   be * or localhost"), so a rule for one port of this host is `(remote ip "localhost:<port>")`.

@@ -166,7 +166,7 @@ object RunOnHostMillDaemons:
    *   - The TERM never goes to the group, because the daemon is a member. The leader's start time is checked before
    *     the group is ended.
    *   - The daemon, spawned with `destroyOnExit = false` (MillProcessLauncher.scala), survives its launcher's TERM as
-   *     it survives the launcher's exit (measured, run-on-host-runner-session.sh M8).
+   *     it survives the launcher's exit (measured, RunOnHostRunnerSession.scala M8).
    *   - The observations are parameters so that the tests can interleave them.
    */
   private def endStarter(start: RuntimeStart, processes: Processes, log: String => Unit): Boolean =

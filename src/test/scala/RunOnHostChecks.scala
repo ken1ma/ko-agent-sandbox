@@ -22,6 +22,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.jdk.CollectionConverters.*
 import scala.util.Using
+import scala.util.control.NonFatal
 
 import HostDriver.*
 
@@ -263,7 +264,7 @@ object RunOnHostChecks:
             finished.incrementAndGet()
       catch
         case _: java.nio.channels.ClosedChannelException => ()
-        case ex: Throwable => failed.set(ex))
+        case NonFatal(ex) => failed.set(ex))
     acceptor.setDaemon(true)
     acceptor.start()
 
@@ -318,7 +319,7 @@ object RunOnHostChecks:
           val part = reportingTo(transcript.part(out / s"$name.log", name))
           val task: java.util.concurrent.Callable[Unit] = () =>
             try rows(part)
-            catch case ex: Throwable => part.fail(s"the $name group", s"it failed: $ex")
+            catch case NonFatal(ex) => part.fail(s"the $name group", s"it failed: $ex")
           name -> task
         val futures = pool.invokeAll(tasks.map(_._2).asJava).asScala
         // A task's own catch reports what it throws; a future still holds what escaped it, such as a cancellation.
@@ -528,6 +529,7 @@ object RunOnHostChecks:
         "XDG_RUNTIME_DIR" -> tmp,
         "SBT_GLOBAL_SERVER_DIR" -> tmp,
         "COURSIER_CACHE" -> emitted.coursierV1.toString,
+        "SBT_LOCAL_CACHE" -> s"${emitted.sbtGlobal}/cache",
         "USER" -> account,
         "LOGNAME" -> account,
         "MILL_FINAL_DOWNLOAD_FOLDER" -> host.millDownloads.toString,

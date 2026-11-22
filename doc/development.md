@@ -25,7 +25,8 @@ Run the commands in this section from the repository root.
 
    Inside that session, run `sbt testFull`, which also runs `SessionBoundaryTest`.
 
-1. `testFull` runs every test every time, while `test` is incremental.
+1. `testFull` runs every test every time, while `test` is incremental, except for the launcher's
+   tests under `ko-sandbox-run-on-host`, which it reruns every time (`build.sbt`).
 
 ## egress-proxy
 
@@ -61,6 +62,10 @@ script, as `src/probe/PodmanMachineMemoryReclaim.scala` and the drivers under
   output with the console's code page and returns a one-item array as that item.
 - Write the header as a block comment with its content indented, so that its commands copy and
   paste without a comment marker.
+- In a session, compile or run a probe with `--workspace` under `~`, such as
+  `scala $KO_AGENT_SANDBOX_JAVA_OPTS compile --workspace ~/.cache/probe <file>`. Otherwise Scala
+  CLI writes `.scala-build` beside the script, and the host's Scala CLI reports the container's
+  jars as missing.
 
 # Test environments
 

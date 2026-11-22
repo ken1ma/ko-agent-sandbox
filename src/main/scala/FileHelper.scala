@@ -207,14 +207,13 @@ object FileHelper:
       try
         Files.createTempFile(directory, prefix, ".tmp", PosixFilePermissions.asFileAttribute(permissions))
       catch case _: UnsupportedOperationException => Files.createTempFile(directory, prefix, ".tmp")
+    var moved = false
     try
       Files.write(temp, content)
       if posixPermissions(temp) then Files.setPosixFilePermissions(temp, permissions)
       moveReplacing(temp, path)
-    catch
-      case ex: Throwable =>
-        Files.deleteIfExists(temp)
-        throw ex
+      moved = true
+    finally if !moved then Files.deleteIfExists(temp)
 
   /**
    * Uses ATOMIC_MOVE alone: it replaces an existing target on both POSIX and Windows, and some
