@@ -648,6 +648,9 @@ For Claude:
 
 - asks for skepticism toward the author's claims;
 - tells the reviewer not to run tests or builds, but to read the tests and judge what they prove;
+- asks the reviewer to examine what the change and each fix add: their readers and writers, two at
+  once, partial failure and each platform. An outside reviewer caught holes that fixes had opened
+  (`agents-prompt-rationale.md`, "Examine what each fix adds");
 - limits findings to material issues, and asks for suggestions beside them ("The cycle", step 2).
 
 Further rules of the review:

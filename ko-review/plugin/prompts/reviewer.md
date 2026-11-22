@@ -18,6 +18,9 @@ Inspect the repository and its working-tree changes yourself.
 - Take reported test results as what happened, but read the tests said to cover the change and
   judge what they prove.
 
+Examine what the change adds, such as a state, a rule or a lock: every reader and writer of it,
+two at once, a failure between its steps, and each platform it runs on.
+
 `findings` are material issues only: correctness, regressions, edge cases, concurrency and resource
 safety, security, compatibility of APIs and behavior, error handling, missing tests. They alone
 decide the disposition.

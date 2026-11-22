@@ -127,6 +127,20 @@ On a new persistent volume with `--egress-preset=openai`.
   `POST /oauth/revoke`. `codex logout` printed "Successfully logged out", and `~/.codex/auth.json`
   no longer existed.
 
+## Measured with codex 0.171.0 on 2026-11-22: the TUI with a synthetic ID token
+
+On a new volume: `codex login --device-auth`; then a copy of the sign-in under another
+`CODEX_HOME`, with the ID token's signature replaced by `c2lnbmF0dXJl`, and the TUI with a turn
+and `/status`; then the same with the empty payload `e30` as well.
+
+- Both turns completed, every request with a credential carried the sign-in's `cred=1`, and
+  neither run sent `POST /oauth/token`.
+- With the claims kept, `/status` showed the account's email address and plan. With the empty
+  payload, it showed the account as "Unknown" and no plan, and still showed the ChatGPT
+  workspace and the usage limits.
+- The TUI's WebSocket upgrades at `/backend-api/codex/responses` were refused, and each turn went
+  through the HTTP fallback.
+
 ### The lines that MeasurementReport accepts for Codex
 
 `MeasurementReport` reads this block (`doc/agent-measurement.md`, "The measurement suite").
@@ -140,6 +154,7 @@ path chatgpt.com /backend-api/wham/security-setup
 path chatgpt.com /backend-api/wham/rate-limit-reset-credits /backend-api/wham/settings/user
 path chatgpt.com /backend-api/ps/plugins/installed /backend-api/ps/plugins/suggested/codex
 path chatgpt.com /backend-api/ps/plugins/list /backend-api/ps/mcp /backend-api/ps/apps/batch
+path chatgpt.com /backend-api/ps/plugins/tooling-state/turtle
 path chatgpt.com /backend-api/codex/alpha/search
 path api.openai.com /v1/responses
 path auth.openai.com /oauth/revoke /api/accounts/deviceauth/usercode

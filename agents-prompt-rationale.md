@@ -105,6 +105,29 @@ replaces the failing one no longer needs it.
        requested feature did not read as outside it. ko-review's skill leaves "a risk acceptance"
        to the user, but the model read the finding as a defect, not a risk.
 
+## Top priorities: "Examine what each fix adds"
+
+> Examine what each fix adds, with two actors at once and a failure between its steps.
+
+1. Incident: `ko-agent-sandbox`, `claude-opus-5-5`, high effort. While revising
+   `doc/plan-login-brokering.md` against outside reviews, the model fixed each finding and checked
+   the fix against that finding alone. An outside reviewer then found holes that the fixes
+   themselves had opened, in four rounds:
+    1. A launch refused a tunnel at a bound login's hosts, but a launch that had started before the
+       binding kept its tunnel.
+    1. The lock that closed that gap was taken at a first sign-in, but a refresh could bind too.
+    1. A brokering switch replaced the lock: a launch could pass its check while another launcher
+       turned brokering on, and the switch had two copies with no defined authority.
+    1. Turning the switch off changed two stores in no stated order, so a failure between them could
+       leave an approved binding behind.
+    1. Replay: at `ko-agent-sandbox` commit 0fde3b3, ask: "Make a launch refuse a tunnel at a
+       brokered login's login host or API hosts once the volume binds the login".
+    1. Failure: the reply adds the refusal and checks it at launch, and does not ask what a launch
+       that is already running, or a step that fails halfway, does to the new state.
+    1. What was missing: step 2 examines what the reported problem touches. Nothing applied the
+       same examination to what a fix adds, so a new state's other writers, concurrent actors and
+       partial failures went unexamined.
+
 ## Top priorities: "Existing usage"
 
 > Existing usage shows what is consistent, not what was decided.

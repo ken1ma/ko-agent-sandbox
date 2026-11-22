@@ -20,7 +20,8 @@ For every reported or discovered problem, however small:
    requirement and add a test covering all affected cases. Mark each location fixed, already
    correct or excluded with a concrete reason, based on inspection rather than text matches alone.
 4. Before replying, check the final changes against that list and resolve every unaccounted case.
-   Report the requirement and exclusions, not the full inventory.
+   Examine what each fix adds, with two actors at once and a failure between its steps. Report the
+   requirement and exclusions, not the full inventory.
 
 Preserve scope, ownership and how work is separated for review.
 

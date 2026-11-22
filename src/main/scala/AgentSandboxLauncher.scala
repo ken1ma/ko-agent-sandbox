@@ -61,10 +61,10 @@
 //    |      rules.
 //    |
 //    +-- podman named volume -----------> ~/persistent-volume RW/persistent
-//    |                                       (~/.claude, ~/.codex, ~/.gemini, ~/.kiro,
-//    |                                        ~/.local/share/kiro-cli, ~/.copilot and
-//    |                                        opencode's XDG directories are symlinks
-//    |                                        into it)
+//    |                                       (~/.claude, ~/.config/anthropic, ~/.codex,
+//    |                                        ~/.gemini, ~/.kiro, ~/.local/share/kiro-cli,
+//    |                                        ~/.copilot and opencode's XDG directories
+//    |                                        are symlinks into it)
 //    |
 //    +-- --cache-overlay (opt-in): a host cache --> its kind's directory, ~/.cache/coursier/v1,
 //    |      through podman's `:O` overlay. The session reads the cache, and its writes go to an
@@ -3037,9 +3037,9 @@ object AgentSandboxLauncher:
       "--mount", s"type=volume,dst=$ContainerHome",
     ) ++ cacheOverlays.map(_.volumeArg) ++ Vector(
 
-      // This volume persists auth and config: ~/.claude, ~/.codex, ~/.gemini, ~/.kiro, ~/.copilot,
-      // ~/.local/share/kiro-cli and opencode's XDG directories are symlinks into it. The volume is podman-owned
-      // storage, not a bind mount into the host HOME.
+      // This volume persists auth and config: ~/.claude, ~/.config/anthropic, ~/.codex, ~/.gemini, ~/.kiro,
+      // ~/.copilot, ~/.local/share/kiro-cli and opencode's XDG directories are symlinks into it. The volume is
+      // podman-owned storage, not a bind mount into the host HOME.
       "--mount", s"type=volume,src=$persistentVolume,dst=$ContainerHome/persistent-volume",
 
       // Chromium treats podman's 64 MB /dev/shm default as fatal, and agy's browser automation needs more. The size is

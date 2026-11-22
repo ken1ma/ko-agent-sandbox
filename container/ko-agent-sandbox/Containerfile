@@ -561,6 +561,9 @@ RUN --mount=type=bind,target=/mnt/context \
     #   dies with the session like every cache.
     # - kiro-cli splits its state the same way, so both of its directories are linked: settings, agents and
     #   steering under ~/.kiro, and the logins and the rest of its data under ~/.local/share/kiro-cli.
+    # - Claude Code keeps a Console sign-in without an API key as an Anthropic profile in ~/.config/anthropic, outside
+    #   ~/.claude (https://code.claude.com/docs/en/authentication, "Sign in without an API key"), so that directory
+    #   is linked too.
     #
     # ko-sandbox-entrypoint copies each agent directory of the seed into the volume wherever the volume lacks that
     # directory.
@@ -572,6 +575,7 @@ RUN --mount=type=bind,target=/mnt/context \
     # nonroot owns the seed: ko-sandbox-entrypoint reads it as nonroot, and the copies keep the mode.
     install -d -o nonroot -g nonroot -m 0700 \
         $KO_SANDBOX_VOLUME_SEED/claude \
+        $KO_SANDBOX_VOLUME_SEED/anthropic \
         $KO_SANDBOX_VOLUME_SEED/codex \
         $KO_SANDBOX_VOLUME_SEED/antigravity \
         $KO_SANDBOX_VOLUME_SEED/kiro \
@@ -590,6 +594,7 @@ RUN --mount=type=bind,target=/mnt/context \
         /home/nonroot/.local/share \
         /home/nonroot/.local/state; \
     ln -s persistent-volume/claude /home/nonroot/.claude; \
+    ln -s ../persistent-volume/anthropic /home/nonroot/.config/anthropic; \
     ln -s persistent-volume/codex /home/nonroot/.codex; \
     # agy reads its state from ~/.gemini, not from a directory of its own name.
     ln -s persistent-volume/antigravity /home/nonroot/.gemini; \
@@ -601,6 +606,7 @@ RUN --mount=type=bind,target=/mnt/context \
     ln -s ../../persistent-volume/opencode/state /home/nonroot/.local/state/opencode; \
     chown -h nonroot:nonroot \
         /home/nonroot/.claude \
+        /home/nonroot/.config/anthropic \
         /home/nonroot/.codex \
         /home/nonroot/.gemini \
         /home/nonroot/.kiro \
