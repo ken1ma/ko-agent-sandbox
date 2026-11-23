@@ -40,7 +40,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
       case s"--volume=$source:$_:$options" => source -> options.split(',').toVector
 
   /** Each container's arguments as a launch builds them: the run's copies for the proxy and the
-    * sandbox, the workspace's CA for the throwaway JDK container. */
+    * sandbox. The throwaway JDK container binds no file. */
   private def containerArguments(selinuxEnforcing: Boolean): Vector[Vector[String]] =
     val state = Paths.get("/state/workspace")
     val runFiles = state.resolve("run-1")
@@ -54,9 +54,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
         runFiles.resolve("agents.md"),
         selinuxEnforcing,
       ),
-      JdkTrust.jdkPreparationCreateCommand(
-        "podman", "image", state.resolve("ca.crt"), "egress-proxy", 3128, selinuxEnforcing, Vector("sh"),
-      ),
+      JdkTrust.jdkPreparationCreateCommand("podman", "image", "egress-proxy", 3128, Vector("sh")),
     )
 
   test("requirePodman settles the reads started beside podman info, and starts them again once the machine runs"):
@@ -148,7 +146,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
 
   test("an SELinux-enforcing host relabels every launcher file bind privately, and no file reaches two containers"):
     val containers = containerArguments(selinuxEnforcing = true).map(fileBinds)
-    assertEquals(containers.map(_.size), Vector(3, 4, 1), s"a bind went unparsed: $containers")
+    assertEquals(containers.map(_.size), Vector(3, 4, 0), s"a bind went unparsed: $containers")
     for (source, options) <- containers.flatten do
       assertEquals(options.filter(Set("z", "Z")), Vector("Z"), s"$source has $options")
     // Z relies on this: a second container's Z would take the file from the first container.

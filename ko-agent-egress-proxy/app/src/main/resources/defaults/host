@@ -30,7 +30,9 @@ allow https://pkg-containers.githubusercontent.com/ read  # ghcr.io's blob CDN
 # agent docs
 allow https://code.claude.com/        read  # claude
 allow https://www.anthropic.com/      read  # articles such as research/how-we-contain-claude
+allow https://support.claude.com/     read  # claude: account, plan and sign-in help articles
 allow https://developers.openai.com/  read  # codex
+allow https://help.openai.com/        read  # codex: account, plan and sign-in help articles
 allow https://learn.chatgpt.com/      read  # codex: 2026-09: developers.openai.com/codex redirects here
 allow https://antigravity.google/     read  # agy
 allow https://www.antigravity.google/ read  # agy: 2026-08: agy docs alias
@@ -112,7 +114,8 @@ allow https://plugins-artifacts.gradle.org/ read  # https://plugins.gradle.org/d
 # Java docs / artifact
 allow https://openjdk.org/           read  # JEPs
 allow https://docs.oracle.com/       read  # Java API, JLS, JVMS
-allow https://bugs.openjdk.org/      read  # bugs
+allow https://bugs.openjdk.org/      read  # OpenJDK's Java Bug System
+allow https://bugs.java/             read  # Oracle's Java Bug Database
 allow https://packages.adoptium.net/ read  # Temurin: Linux package repository, mac/win binaries are on GitHub
 
 allow https://maven.apache.org/      read  # docs

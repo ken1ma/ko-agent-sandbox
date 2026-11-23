@@ -32,6 +32,10 @@ Preserve scope, ownership and how work is separated for review.
 - When a boundary blocks the consistent option, say that you should cross it, name the cost, and
   ask for approval; never settle for an inconsistent placement or a stale reference.
 - Weigh options by everything they gain and cost, not only what the current task or plan needs.
+- Prefer the functional style, in design as in code: immutable values, pure functions, and values
+  derived rather than recorded. Persist only the state that the requirements need: keep it inside
+  the thing it describes, so that deleting the thing deletes the state, and write it only when the
+  event that needs it happens.
 - Investigate a problem or improvement found beyond the task as one inside it: a boundary limits
   what you change, not what you read, run or report.
 

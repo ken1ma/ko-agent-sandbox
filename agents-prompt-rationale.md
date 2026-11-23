@@ -128,6 +128,33 @@ replaces the failing one no longer needs it.
        same examination to what a fix adds, so a new state's other writers, concurrent actors and
        partial failures went unexamined.
 
+## Top priorities: "the functional style"
+
+> Prefer the functional style, in design as in code: immutable values, pure functions, and values
+> derived rather than recorded. Persist only the state that the requirements need: keep it inside
+> the thing it describes, so that deleting the thing deletes the state, and write it only when the
+> event that needs it happens.
+
+1. Why it earns its place: the user holds that less persisted state makes a system more robust and
+   simpler. In one revision of `ko-agent-sandbox`'s credential plans on 2026-11-23, each record
+   below went, and every guarantee stayed:
+    1. a named store volume with reserved names and labels, and a record of its volume's creation
+       time, replaced by a subdirectory of the volume that the store describes;
+    1. per-volume placeholder records in the launcher's state, moved into that subdirectory;
+    1. a binding generation counter, which told apart bindings that the user approves alike;
+    1. an approved binding written at launch, replaced by a declaration that writes nothing until a
+       sign-in.
+1. "The functional style" names a discipline that agents already know, so the sentence needs no
+   list of its consequences for code. The second sentence carries it over to persisted state, where
+   the revision's three moves apply: derive, keep state inside the thing it describes, and write
+   nothing until the event that needs it happens.
+1. "Inside the thing it describes", not "where removing its owner removes it": the user could not
+   tell what "owner" meant, which Writing style's rule on terms in a writer's own sense predicts.
+1. "That the requirements need", not "that the guarantees need": a cache that buys needed speed,
+   such as a build cache, is state that a requirement justifies.
+1. The user keeps many workspaces, and the preference holds for each of them, so it belongs here
+   rather than in one project's documents.
+
 ## Top priorities: "Existing usage"
 
 > Existing usage shows what is consistent, not what was decided.

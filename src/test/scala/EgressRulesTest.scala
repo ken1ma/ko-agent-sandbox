@@ -48,6 +48,17 @@ class EgressRulesTest extends munit.FunSuite:
     assertEquals(transportLineOf(s"2026-08-26T11:59:38Z $line\n$ready"), Some(line))
     assertEquals(transportLineOf(ready), None)
 
+  test("the transport line is read after the proxy's start, which writes the line late, and a failed start wins"):
+    val line = "egress transport: upstream proxy http://proxy.corp.example:3128 -> 10.1.2.3 (HTTPS_PROXY)"
+    var log = ""
+    def started(): Either[String, String] =
+      log = s"2026-08-26T11:59:38Z $line\n2026-08-26T11:59:38Z ko-agent-egress-proxy listening on :3128\n"
+      Right("networks")
+    assertEquals(upstreamTransportLine(() => started(), () => log), Right(line))
+    val exited = Left("the egress proxy exited")
+    assertEquals(upstreamTransportLine(() => exited, () => log), exited)
+    assert(upstreamTransportLine(() => Right("networks"), () => "").left.exists(_.contains("no transport line")))
+
   test("an egress action's rule file line joins the file's lines on one line"):
     assertEquals(
       lineSummary("allow https://a.example/ read\ndeny https://b.example/"),

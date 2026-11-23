@@ -37,6 +37,22 @@ class FileHelperTest extends munit.FunSuite:
     writeReadable(hosts, "stamp-c\n")
     assertEquals(stampedEntry(hosts, "stamp-c"), Some(""))
 
+  test("a cache rewrite that dies between its writes leaves no stamp that names its members"):
+    // The launcher's image CA bundle, prepared JDK files and agent instructions go through this
+    // rewrite. The sequence is a launch of image A, an interrupted launch of image B, and a launch of
+    // image A again, which must rebuild rather than serve B's members under A's stamp.
+    val dir = Files.createTempDirectory("stamped-cache")
+    val stamp = dir.resolve("cache.stamp")
+    val member = dir.resolve("member")
+    rewriteStampedCache(stamp, "image-a")(writeReadable(member, "roots of a"))
+    assertEquals(firstLine(stamp), "image-a")
+    intercept[IllegalStateException]:
+      rewriteStampedCache(stamp, "image-b"):
+        writeReadable(member, "roots of b")
+        throw IllegalStateException("the launch died")
+    assertNotEquals(firstLine(stamp), "image-a")
+    assertNotEquals(firstLine(stamp), "image-b")
+
   test("a future path canonicalizes through its nearest existing ancestor"):
     val base = Files.createTempDirectory("future-path").toRealPath()
     // A path that exists already gets plain canonicalization.

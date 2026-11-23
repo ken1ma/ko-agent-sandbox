@@ -373,15 +373,9 @@ Only hosts with the `tunnel` treatment stay opaque:
 - under `deny-unless-selected`, none, since that profile reads only the presets;
 - under `deny-all`, none.
 
-The per-workspace CA is stored on the host, under
-
-    ~/.local/state/ko-agent-sandbox/tls/<workspace>/     # Linux / macOS / WSL
-    %LOCALAPPDATA%\ko-agent-sandbox\tls\<workspace>\     # native Windows
-
-1. The certificates are created and refreshed automatically for each workspace (`../SECURITY.md`,
-   "Who holds the CA key").
-1. To rotate the CA, delete that directory. The next launch recreates the directory, and every
-   launch's proxy starts with the certificates the launch found or issued.
+Each launch creates the CA that its sandbox trusts, and never writes the CA's key
+(`../SECURITY.md`, "Who holds the CA key"). The sandbox reads the CA's certificate at
+`/etc/ko-agent-sandbox/egress-proxy-ca.crt`.
 
 ## Brokered credentials
 

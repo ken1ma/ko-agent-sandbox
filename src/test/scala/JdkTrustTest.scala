@@ -1,10 +1,15 @@
-// Tests how JVMs reach the proxy: locating the image's JDK, and the -D spelling of what
-// ko-sandbox-jdk-use-proxy writes into a JDK's files. SessionBoundaryTest exercises the script
-// itself, on the image's JDK that the script prepared.
+// Tests how JVMs reach the proxy: locating the image's JDK, the -D spelling of what
+// ko-sandbox-jdk-use-proxy writes into a JDK's files, the script's refusal of a shared JDK, and the
+// run's CA added to a store.
+// SessionBoundaryTest exercises the script itself, on the image's JDK that the script prepared.
 
 package agentsandbox.launcher
 
-import java.nio.file.{Files, Paths}
+import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
+import java.nio.file.{Files, Path, Paths}
+import java.security.KeyStore
+import java.security.cert.Certificate
+import scala.jdk.CollectionConverters.*
 
 import JdkTrust.*
 
@@ -53,6 +58,38 @@ class JdkTrustTest extends munit.FunSuite:
       Vector("cacerts", "net.properties"),
     )
 
+  test("ko-sandbox-jdk-use-proxy refuses a JDK on the persistent volume, by any path, before it writes"):
+    assume(!scala.util.Properties.isWin, "runs the script, which a POSIX host can")
+    // Sessions share the volume, and each trusts its own CA, so this session's import would break the others.
+    val home = Files.createTempDirectory("jdk-home").toRealPath()
+    def jdkAt(dir: Path): Path =
+      Files.createDirectories(dir.resolve("bin"))
+      Files.createDirectories(dir.resolve("conf"))
+      Files.writeString(dir.resolve("bin/keytool"), "#!/bin/sh\nexit 0\n").toFile.setExecutable(true)
+      Files.writeString(dir.resolve("conf/net.properties"), "unprepared\n")
+      dir
+    val onVolume = jdkAt(home.resolve("persistent-volume/jdk"))
+    val link = Files.createSymbolicLink(home.resolve("linked-jdk"), Paths.get("persistent-volume/jdk"))
+    val script = Paths.get("container/ko-agent-sandbox/ko-sandbox-jdk-use-proxy").toAbsolutePath.toString
+    def prepare(jdk: Path, javaOpts: String = "-Dhttps.proxyHost=egress-proxy"): HostCommands.Run =
+      val environment = Map(
+        "HOME" -> home.toString, "HTTPS_PROXY" -> "http://egress-proxy:3128", "KO_AGENT_SANDBOX_JAVA_OPTS" -> javaOpts,
+      )
+      HostCommands.runWithEnvironment(environment, "sh", script, jdk.toString)
+    for jdk <- Seq(onVolume, link) do
+      val refused = prepare(jdk)
+      assert(!refused.ok && refused.err.contains("is on the persistent volume"), s"$jdk: ${refused.err}")
+      assert(refused.err.contains("KO_AGENT_SANDBOX_JAVA_OPTS"), refused.err)
+    // Without the variable, from an image that declares no JDK, the refusal names the other way out.
+    val withoutOptions = prepare(onVolume, javaOpts = "")
+    assert(withoutOptions.err.contains("outside ~/persistent-volume"), withoutOptions.err)
+    assertEquals(Files.readString(onVolume.resolve("conf/net.properties")), "unprepared\n")
+    // A JDK elsewhere in the home passes the check and reaches the script's next step.
+    val elsewhere = jdkAt(home.resolve("jdk"))
+    Files.delete(elsewhere.resolve("conf/net.properties"))
+    val passed = prepare(elsewhere)
+    assert(passed.err.contains("net.properties") && !passed.err.contains("persistent volume"), passed.err)
+
   test("the JDK's home comes from the image's own declaration, or is absent"):
     // The reasons that the store is merged and that JAVA_HOME comes from the image are in SECURITY.md
     // ("Who holds the CA key"). podman image inspect prints Config.Env one entry per line.
@@ -64,3 +101,26 @@ class JdkTrustTest extends munit.FunSuite:
     assertEquals(javaHomeOf("JAVA_HOME="), None)
     // The reader matches the whole name, not another variable whose name happens to end in JAVA_HOME.
     assertEquals(javaHomeOf("XJAVA_HOME=/nope"), None)
+
+  test("withTrusted keeps the store's entries and type, and replaces an earlier run's CA under the script's alias"):
+    val password = "changeit".toCharArray
+    def storeOf(kind: String, entries: (String, Certificate)*): Array[Byte] =
+      val store = KeyStore.getInstance(kind)
+      store.load(null, null)
+      entries.foreach((alias, certificate) => store.setCertificateEntry(alias, certificate))
+      val bytes = ByteArrayOutputStream()
+      store.store(bytes, password)
+      bytes.toByteArray
+    val publicCa = InspectionCa.create("public").certificate
+    val earlierRun = InspectionCa.create("earlier run").certificate
+    val thisRun = InspectionCa.create("this run").certificate
+    for kind <- Seq("PKCS12", "JKS") do
+      val file = Files.createTempFile("cacerts", "")
+      try
+        Files.write(file, storeOf(kind, "public" -> publicCa, TrustAlias -> earlierRun))
+        val written = KeyStore.getInstance(kind)
+        written.load(ByteArrayInputStream(withTrusted(file, thisRun)), password)
+        assertEquals(written.aliases().asScala.toSet, Set("public", TrustAlias), kind)
+        assertEquals(written.getCertificate("public"), publicCa, kind)
+        assertEquals(written.getCertificate(TrustAlias), thisRun, kind)
+      finally Files.delete(file)

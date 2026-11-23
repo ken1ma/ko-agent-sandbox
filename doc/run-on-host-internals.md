@@ -1298,8 +1298,8 @@ What the starter creates:
   - The command's profile grants those two files as reads, not their directory, and the command's
     environment names them ("The command's lifetime and environment").
   - The files are outside `tmp/`, so no command replaces what the next command trusts.
-- The sandbox container trusts none of these CAs, and a host command does not trust the
-  workspace's CA. A leaf's key serves one proxy's host commands and nothing else.
+- The sandbox container trusts none of these CAs, and a host command does not trust a run's CA. A
+  leaf's key serves one proxy's host commands and nothing else.
 - A launch attaching to another launch's runtime names that runtime's trust directory, as it names
   that runtime's `tmp/` and proxy port, so its commands trust the proxy they use
   (`RunnerRuntimes`, the attachment).
@@ -1348,9 +1348,10 @@ argument.
 
 Why not the launcher state root:
 
-- The state root groups by kind first (`tls/<id>`, `log/<id>`, …), and the proxy's audit log must
-  not be stored beside the CA key.
-- On the host, the command runs as the user's own uid, which owns that key. So file permissions
+- The state root groups by kind first (`tls/<id>`, `log/<id>`, …), so a cache there would sit
+  beside files that a command must neither read nor rewrite: each running session's leaf key, in
+  its run directory under `tls/<id>/`, and the audit logs under `log/<id>/`.
+- On the host, the command runs as the user's own uid, which owns those files. So file permissions
   protect nothing, and only the profile denies access.
   - A separate root makes that denial structural: no path the command is ever granted has a
     sensitive ancestor or sibling.

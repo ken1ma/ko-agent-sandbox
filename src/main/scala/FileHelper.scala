@@ -123,6 +123,17 @@ object FileHelper:
   def writeStamped(path: Path, stamp: String, content: String): Unit =
     writeReadable(path, s"$stamp\n$content\n")
 
+  /**
+   * Rewrites a cache whose members lie beside the stamp file, for members that cannot carry the stamp
+   * inside (stampedEntry): files mounted or copied as they are. The stamp is emptied first, so a
+   * writer that dies between two writes leaves a cache that no stamp matches. Otherwise a launch of
+   * image A after an interrupted rewrite for image B would find A's stamp beside B's members.
+   */
+  def rewriteStampedCache(stampFile: Path, stamp: String)(writeMembers: => Unit): Unit =
+    writeReadable(stampFile, "")
+    writeMembers
+    writeReadable(stampFile, stamp + "\n")
+
   // -------------------------------------------------------------------------
   // Private files
   //
@@ -271,8 +282,8 @@ object FileHelper:
       catch case ex: UncheckedIOException => throw ex.getCause
 
   /** Windows refuses to delete an entry with the read-only attribute, where POSIX checks only the
-    * directory. A run's copy of `cacerts` is such an entry: the prepared store has no write bit
-    * (JdkTrust), and attributes travel with the copy (AgentSandboxLauncher, `carried`). */
+    * directory. A run's private copy of the prepared `cacerts` is such an entry: the store has no
+    * write bit, and `podman cp` keeps that (JdkTrust). */
   private def deleteEntry(path: Path): Unit =
     try Files.delete(path)
     catch

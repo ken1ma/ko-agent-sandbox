@@ -159,8 +159,7 @@ object Podman:
    *   - `Z` gives the file the one container's private MCS categories. The categories keep a key from every other
    *     container that runs under SELinux separation, but not from a container with `label=disable`.
    *   - No file is mounted into two containers, so `Z` never takes a file from another container. The proxy and the
-   *     sandbox mount this run's copies (the launch's `carried`), and the throwaway JDK container mounts the
-   *     workspace's CA certificate.
+   *     sandbox mount this run's copies (the launch's `carried`), and the throwaway JDK container mounts no file.
    *   - The workspace never gets `Z` (SECURITY.md, "the workspace's SELinux labels").
    */
   def fileBind(source: Path, containerPath: String, access: String, selinuxEnforcing: Boolean): String =

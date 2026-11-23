@@ -57,6 +57,24 @@ if [ ! -x "$JAVA_HOME/bin/keytool" ]; then
     exit 1
 fi
 
+# Live sessions share the persistent volume, and each session trusts its own CA. Importing this session's CA into a
+# JDK there would make every other session's JVMs on that JDK fail TLS, so the script refuses before it writes.
+volume=$(realpath "$HOME/persistent-volume" 2>/dev/null || true)
+case "$(realpath "$JAVA_HOME")/" in
+    "${volume:-/nonexistent}"/*)
+        echo "${0##*/}: $JAVA_HOME is on the persistent volume, which other sessions share, and each session" >&2
+        echo "  trusts its own CA." >&2
+        # The launcher sets the variable only for an image that declares a JDK of its own.
+        if [ -n "${KO_AGENT_SANDBOX_JAVA_OPTS:-}" ]; then
+            echo "  Leave the JDK as it is, and pass \$KO_AGENT_SANDBOX_JAVA_OPTS to its JVMs on their command" >&2
+            echo "  line or in _JAVA_OPTIONS." >&2
+        else
+            echo "  Install a JDK under ~ outside ~/persistent-volume, and run ${0##*/} on that one." >&2
+        fi
+        exit 1
+        ;;
+esac
+
 # Writes the proxy where the JDK's own ProxySelector reads it.
 # - JAVA_TOOL_OPTIONS would also work, but it adds a banner to every JVM start, which corrupts output that other
 #   programs parse. This function sets no system property at all.
@@ -137,9 +155,9 @@ fingerprint_of() {
 # -cacerts targets the store of the keytool being run, which is why the script invokes the target JDK's own keytool
 # rather than whichever keytool is on PATH.
 #
-# Idempotence must compare the certificate, not just find the alias. A JDK kept on a volume shared across
-# workspaces can hold this alias for another workspace's CA. "Already trusted" over the wrong certificate would be
-# exactly the unexplained TLS failure this program exists to end.
+# Idempotence must compare the certificate, not just find the alias. Each run has its own CA, so a JDK kept on a
+# volume holds this alias for an earlier run's CA. "Already trusted" over the wrong certificate would be exactly the
+# unexplained TLS failure this program exists to end.
 want=$("$JAVA_HOME/bin/keytool" -printcert -file "$CA" | fingerprint_of)
 have=$("$JAVA_HOME/bin/keytool" -list -cacerts -storepass "$STOREPASS" -alias "$ALIAS" 2>/dev/null \
     | fingerprint_of)
@@ -157,7 +175,7 @@ if [ "$have" = "$want" ]; then
 fi
 
 if [ -n "$have" ]; then
-    echo "alias $ALIAS holds a different certificate (another workspace's CA?); replacing it"
+    echo "alias $ALIAS holds a different certificate (an earlier session's CA?); replacing it"
     "$JAVA_HOME/bin/keytool" -delete -cacerts -storepass "$STOREPASS" -alias "$ALIAS" >/dev/null
 fi
 

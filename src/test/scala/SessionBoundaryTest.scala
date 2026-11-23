@@ -310,7 +310,7 @@ class SessionBoundaryTest extends munit.FunSuite:
   test("the two treatments are told apart by the certificate each host presents"):
     inSession()
     // The decisive in-session test for "a tunnel host is still opaque". An inspected host presents a leaf that this
-    // workspace's CA signed, and an opaque host presents the origin's own chain.
+    // run's CA signed, and an opaque host presents the origin's own chain.
     val ca = run("openssl", "x509", "-noout", "-subject", "-in", "/etc/ko-agent-sandbox/egress-proxy-ca.crt")
       .text.stripPrefix("subject=").trim
 
@@ -538,15 +538,20 @@ class SessionBoundaryTest extends munit.FunSuite:
       assert(jars > 0, s"nothing was fetched into $cache")
     finally deleteRecursively(cache)
 
-  test("the image JDK's trust store holds this workspace's CA beside every root it shipped"):
+  test("the image JDK's trust store holds this run's CA beside every root it shipped"):
     inSession()
     // A store can be prepared wrong in two ways, and a dropped shipped root is the silent one: the sandbox keeps
     // working until a request needs a public CA. The mount hides the shipped store, so the test checks for a root that
-    // every Temurin ships and for a count that no per-workspace addition could reach on its own.
+    // every Temurin ships and for a count that no per-run addition could reach on its own.
     val listing = run("keytool", "-list", "-cacerts", "-storepass", "changeit")
     assert(listing.ok, s"keytool could not read the mounted store: ${listing.err}")
     val aliases = listing.text.linesIterator.filter(_.contains("trustedCertEntry")).map(_.takeWhile(_ != ',')).toVector
-    assert(aliases.contains("ko-agent-sandbox-egress"), "this workspace's CA is not in the store")
+    // The alias must hold this run's CA, not merely exist: a stale prepared store holds an earlier run's CA there.
+    def fingerprint(text: String): Option[String] = "([0-9A-F]{2}:){31}[0-9A-F]{2}".r.findFirstIn(text)
+    val trusted = run("keytool", "-list", "-cacerts", "-storepass", "changeit", "-alias", JdkTrust.TrustAlias)
+    val mounted = run("keytool", "-printcert", "-file", JdkTrust.SandboxEgressProxyCaPath)
+    assert(fingerprint(mounted.text).nonEmpty, s"keytool could not fingerprint this run's CA: ${mounted.err}")
+    assertEquals(fingerprint(trusted.text), fingerprint(mounted.text), "the store's alias holds another CA")
     assert(aliases.exists(_.contains("isrgrootx1")), s"a shipped root is gone: ${aliases.take(5)}")
     assert(aliases.size > 100, s"the store holds ${aliases.size} roots, not the image's set")
 

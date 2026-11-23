@@ -297,11 +297,19 @@ object EgressRules:
   def upstreamProxyArgs(read: String => Option[String]): Vector[String] =
     agentsandbox.egress.TransportHelper.upstreamProxyVariable(read).map((name, _) => s"--env=$name").toVector
 
-  /** The proxy's transport line from its log, without the instant stamp. The proxy writes the line
-    * before the ready line (AgentEgressProxy.serve), so the line is there once the launch is. */
+  /** The proxy's transport line from its log, without the instant stamp. */
   def transportLineOf(log: String): Option[String] =
     log.linesIterator.flatMap(agentsandbox.egress.LogHelper.unstamped)
       .find(_.startsWith(agentsandbox.egress.TransportHelper.TransportLineHead))
+
+  /** The transport line, read once `awaitProxy` reports the proxy ready. The proxy writes the line
+    * before the ready line (AgentEgressProxy.serve), and the proxy starts in the background, so an
+    * earlier read can find the log without the line. */
+  def upstreamTransportLine(awaitProxy: () => Either[String, ?], log: () => String): Either[String, String] =
+    awaitProxy().flatMap: _ =>
+      transportLineOf(log()).toRight(
+        "the egress proxy reported no transport line before listening; the image is not this launcher's",
+      )
 
   /** The --env arguments that pass the selected profile, preset and rule files to the proxy. The dry
     * run and the real container get identical arguments, so the proxy enforces what the dry run vetted. */
@@ -506,8 +514,6 @@ object EgressRules:
     EgressCredentials.effectiveLines(bindings, inspected, tunnelHostsOf(resolved.text).toSet).foreach(println)
     resolved.err.linesIterator.filter(_.startsWith("warning:")).foreach(line => System.err.println(emphasized(line)))
 
-    val caCert = tlsStateRoot(os).resolve(workspaceId).resolve("ca.crt")
-    if Files.isRegularFile(caCert) then System.err.println(pathLine("egress tls ca", caCert, os))
     System.err.println(pathLine("egress log dir", logStateRoot(os).resolve(workspaceId), os))
     sys.exit(0)
 

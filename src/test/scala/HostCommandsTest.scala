@@ -132,7 +132,7 @@ class HostCommandsTest extends munit.FunSuite:
     do
       val path = directory.resolve(name)
       val displayed = displayPath(path, os, environment.get)
-      for label <- Seq("log dir", "egress log dir", "egress tls ca") do
+      for label <- Seq("log dir", "egress log dir") do
         assertEquals(pathLine(label, path, os, environment.get), s"$label: $displayed")
       assertEquals(pathLine("==>", path, os, environment.get, separator = " "), s"==> $displayed")
       val builder = ProcessBuilder("/bin/sh", "-c", s"set -- $displayed; printf '%s\\n' \"$$#\"; printf '%s' \"$$1\"")
@@ -184,7 +184,7 @@ class HostCommandsTest extends munit.FunSuite:
       for path <- Seq(Paths.get(s"D:\\$user\\log\\$name"), Paths.get(s"$home-other\\log\\$name")) do
         val expected = if user == "kenichi" then path.toString else s"\"$path\""
         assertEquals(displayPath(path, Os.Windows, environment), expected)
-        for label <- Seq("log dir", "egress log dir", "egress tls ca") do
+        for label <- Seq("log dir", "egress log dir") do
           assertEquals(pathLine(label, path, Os.Windows, environment), s"$label: $expected")
         assertEquals(pathLine("==>", path, Os.Windows, environment, separator = " "), s"==> $expected")
 
@@ -200,7 +200,7 @@ class HostCommandsTest extends munit.FunSuite:
         "\u2018\u2019\u201a\u201b$USER.log" -> "\u2018\u2018\u2019\u2019\u201a\u201a\u201b\u201b$USER.log",
         "\u201c\u201d\u201e.log" -> "\u201c\u201d\u201e.log",
       )
-      label <- Seq("log dir", "egress log dir", "egress tls ca")
+      label <- Seq("log dir", "egress log dir")
     do
       val path = Paths.get(s"C:\\logs\\$name")
       val expected = s"'C:\\logs\\$escaped'"

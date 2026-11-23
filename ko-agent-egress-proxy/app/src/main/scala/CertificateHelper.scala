@@ -9,10 +9,9 @@ package agentsandbox.egress
 
 import java.io.ByteArrayInputStream
 import java.nio.charset.StandardCharsets
-import java.security.{KeyFactory, MessageDigest, PrivateKey}
+import java.security.{KeyFactory, PrivateKey}
 import java.security.cert.{CertificateFactory, X509Certificate}
 import java.security.spec.PKCS8EncodedKeySpec
-import java.time.Instant
 import java.util.{Base64, Locale}
 import scala.jdk.CollectionConverters.*
 import scala.util.control.NonFatal
@@ -66,26 +65,9 @@ object CertificateHelper:
       .headOption
       .getOrElse(throw IllegalArgumentException(s"$source holds an unsupported key type"))
 
-  /** Formats the fingerprint as `openssl x509 -noout -fingerprint -sha256` prints it, so a person can check the
-    * recorded value by hand. */
-  def certificateFingerprint(certificate: X509Certificate): String =
-    java.util.HexFormat.ofDelimiter(":").withUpperCase()
-      .formatHex(MessageDigest.getInstance("SHA-256").digest(certificate.getEncoded))
-
-  /** Whether the certificate expires after `deadline`. An absent, empty or unparsable certificate answers false, as
-    * an expiring certificate does. */
-  def certificateExpiresAfter(pem: Option[String], deadline: Instant): Boolean =
-    pem.filter(_.nonEmpty).exists: text =>
-      try parseCertificate(text).getNotAfter.toInstant.isAfter(deadline)
-      catch case NonFatal(_) => false
-
   /**
    * Whether the private key matches this certificate's public key, for the P-256 keys that X509Helper issues. A
    * sign-and-verify round trip proves the match, and anything unparsable or empty answers false.
-   *
-   * A writer that died between writing the certificate and the key leaves a key beside a certificate it does not
-   * match. The expiry check alone cannot see that state, and such a pair fails every TLS handshake while it looks
-   * fine.
    */
   def keyMatchesCertificate(certificatePem: String, privateKeyPem: String): Boolean =
     try keyMatches(parseCertificate(certificatePem), parsePrivateKey(privateKeyPem, "the key"))
@@ -140,26 +122,3 @@ object CertificateHelper:
             s"names ${extra.mkString(" ")}, which this proxy does not inspect",
           )
       Some(s"must name exactly the hosts this ruleset inspects; it ${reasons.mkString(", and ")}")
-
-  /**
-   * Whether a stored leaf can keep serving `hosts` past `deadline`: it names exactly those hosts, matches its key,
-   * and verifies under the CA `caCertificatePem`. A leaf issued under a CA since replaced is internally consistent
-   * and still fails every handshake, so the chain test is needed beside the key test.
-   */
-  def leafServes(
-    certificatePem: Option[String],
-    privateKeyPem: Option[String],
-    hosts: Set[String],
-    caCertificatePem: String,
-    deadline: Instant,
-  ): Boolean =
-    (certificatePem.filter(_.nonEmpty), privateKeyPem) match
-      case (Some(certificateText), Some(keyText)) =>
-        try
-          val certificate = parseCertificate(certificateText)
-          certificate.getNotAfter.toInstant.isAfter(deadline)
-            && inspectedNamesError(subjectAlternativeNames(certificate), hosts).isEmpty
-            && keyMatches(certificate, parsePrivateKey(keyText, "the key"))
-            && verifiesUnder(certificate, parseCertificate(caCertificatePem))
-        catch case NonFatal(_) => false
-      case _ => false

@@ -83,14 +83,24 @@ class EgressSessionTest extends munit.FunSuite:
     * badssl.com's server failed 7 of 27 tunnelled handshakes before presenting its certificate
     * (2026-11-14): it closed after the ClientHello, or the connect timed out. Such an attempt
     * proves nothing either way, so the check repeats until the log names a certificate verdict
-    * (EgressSessionTest.certificateVerdict). Any attempt that the proxy completes fails at once. */
+    * (EgressSessionTest.certificateVerdict).
+    * - The proxy dials the origin while it answers the CONNECT (AgentEgressProxy.handle), so a failed
+    *   dial is a 502 to the CONNECT, with no tunnel. That attempt repeats too.
+    * - Any other answer fails at once, with curl's error and the proxy's log lines: a status from the
+    *   origin, for one, means that the proxy completed the origin leg. */
   private def refusedAtOrigin(session: Session, host: String, markers: Seq[String], why: String): Unit =
     def log: Vector[String] =
       val audit = run(podman, "logs", session.proxy)
       (audit.text + "\n" + audit.err).linesIterator.toVector
+    def evidence(attempt: Run): String =
+      s"curl: ${attempt.err.trim}\nproxy:\n" + log.filter(_.contains(host)).mkString("\n")
     val verdict = Iterator.range(0, OriginAttempts).exists: _ =>
-      assertEquals(status(session, s"https://$host/"), "502", s"$host: $why")
-      EgressSessionTest.certificateVerdict(log, host, markers)
+      // The CONNECT's status and the tunnelled request's, which curl reports apart.
+      val attempt = curl(session, "-o", "/dev/null", "-w", "%{http_connect} %{http_code}", s"https://$host/")
+      attempt.text.trim match
+        case "200 502" => EgressSessionTest.certificateVerdict(log, host, markers)
+        case "502 000" => false
+        case other     => fail(s"$host: $why; CONNECT and request statuses $other\n${evidence(attempt)}")
     assert(
       verdict,
       s"$host never presented its certificate in $OriginAttempts attempts — the origin may be down:\n" +
@@ -440,11 +450,24 @@ class EgressSessionTest extends munit.FunSuite:
     assert(!certificateVerdict(
       Vector(error("expired.badssl.com", "PKIX path validation failed")), "wrong.host.badssl.com", wrongName,
     ))
+    // A CONNECT's resolution error names the host, and a later attempt's tunnel closed before any certificate: the
+    // two attempts together hold no verdict.
+    assert(!certificateVerdict(
+      Vector(
+        "2026-11-14T03:50:10Z error expired.badssl.com CONNECT resolution: expired.badssl.com: Name or service not "
+          + "known",
+        error("expired.badssl.com", "Remote host terminated the handshake"),
+      ),
+      "expired.badssl.com", expired,
+    ))
 
 object EgressSessionTest:
 
-  /** Whether the proxy's log holds an `error` line for the host whose reason holds a marker. The reason alone counts:
-    * a host name such as expired.badssl.com holds a marker itself. */
+  /** Whether the proxy's log holds an origin error for the host's `GET /` whose reason holds a marker.
+    * - The reason alone counts: a host name such as expired.badssl.com holds a marker itself.
+    * - Only the tunnelled request's origin leg counts. A CONNECT's resolution error names the host in its reason, and
+    *   no certificate was presented there. */
   def certificateVerdict(log: Seq[String], host: String, markers: Seq[String]): Boolean =
-    log.flatMap(MeasurementReport.parseLine)
-      .exists(line => line.action == "error" && line.host == host && markers.exists(line.why.contains))
+    log.flatMap(MeasurementReport.parseLine).exists: line =>
+      line.action == "error" && line.host == host && line.method == "GET" && line.target.contains("/")
+        && line.why.startsWith("origin: ") && markers.exists(line.why.stripPrefix("origin: ").contains)

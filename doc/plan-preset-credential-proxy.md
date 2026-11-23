@@ -51,9 +51,11 @@ image ships, not in an option that each user writes.
   `PRESET` names the catalog entry's preset, so the command line shows where the value may go.
 - The value comes from the launcher's environment, as an `--egress-cred` value does, and the
   sandbox and the `--run-on-host` commands see `NAME` set to the placeholder.
-- The placeholder lasts as long as the persistent volume: each volume gets one random placeholder
-  per `NAME@PRESET`, which the launcher keeps in its state under the volume's name and creation
-  time. The first launch creates it atomically, so launches that start together agree.
+- The placeholder lasts as long as the persistent volume: the volume's store holds one random
+  placeholder per `NAME@PRESET` ("The volume's store"). The launch's proxy reads it, or creates it
+  under the store's lock, so that launches that start together agree. The proxy reports it to the
+  launcher, which sets `NAME` to it in the sandbox and passes it to the run-on-host proxies before
+  either starts.
   - Clients keep the value: interactive Claude Code asks to approve each new `ANTHROPIC_API_KEY`,
     with "No (recommended)" preselected (`anthropic-evidence.md`), and Codex's TUI uses the key
     that `codex login --with-api-key` stored. A changed placeholder breaks each kept copy, as
@@ -61,11 +63,7 @@ image ships, not in an option that each user writes.
   - A rotated value keeps the placeholder, and so does a value of another account: each launch's
     proxy holds the value that its own launch supplied, so a copy kept from an earlier session
     gains nothing that the session's own variable lacks. A volume created again under the same
-    name gets a new one. `--reset` and `--reset-all` remove the records of the volumes that they
-    remove and of volumes that are gone.
-  - Launchers with different state roots (`LauncherState.stateRoot`) keep separate records, so
-    they give one volume different placeholders. A copy kept in the volume then works only under
-    the state root that recorded it; each proxy still refuses every value but its own.
+    name gets a new one with its new store.
   - A string written before the volume existed equals the placeholder only by chance. A
     placeholder that a session writes into the workspace is still substituted in later sessions on
     that volume, at the entry's hosts and places.
@@ -92,6 +90,71 @@ image ships, not in an option that each user writes.
   mechanism (docker/sbx-releases #344).
 - The banner, `--egress-effective` and the agent instructions name each selected `NAME@PRESET`
   with its hosts and places, and name its refusing hosts. None shows the value.
+
+## The volume's store
+
+The proxy keeps per-volume state in the persistent volume itself, in a subdirectory that the
+sandbox cannot see. Removing the volume, `--reset` included, removes that state, so nothing
+outlives the volume or needs a record of it. `plan-login-brokering.md` keeps its logins there too.
+
+- The volume's root holds `ko-agent-sandbox-volume.json`, which names the layout version, and two
+  subdirectories, neither of which a container of the other kind sees:
+  - `home`, which the sandbox mounts at `~/persistent-volume` with podman's `subpath` mount option,
+    so the paths inside the sandbox stay as they are;
+  - `store`, which the proxy alone uses.
+- A volume without the file has layout `0.0`, with the sandbox's files at its root. The layout
+  above is `0.1`. The file lets a later layout change find each volume's version.
+  - A launcher refuses a volume whose layout version it does not know, and says to update the
+    launcher.
+- Each launch creates the persistent volume before its proxy starts, with `podman volume create
+  --ignore`, so that concurrent first launches share one volume. Today the volume can appear
+  after the proxy has started: the BPF backend's launch script creates it under the launch lock,
+  after the start prompt (`KoAgentBpf.launchScript`), and on native Linux podman creates it with
+  the sandbox's container.
+  - `--ignore` covers only podman's first lookup: a create that loses the race still fails with
+    "already exists" (podman 6.1.4, `libpod/runtime_volume_common.go`, `newVolume`). The launch
+    goes on with the volume on that error; any other failure ends the launch.
+- Each launch settles the layout in a short-lived container of the proxy image, which mounts the
+  volume whole and holds an exclusive lock on the volume's root. The serving proxy mounts only
+  `store`, with `subpath`, so it never sees `home` (`TODO.md`, "The layout container").
+  - On a `0.0` volume, the container moves every root entry into the staging directory
+    `ko-agent-sandbox-volume-staging`, writes the file, creates `store`, and renames the staging
+    directory to `home` last.
+  - A container that finds the staging directory without the file moves the remaining root
+    entries; with the file, it creates `store` and renames the staging directory where either is
+    missing. Only the move precedes the file, so a stop at any step completes at the next launch.
+  - Before it moves any entry, the container refuses when a root entry's name is already in the
+    staging directory, names both paths and says to rename one. Its own move renames each entry
+    out of the root, so only a planted staging directory collides, and nothing is overwritten.
+  - Every root entry but the staging directory counts as the sandbox's, `home` and `store`
+    included, so no file that a session wrote becomes the store. A legacy `home` ends at
+    `home/home`, where the sandbox sees it as `~/persistent-volume/home`.
+  - The launcher starts the serving proxy and creates the sandbox's container only after the
+    layout container exits, since podman refuses a `subpath` mount of a missing subdirectory
+    (Delivery order, step 2).
+  - The layout container trusts a version file or staging directory that it finds. A session
+    under layout `0.0` could plant the file with a `store` that the proxy then reads, such as an
+    approved binding of an attacker's account. The user accepts that risk, since nothing wrote the
+    file before this layout. A planted staging directory without a collision loses its own name,
+    and its entries land in `home`, which the session sees anyway.
+- Every container that the launcher creates on the volume carries the layout version as a label.
+  The launch refuses while a container without that label uses the volume, and names it: such a
+  container, from a launcher before the layout, mounts the volume's root and would see the store.
+  - A launcher before the layout that starts after the move still mounts the root and shows the
+    store to its session. Every launcher that shares the volume must be updated before the move.
+    The user accepts that risk, since only development builds predate the layout.
+- Podman removes no volume that a container uses unless `--force` removes the containers first
+  (`podman volume rm`). So a running proxy's volume is never removed or created again under it.
+- The store keeps its lock on a file that it never replaces, and writes each change to a new file
+  that it syncs and renames over the old one, then syncs the directory. So a proxy that dies
+  mid-write, or a podman machine that stops, leaves the old state or the new one whole, and every
+  proxy locks the same file.
+- Every proxy on a volume then locks a file on one kernel: the podman machine's on macOS and
+  Windows, the host's on Linux.
+- Not chosen: a podman named volume of its own per persistent volume. It needs a reserved name, a
+  label that tells it from a volume that a user made at that name, and a record of its volume's
+  creation time, to notice a volume that `podman volume rm` removed or that was created again
+  under its name.
 
 ## The catalog
 
@@ -333,11 +396,25 @@ alone (`RunOnHostPrereqs.egressRuleText`).
    the client accepts the placeholder's format. The first entries were measured on 2026-11-21;
    `CODEX_ACCESS_TOKEN@openai` waits for a workspace that issues the token, after step 2
    (`TODO.md`).
-2. Add the catalog, `--egress-preset-cred`, the placeholder per volume and substitution at each
-   entry's hosts, without the refusal. Reuse `CredentialGrammar` and `EgressCredentials`.
+2. Add the volume's layout and store, the catalog, `--egress-preset-cred`, the placeholder per
+   volume and substitution at each entry's hosts, without the refusal. Reuse `CredentialGrammar`
+   and `EgressCredentials`.
+   - Measure the store's lock across two proxy containers on one volume, on macOS, Windows and
+     Linux, including a proxy killed while it holds the lock; and whether podman's `subpath` mount
+     needs its subdirectory to exist, and which owner each subdirectory needs. Measure what the
+     layout container adds to a launch on a settled volume.
+     - macOS, podman 6.1.4, 2026-11-21: a second container's `flock -n` exited 1 while the holder
+       held the lock and 0 after the holder was killed.
+     - Windows, podman 6.2.0, 2026-11-22: the same results. Linux remains.
+     - macOS, 2026-11-23: a `subpath` mount of a missing subdirectory failed the container's start
+       with `securejoin.OpenInRoot home: openat2 …/_data/home: no such file or directory`. A
+       subdirectory created by uid 65532 under the sandbox's `--userns=keep-id:uid=65532,gid=65532`,
+       and one created by a container's root without it, both mounted as owned by 65532 under that
+       mapping, and uid 65532 wrote into each.
    - The launcher sends each proxy that has a recipient one record per selected `NAME@PRESET`,
-     with its placeholder and value, and the proxy expands the entry's targets from its own
-     catalog ("Run-on-host proxies"). Expanding in the launcher would send one name and
+     with its value, and to a run-on-host proxy also the placeholder that the launch's proxy
+     reported. The proxy expands the entry's targets from its own catalog ("Run-on-host
+     proxies"). Expanding in the launcher would send one name and
      placeholder several times, which the record parser refuses (`CredentialGrammar.checkDistinct`),
      and would copy the host table out of the image.
    - The record is a line kind of its own, not a binding line: the binding grammar would read
@@ -369,11 +446,12 @@ alone (`RunOnHostPrereqs.egressRuleText`).
   entry's hosts that its program allows, and no other.
 - Substitution: `CredentialTest` runs for each entry's places. Each `NAME`'s placeholder differs
   from every binding's and every other `NAME`'s.
-- Placeholder per volume: two launches on one volume, one with a rotated value, get the same
-  placeholder for an entry. A volume created again under the same name gets a new one, and
-  `--reset` removes the record. A launch that selects no entry at a host forwards another entry's
-  placeholder there unchanged. A launch that selects only `CLAUDE_CODE_OAUTH_TOKEN@anthropic`
-  refuses `ANTHROPIC_API_KEY@anthropic`'s placeholder in a declared form, as a foreign credential.
+- Placeholder per volume: two launches on one volume, one with a rotated value and one from a
+  launcher with another state root, get the same placeholder for an entry. A volume created again
+  under the same name gets a new one. A launch that selects no entry at a host forwards another
+  entry's placeholder there unchanged. A launch that selects only
+  `CLAUDE_CODE_OAUTH_TOKEN@anthropic` refuses `ANTHROPIC_API_KEY@anthropic`'s placeholder in a
+  declared form, as a foreign credential.
 - Refusal: at several paths, the proxy refuses a foreign key in each declared form, alone and
   beside the placeholder, and the placeholder in two declared forms at once.
   - It forwards a read without a declared credential at any path, and a write without one only at
@@ -391,6 +469,20 @@ alone (`RunOnHostPrereqs.egressRuleText`).
     does an `upgrade=websocket` grant there; the banner names it as refusing.
   - Under the defaults, `github.com` does not refuse, and `auth.openai.com` does. A `DELETE` or
     an `upgrade=websocket` grant at `github.com`'s device-sign-in path makes `github.com` refuse.
+- Layout:
+  - A volume without `ko-agent-sandbox-volume.json` keeps every root entry, `home` and `store`
+    included, under `home` after its first launch, with an empty `store` and the file naming
+    `0.1`. A legacy `home` ends at `home/home`.
+  - The sandbox sees `~/persistent-volume` as before and nothing of `store`, and the serving proxy
+    sees nothing of `home`.
+  - A move stopped after each step, the rename to `home` included, completes at the next launch
+    with every legacy entry at its path under `home`.
+  - A legacy staging directory and root that both hold `settings.json`, with different contents,
+    refuse the launch before any move, name both files and leave both as they were.
+  - A container without the layout's label on the volume refuses the launch and is named; so does
+    a layout version that the launcher does not know.
+- While a launch waits at its start prompt, `podman volume rm` of its volume is refused, and
+  `--force` ends the launch before its sandbox container starts.
 - `ProxyContainerTest` finds no selected value in the sandbox's environment or persistent volume
   after a session.
 - In the production image, each entry's client completes a request with its credential selected:

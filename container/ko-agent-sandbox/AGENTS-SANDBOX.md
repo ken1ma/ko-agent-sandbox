@@ -191,8 +191,9 @@ Programs that ignore `HTTPS_PROXY` need it spelled out — `openssl s_client -co
 A program with its own trust store needs the proxy's CA:
 `/etc/ko-agent-sandbox/egress-proxy-ca.crt`, or the whole bundle in `$SSL_CERT_FILE`. A JVM needs
 the proxy as well, and ignores `HTTPS_PROXY`: run `ko-sandbox-jdk-use-proxy <jdk-home>` on one you
-installed yourself. The native-image `scala` and `cs` launchers need the proxy and CA options on
-their command lines: `scala $KO_AGENT_SANDBOX_JAVA_OPTS run ...` or
+installed yourself, again in each session, since each session has its own CA. The native-image
+`scala` and `cs` launchers need the proxy and CA options on their command lines:
+`scala $KO_AGENT_SANDBOX_JAVA_OPTS run ...` or
 `cs ${KO_AGENT_SANDBOX_JAVA_OPTS//-D/-J-D} fetch ...`. `sbt` needs no additional setup.
 
 

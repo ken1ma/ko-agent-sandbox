@@ -1029,6 +1029,8 @@ prompt only on these conditions, with the moves measured on Windows (2026-11-21)
   - A refusal may come after Enter, since the launch then ends and no TUI starts. So the proxy
     starts beside the prompt, and the launch joins it just before the sandbox's create. Under
     `--session-start=immediate` the start then runs beside the BPF backend's launch script.
+  - A launch through an upstream proxy (`HTTPS_PROXY`) prints the proxy's own transport line, so
+    that launch alone waits for the proxy's ready line before its launch lines and prompt.
   - The prompt does not wait for the BPF backend's reconcile either. The reconcile saves its notes
     under the launch lock, and each launch prints the saved notes right before its prompt, under
     either backend (`printReconcileNotes`). A reconcile that ends after the prompt appears reaches

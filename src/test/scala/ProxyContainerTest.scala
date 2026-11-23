@@ -78,9 +78,9 @@ class ProxyContainerTest extends munit.FunSuite:
         .linesIterator.map(_.trim).filter(_.nonEmpty).toVector.sorted
       assertEquals(attached, Vector(live.egressNetwork, live.sandboxNetwork).sorted)
 
-      // The mounts are the leaf certificate with its own key, and this run's audit log. The workspace
-      // CA's key stays on the host, because "Who holds the CA key" is the whole of SECURITY.md's
-      // argument. An earlier run's log would hand this proxy a record that the proxy never wrote.
+      // The mounts are the leaf certificate with its own key, and this run's audit log. The run's CA
+      // key is never written, because "Who holds the CA key" is the whole of SECURITY.md's argument.
+      // An earlier run's log would hand this proxy a record that the proxy never wrote.
       val binds = inspect(proxy, "{{range .HostConfig.Binds}}{{println .}}{{end}}")
         .linesIterator.map(_.trim).filter(_.nonEmpty).toVector
       val sources = binds.map(_.takeWhile(_ != ':'))
@@ -89,8 +89,9 @@ class ProxyContainerTest extends munit.FunSuite:
 
       assert(sources.exists(_.endsWith("leaf.crt")), s"no leaf certificate is mounted: $binds")
       assert(sources.exists(_.endsWith("leaf.key")), s"no leaf key is mounted: $binds")
-      assert(!sources.contains(workspaceCaKey(live).toString), s"SECURITY: the CA private key is mounted: $binds")
       assert(!sources.exists(_.endsWith("ca.key")), s"a CA key is mounted under the default profile: $binds")
+      val written = writtenCaKeys(live)
+      assert(written.isEmpty, s"SECURITY: a CA private key is written on the host: $written")
       assertEquals(writableMounts, Vector("/var/log/ko-agent-egress-proxy/proxy.log"))
 
       val logs = sources.filter(_.endsWith(".log"))
@@ -104,9 +105,12 @@ class ProxyContainerTest extends munit.FunSuite:
       session.foreach(stop)
       discard(workspace)
 
-  /** The workspace CA's key, by its path, which no proxy of any profile may mount. */
-  private def workspaceCaKey(live: Session): java.nio.file.Path =
-    LauncherState.tlsStateRoot(currentOs).resolve(live.id).resolve("ca.key")
+  /** Every file named `ca.key` in the workspace's TLS state, where the run's files are. */
+  private def writtenCaKeys(live: Session): Vector[java.nio.file.Path] =
+    val tls = LauncherState.tlsStateRoot(currentOs).resolve(live.id)
+    val walk = java.nio.file.Files.walk(tls)
+    try walk.filter(_.getFileName.toString == "ca.key").toList.asScala.toVector
+    finally walk.close()
 
   /**
    * A CONNECT proxy on this host for the proxy container to leave through. The host proxy records

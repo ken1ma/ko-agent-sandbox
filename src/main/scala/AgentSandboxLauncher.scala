@@ -113,7 +113,6 @@ import java.nio.file.{Files, Path, Paths, StandardCopyOption}
 import java.time.{Instant, ZoneId, ZoneOffset}
 import java.time.format.DateTimeFormatter
 import agentsandbox.egress.{AgentEgressProxy, BrokeredCredential, CredentialGrammar, X509Helper}
-import agentsandbox.egress.CertificateHelper.*
 import agentsandbox.egress.LogHelper.sha256Hex
 
 import CommandLine.*
@@ -140,10 +139,6 @@ object AgentSandboxLauncher:
     * for this one (ImageBuilds.warmUpUidGidMappingCopies): a container of those images under another uid/gid mapping
     * copies the image again. */
   val UidGidMapping = s"--userns=keep-id:uid=$ContainerUid,gid=$ContainerGid"
-
-  // The launcher reissues a certificate a month before expiry, so no session starts on a certificate that expires
-  // mid-run.
-  val ReissueMarginSeconds = 2592000L
 
   // -------------------------------------------------------------------------
   // Run resource names
@@ -1781,8 +1776,9 @@ object AgentSandboxLauncher:
       )
 
     // The proxy starts beside the start prompt, and the launch joins it just before the sandbox's create, the first
-    // step that needs the proxy's address (createUnderLaunchLock). Under --session-start=immediate the start then also
-    // runs beside the listing of the live sessions and the BPF backend's launch script.
+    // step that needs the proxy's address (createUnderLaunchLock). A launch through an upstream proxy joins it before
+    // the launch lines instead. Under --session-start=immediate the start then also runs beside the listing of the live
+    // sessions and the BPF backend's launch script.
     // - A proxy that fails refuses the launch after Enter. The refusal ends the launch, so no TUI clears it.
     // - The start is a resource step, so a Ctrl-C or a declined prompt waits for the start before removing the proxy.
     val startingProxy = resourceSteps.start("egress proxy start"):
@@ -1796,7 +1792,14 @@ object AgentSandboxLauncher:
       LaunchMount(fuseWorkspace, bpfFacts, effectiveSettings, joinedRules, sessionRuleLines, sessionRulesText)
     val sbtVolumes = awaitSbtVolumes.map: await =>
       timings.timed("waited for the sbt build walk")(await())
-    printLaunchLines(parsed, settings, workspace, rules, mount, git, cacheOverlays, hostLogFile, os)
+    // A launch through an upstream proxy prints the proxy's own transport line, which the user must see before the
+    // prompt (doc/design.md, "What may move across the start prompt"). That launch alone waits for the start here.
+    val transportLine = Option.when(upstreamProxyArgs(env).nonEmpty):
+      upstreamTransportLine(
+        () => timings.timed("waited for the egress proxy's transport line")(startingProxy()),
+        () => readIfReadable(hostLogFile).getOrElse(""),
+      ).fold(reason => fail(s"error: $reason"), identity)
+    printLaunchLines(parsed, settings, workspace, rules, mount, git, cacheOverlays, transportLine, os)
     sbtVolumes.flatMap(planned => SbtBuildVolumes.skippedWarning(planned.skipped, os)).foreach(warn)
     val createCommand = sandboxCreateCommand(
       parsed, settings, workspace, images, rules, names, mount, git, cacheOverlays, sandboxFiles, machineMemory, os,
@@ -2482,29 +2485,22 @@ object AgentSandboxLauncher:
     import names.{egressNetwork, proxyContainer, sandboxNetwork}
     import git.gitInstruction
     // -----------------------------------------------------------------------
-    // This workspace's TLS inspection CA, and this run's mount sources
+    // This run's TLS inspection CA, and this run's mount sources
     // -----------------------------------------------------------------------
     //
-    // The CA that the sandbox trusts for TLS inspection is created here. The CA key stays on the host, and only the
-    // leaf and the leaf's own key reach the proxy (SECURITY.md, "Who holds the CA key", has the reasoning).
+    // Each run creates the CA that its sandbox trusts for TLS inspection, and never writes the CA's key: the key signs
+    // this run's leaf in memory and ends with this JVM. Only the leaf and the leaf's own key reach the proxy
+    // (SECURITY.md, "Who holds the CA key", has the reasoning).
     //
-    // The steps run under the workspace lock, because every step is check-then-act over shared files. Two first
-    // launches that both find no usable CA would otherwise interleave their writes, and leave one launch's ca.key
-    // beside the other launch's ca.crt.
+    // The steps run under the workspace lock, because the caches below are check-then-act over shared files.
     // - The lock spans the checks through the per-run copies and the proxy's create, so what this run mounts is one
     //   launch's consistent set.
     // - The lock cannot span further, because podman resolves bind sources at container *start*, past the interactive
     //   hold. The per-run copies close that remainder.
-    // - The lock cannot cover a launch that *died* between two writes. The coherence checks below cover that case:
-    //   they test that key and certificate match each other, not merely that both look fine.
-    val caCertFile = tlsDir.resolve("ca.crt")
-    val caKeyFile = tlsDir.resolve("ca.key")
-    val leafCertFile = tlsDir.resolve("leaf.crt")
-    val leafKeyFile = tlsDir.resolve("leaf.key")
-    val bundleFile = tlsDir.resolve("sandbox-ca-bundle.crt")
-    val bundleStampFile = tlsDir.resolve("bundle.stamp")
-
-    val reissueDeadline = Instant.now().plusSeconds(ReissueMarginSeconds)
+    // - A launch that died while it wrote a cache left the cache's stamp empty, so the next launch rebuilds the cache
+    //   (FileHelper.rewriteStampedCache).
+    val imageBundleFile = tlsDir.resolve("image-ca-bundle.crt")
+    val imageBundleStampFile = tlsDir.resolve("image-ca-bundle.stamp")
 
     // The session-specific instructions point to the ruleset environment variable rather than embed the host list in
     // every prompt. The launch reads the image's file, appends the session's instructions, and mounts the result over
@@ -2546,56 +2542,31 @@ object AgentSandboxLauncher:
         // This run's directory comes first, because the copies below are written into it.
         createPrivateDirectories(runFiles)
 
-        // The CA check tests coherence, not just expiry (CertificateHelper.keyMatchesCertificate).
-        val caServes = (readIfPresent(caCertFile), readIfPresent(caKeyFile)) match
-          case (Some(cert), Some(key)) =>
-            certificateExpiresAfter(Some(cert), reissueDeadline) && keyMatchesCertificate(cert, key)
-          case _ => false
-        if !caServes then
-          try
-            val ca = InspectionCa.create(workspaceSlug)
-            // The launch retires the leaf that this CA no longer signs by emptying the leaf, not by deleting it.
-            // - The names stay stable for the copies below and for anything still reading the files
-            //   (FileHelper.writeWithMode).
-            // - An empty leaf fails every expiry test below, so this same launch reissues the leaf.
-            // - The launch empties the leaf before writing the CA. A launch that dies here leaves a leaf that the next
-            //   launch reissues, rather than a leaf silently signed by the old CA.
-            Seq(leafCertFile, leafKeyFile).foreach(writePrivate(_, ""))
-            writePrivate(caKeyFile, ca.privateKeyPem)
-            writePrivate(caCertFile, ca.certificatePem)
-          catch
-            case ex: Exception =>
-              fail(s"error: could not create this workspace's inspection CA in $tlsDir\n$ex")
+        val ca =
+          try InspectionCa.create(workspaceSlug)
+          catch case ex: Exception => fail(s"error: could not create this run's inspection CA\n$ex")
+        val caCertFile = runFiles.resolve("ca.crt")
+        writeReadable(caCertFile, ca.certificatePem)
 
-        // The leaf is reissued when the CA is reissued (the leaf is emptied just above), and whenever the leaf stops
-        // serving the inspected names (CertificateHelper.leafServes). A ruleset that inspects nothing gets no leaf.
-        if inspectedHosts.nonEmpty
-          && !leafServes(
-            readIfPresent(leafCertFile), readIfPresent(leafKeyFile), inspectedHosts.toSet, Files.readString(caCertFile),
-            reissueDeadline,
-          )
-        then
+        // A ruleset that inspects nothing gets no leaf.
+        val leafFiles = Option.when(inspectedHosts.nonEmpty):
+          val leafCertFile = runFiles.resolve("leaf.crt")
+          val leafKeyFile = runFiles.resolve("leaf.key")
           try
-            val leaf = X509Helper.issueLeaf(
-              inspectedHosts,
-              parseCertificate(Files.readString(caCertFile)),
-              parsePrivateKey(Files.readString(caKeyFile), caKeyFile.toString),
-            )
+            val leaf = X509Helper.issueLeaf(inspectedHosts, ca.certificate, ca.privateKey)
             writePrivate(leafKeyFile, leaf.privateKeyPem)
             writePrivate(leafCertFile, leaf.certificatePem)
-          catch
-            case ex: Exception =>
-              fail(s"error: could not issue this workspace's inspection certificate\n$ex")
+          catch case ex: Exception => fail(s"error: could not issue this run's inspection certificate\n$ex")
+          (leafCertFile, leafKeyFile)
 
-        // The sandbox's trust is the image's own CA bundle, plus the CA that this run trusts. The workstation's bundle
-        // is a different set entirely. The launch re-reads the image's bundle when the image or the CA changes, and
-        // the stamp records both (imageId comes from the sandbox image's inspect).
-        val caFingerprint = certificateFingerprint(parseCertificate(Files.readString(caCertFile)))
-        val bundleStamp = s"$imageId $caFingerprint"
-
+        // The sandbox's trust is the image's own CA bundle, plus this run's CA. The workstation's bundle is a different
+        // set entirely. The launch re-reads the image's bundle when the image changes, and the stamp records the image
+        // (imageId comes from the sandbox image's inspect).
+        //
         // The image's files from which both caches below are made. The launch reads both files in one run of the image
         // when both caches are stale, as after a rebuild.
-        val bundleStale = readIfPresent(bundleFile).forall(_.isEmpty) || firstLine(bundleStampFile) != bundleStamp
+        val bundleStale =
+          readIfPresent(imageBundleFile).forall(_.isEmpty) || firstLine(imageBundleStampFile) != imageId
         val agentDocStale =
           readIfPresent(agentDocFile).forall(_.isEmpty) || firstLine(agentDocStampFile) != agentDocStamp
         val imageBundlePath = "/etc/ssl/certs/ca-certificates.crt"
@@ -2607,38 +2578,35 @@ object AgentSandboxLauncher:
         if bundleStale then
           val imageBundle = imageFiles.get(imageBundlePath).filter(_.nonEmpty)
             .getOrElse(fail(s"error: could not read the CA bundle out of $image\n$imageFilesMissing"))
-          val bundleText =
-            String(imageBundle, StandardCharsets.US_ASCII).stripLineEnd + "\n" +
-              Files.readString(caCertFile)
-          writeReadable(bundleFile, bundleText)
-          writeReadable(bundleStampFile, bundleStamp + "\n")
+          rewriteStampedCache(imageBundleStampFile, imageId):
+            writeReadable(imageBundleFile, String(imageBundle, StandardCharsets.US_ASCII).stripLineEnd + "\n")
+        val bundleFile = runFiles.resolve("sandbox-ca-bundle.crt")
+        writeReadable(bundleFile, Files.readString(imageBundleFile) + ca.certificatePem)
 
         // The JVM reads a `cacerts` keystore and no proxy variable, so the bundle above and the HTTPS_PROXY family
         // cannot reach the JVM. JdkTrust.scala handles the JVM's trust and proxy, and an empty answer means that the
         // image ships no JDK.
-        val jdkFileMounts = jdkMounts(
-          podman, imageId, imageEnv, tlsDir, bundleStamp, caCertFile, EgressProxyHost, EgressProxyPort,
-          selinuxEnforcing,
-        )
+        val jdkFileMounts =
+          jdkMounts(podman, imageId, imageEnv, tlsDir, runFiles, ca.certificate, EgressProxyHost, EgressProxyPort)
 
         if agentDocStale then
           val imageDoc = imageFiles.get(AgentDocPath).filter(_.nonEmpty)
             .getOrElse(fail(s"error: could not read the agent instructions out of $image\n$imageFilesMissing"))
-          writeReadable(
-            agentDocFile,
-            String(imageDoc, StandardCharsets.UTF_8).stripLineEnd
-              + appendedSection(
-                mountPath, workspaceMode, rulesetText, runOnHost, os == Os.Mac, gitInstruction,
-                parsed.credentialBindings,
-                backend = parsed.workspaceSettings.backend,
-                unixSocket = parsed.workspaceSettings.unixSocket,
-                windowsShare = os == Os.Windows,
-              ),
-          )
-          writeReadable(agentDocStampFile, agentDocStamp + "\n")
+          rewriteStampedCache(agentDocStampFile, agentDocStamp):
+            writeReadable(
+              agentDocFile,
+              String(imageDoc, StandardCharsets.UTF_8).stripLineEnd
+                + appendedSection(
+                  mountPath, workspaceMode, rulesetText, runOnHost, os == Os.Mac, gitInstruction,
+                  parsed.credentialBindings,
+                  backend = parsed.workspaceSettings.backend,
+                  unixSocket = parsed.workspaceSettings.unixSocket,
+                  windowsShare = os == Os.Windows,
+                ),
+            )
 
-        // This run's copies, made while the lock still holds, so no concurrent launch's rewrite can happen between an
-        // expiry check above and a copy below.
+        // This run's copies, made while the lock still holds, so no concurrent launch's rewrite can happen between a
+        // staleness check above and a copy below.
         // - A file that this run wrote into its own directory is mounted where it is.
         // - Modes travel with the copy: the leaf key stays owner-only, and the run directory itself allows only this
         //   user.
@@ -2653,15 +2621,14 @@ object AgentSandboxLauncher:
             target
 
         // The proxy gets the leaf and its key only.
-        // - The CA key is stored beside them and is never copied or mounted.
+        // - The CA key is never written.
         // - A ruleset that inspects nothing gets no material, because the proxy refuses material that it has nothing to
         //   inspect with.
         // - --userns makes an owner-only key readable as uid 65532. Without --userns, the key would have to be
         //   world-readable on the host. The userns flag itself stays on the create call, because the proxy writes its
         //   owner-only log file through the same mapping.
         val proxyTls = proxyTlsArgs(
-          if inspectedHosts.isEmpty then ProxyTlsMaterial.Uninspected
-          else ProxyTlsMaterial.Leaf(carried(leafCertFile), carried(leafKeyFile)),
+          leafFiles.fold(ProxyTlsMaterial.Uninspected)(ProxyTlsMaterial.Leaf(_, _)),
           selinuxEnforcing,
         )
 
@@ -2765,7 +2732,7 @@ object AgentSandboxLauncher:
     mount: LaunchMount,
     git: GitAccess,
     cacheOverlays: Vector[CacheOverlay.Resolved],
-    hostLogFile: Path,
+    transportLine: Option[String],
     os: Os,
   ): Unit =
     import settings.{awsCredential, credentials}
@@ -2799,13 +2766,7 @@ object AgentSandboxLauncher:
     EgressRules.launchLines(ruleFiles, rulesetText).foreach(System.err.println)
     // The transport, when this launch passed HTTPS_PROXY. The line is the proxy's own line, from the proxy's own parse,
     // so what is on the screen is what is used, never a launcher-side reading of the variable.
-    if upstreamProxyArgs(env).nonEmpty then
-      val said =
-        try Files.readString(hostLogFile)
-        catch case ex: IOException => fail(s"error: cannot read $hostLogFile: ${ex.getMessage}")
-      val transport = transportLineOf(said).getOrElse(
-        fail("error: the egress proxy reported no transport line before listening; the image is not this launcher's"),
-      )
+    transportLine.foreach: transport =>
       System.err.println(transport.replace("upstream proxy", chosen("upstream proxy")))
     if rulesetWarnings.nonEmpty then System.err.println(emphasized(rulesetWarnings))
     if inspectedHosts.isEmpty then

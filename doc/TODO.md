@@ -44,14 +44,22 @@ and `TODO-win.md` the work that only a Windows host has.
 
 ## The brokered login store off disk
 
-`plan-login-brokering.md` keeps an agent login's real tokens in a podman named volume, a plaintext
-file at rest beside the persistent volume. Keeping them off disk takes a secret that no file holds:
+`plan-login-brokering.md` keeps an agent login's real tokens in the persistent volume's `store`
+subdirectory, a plaintext file at rest. Keeping them off disk takes a secret that no file holds:
 
 - [ ] The host's keychain holds a key, the launcher pipes it to the proxy at launch as it pipes a
   brokered value, and the store holds the tokens encrypted under it. No refresh crosses to the
   host, unlike tokens kept in the keychain themselves.
   - Open: the hosts without a keychain, such as a Linux host without a Secret Service.
   - A key in a file encrypts nothing: whoever reads the store reads the key.
+
+## The layout container
+
+`plan-preset-credential-proxy.md` ("The volume's store") runs a short-lived container on every
+launch to settle the persistent volume's layout, so that the serving proxy mounts only `store`.
+
+- [ ] Skip that container on a settled volume. A new volume and a `0.0` volume need it; the launch
+  must still refuse a layout version that it does not know, which today only that container reads.
 
 ## Server tools that connect where a request says
 
@@ -988,6 +996,18 @@ The option is enabled on native Linux, and no run there has verified it yet.
   `ResetRecordTest` case once the machines that launched before the workspace rename have run
   `--reset-all` or removed `<state root>/projects/` by hand. Nothing writes or reads that
   directory; a machine that never removes it keeps a few path strings, no resource.
+
+## Persisted state not yet surveyed
+
+AGENTS.md prefers the least persisted state that meets the requirements. Of the launcher's state,
+these were examined and stay, each for the reason given: the audit logs, which outlive runs by
+design; the `ruleset/<id>` caches, derived and keyed by stamps; the BPF reconcile notes, which carry
+an asynchronous result to the next prompt; the workspace record, which maps a hashed workspace id
+back to its path; the run-on-host caches.
+
+- [ ] Examine the rest for state to drop, derive or move into its owner's lifetime: the FUSE
+  backend's state, the BPF proof fixture, the install directory in the podman machine, the seccomp
+  profile file (`SeccompProfile.profileFile`) and ko-review's state.
 
 ## The flat log files' cleanup
 

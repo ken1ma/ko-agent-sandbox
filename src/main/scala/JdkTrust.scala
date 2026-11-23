@@ -1,14 +1,18 @@
-// This file makes the image's JVM trust the workspace's CA and reach the proxy.
+// This file makes the image's JVM trust the run's CA and reach the proxy.
 //
 // - The launcher runs the image's `ko-sandbox-jdk-use-proxy` on the image's own JDK in a throwaway
-//   container.
-// - The launcher then mounts the two files that the script wrote back over the JDK's own files.
+//   container, without a CA, so that the result depends on the image alone and serves every run.
+// - Each launch adds its run's CA to a copy of that `cacerts`, and mounts it and `net.properties`
+//   over the JDK's own files.
 // - The script's header explains why a JVM needs this and which JVMs the script is for.
 // - jdkJavaOpts covers the JVMs that read neither file.
 
 package agentsandbox.launcher
 
+import java.io.ByteArrayOutputStream
 import java.nio.file.{Files, Path}
+import java.security.KeyStore
+import java.security.cert.X509Certificate
 
 import HostCommands.*
 import Podman.*
@@ -49,40 +53,48 @@ object JdkTrust:
         case line if line.startsWith("JAVA_HOME=") => line.stripPrefix("JAVA_HOME=")
       .filter(_.nonEmpty)
 
-  /** The CA's path inside a container. ko-sandbox-jdk-use-proxy reads the CA there, both in a session
-    * and in the launcher's throwaway run. The extension .crt follows the Linux/BSD convention; keytool
-    * accepts .crt, although its examples usually use .cer. */
+  /** The CA's path inside a session's container, where ko-sandbox-jdk-use-proxy reads the CA. The
+    * extension .crt follows the Linux/BSD convention; keytool accepts .crt, although its examples
+    * usually use .cer. */
   val SandboxEgressProxyCaPath = "/etc/ko-agent-sandbox/egress-proxy-ca.crt"
 
+  /** The alias and store password that ko-sandbox-jdk-use-proxy uses, so that the script, run again
+    * in a session, finds the run's CA where the launcher put it. */
+  val TrustAlias = "ko-agent-sandbox-egress"
+  private val StorePassword = "changeit".toCharArray
+
   /**
-   * The mounts that make the image's JDK trust this workspace's CA and reach the proxy.
+   * The mounts that make the image's JDK trust this run's CA and reach the proxy.
    *
    * - The mounts apply the PEM bundle's technique to the JDK: take the image's own files, add this
-   *   session's part, and mount the results back over the image's files.
-   * - `ko-sandbox-jdk-use-proxy` adds the session's part. The script runs as root in a throwaway
-   *   container of the image, so the image's files are writable.
-   * - The cache of prepared files is keyed on everything the script consumes: the image, the CA and
-   *   the proxy address.
+   *   run's part, and mount the results back over the image's files.
+   * - `ko-sandbox-jdk-use-proxy` adds the proxy. The script runs as root in a throwaway container of
+   *   the image, so the image's files are writable. With no CA mounted, it trusts nothing new.
+   * - The cache of prepared files in `cacheDir` is keyed on everything the script consumes: the image
+   *   and the proxy address. The run's CA goes into a copy of `cacerts` in `runFiles`.
    * - The method returns (host file, container path) pairs rather than --volume arguments, because
-   *   podman mounts the launch's per-run copy of each file, not this shared cache.
+   *   podman mounts the launch's per-run copy of each file, not the shared cache.
    */
   def jdkMounts(
     podman: String,
     image: String,
     imageEnv: String,
-    tlsDir: Path,
-    bundleStamp: String,
-    caCertFile: Path,
+    cacheDir: Path,
+    runFiles: Path,
+    ca: X509Certificate,
     proxyHost: String,
     proxyPort: Int,
-    selinuxEnforcing: Boolean,
   ): Vector[(Path, String)] =
     javaHomeOf(imageEnv).toVector.flatMap: javaHome =>
       val cacertsPath = s"$javaHome/lib/security/cacerts"
       val netPropertiesPath = s"$javaHome/conf/net.properties"
-      val files = Vector(cacertsPath, netPropertiesPath).map(at => (tlsDir.resolve(Path.of(at).getFileName), at))
-      val stampFile = tlsDir.resolve("jdk.stamp")
-      val stamp = s"$bundleStamp $proxyHost:$proxyPort"
+      // The `image-` names hold the image's files alone, and differ from the names under which a launcher with a
+      // CA per workspace cached a store that held that CA. On Windows that store kept its read-only attribute, which
+      // a replacing move cannot overwrite.
+      val files =
+        Vector(cacertsPath, netPropertiesPath).map(at => (cacheDir.resolve(s"image-${Path.of(at).getFileName}"), at))
+      val stampFile = cacheDir.resolve("image-jdk.stamp")
+      val stamp = s"$image $proxyHost:$proxyPort"
 
       if files.exists((file, _) => !Files.isRegularFile(file) || Files.size(file) == 0L)
         || firstLine(stampFile) != stamp
@@ -91,31 +103,48 @@ object JdkTrust:
         // `cacerts` into /etc/ssl/certs, and a copy out of the container must contain the store, not
         // the link.
         val prepared = "/prepared-jdk"
-        val created = run(
-          jdkPreparationCreateCommand(
-            podman, image, caCertFile, proxyHost, proxyPort, selinuxEnforcing,
-            quoteFreeSh(prepareScript(prepared), javaHome),
-          )*
-        )
-        if !created.ok then fail(s"error: could not create a container of $image to prepare its JDK\n${created.err}")
-        val container = created.text
-        // The code raises the failure after it removes the container. `fail` exits the JVM, which
-        // skips a `finally`, and no --reset would find the unnamed container.
-        val failure =
-          try
-            val ran = run(podman, "start", "--attach", container)
-            if !ran.ok then Some(s"error: ko-sandbox-jdk-use-proxy failed on the image's JDK at $javaHome\n${ran.err}")
-            else
-              files.iterator.map: (file, at) =>
-                val copied = run(podman, "cp", s"$container:$prepared/${file.getFileName}", file.toString)
-                Option.when(!copied.ok || !Files.isRegularFile(file) || Files.size(file) == 0L):
-                  s"error: could not copy the prepared $at out of $image\n${copied.err}"
-              .flatten.nextOption()
-          finally run(podman, "rm", "--force", container)
-        failure.foreach(message => fail(message))
-        writeReadable(stampFile, stamp + "\n")
+        def copyOf(file: Path): Path = runFiles.resolve(s"prepared-${file.getFileName}")
+        rewriteStampedCache(stampFile, stamp):
+          val created = run(
+            jdkPreparationCreateCommand(
+              podman, image, proxyHost, proxyPort, quoteFreeSh(prepareScript(prepared), javaHome),
+            )*
+          )
+          if !created.ok then fail(s"error: could not create a container of $image to prepare its JDK\n${created.err}")
+          val container = created.text
+          // The code raises the failure after it removes the container. `fail` exits the JVM, which
+          // skips a `finally`, and no --reset would find the unnamed container.
+          val failure =
+            try
+              val ran = run(podman, "start", "--attach", container)
+              if !ran.ok then
+                Some(s"error: ko-sandbox-jdk-use-proxy failed on the image's JDK at $javaHome\n${ran.err}")
+              else
+                // podman cp writes into this run's directory, and the JVM, which holds the lock, publishes into the
+                // cache. A podman cp that outlives a killed launcher then writes no file that a later launch reads.
+                files.iterator.map: (file, at) =>
+                  val copy = copyOf(file)
+                  val copied = run(podman, "cp", s"$container:$prepared/${Path.of(at).getFileName}", copy.toString)
+                  Option.when(!copied.ok || !Files.isRegularFile(copy) || Files.size(copy) == 0L):
+                    s"error: could not copy the prepared $at out of $image\n${copied.err}"
+                .flatten.nextOption()
+            finally run(podman, "rm", "--force", container)
+          failure.foreach(message => fail(message))
+          files.foreach((file, _) => writeReadable(file, Files.readAllBytes(copyOf(file))))
 
-      files
+      val (cachedCacerts, _) = files.head
+      val runCacerts = runFiles.resolve("cacerts")
+      writeReadable(runCacerts, withTrusted(cachedCacerts, ca))
+      (runCacerts -> cacertsPath) +: files.tail
+
+  /** `cacerts` with `ca` under TrustAlias, in the store's own type, which KeyStore.getInstance reads
+    * off the file. */
+  def withTrusted(cacerts: Path, ca: X509Certificate): Array[Byte] =
+    val store = KeyStore.getInstance(cacerts.toFile, StorePassword)
+    store.setCertificateEntry(TrustAlias, ca)
+    val bytes = ByteArrayOutputStream()
+    store.store(bytes, StorePassword)
+    bytes.toByteArray
 
   /**
    * `--entrypoint=` makes this container depend on nothing but sh and the script.
@@ -130,15 +159,12 @@ object JdkTrust:
   def jdkPreparationCreateCommand(
     podman: String,
     image: String,
-    caCertFile: Path,
     proxyHost: String,
     proxyPort: Int,
-    selinuxEnforcing: Boolean,
     containerCommand: Vector[String],
   ): Vector[String] =
     Vector(
       podman, "create", "--pull=never", "--network=none", "--user=0", "--entrypoint=",
-      fileBind(caCertFile, SandboxEgressProxyCaPath, "ro", selinuxEnforcing),
       s"--env=HTTPS_PROXY=http://$proxyHost:$proxyPort",
       image,
     ) ++ containerCommand

@@ -1271,15 +1271,13 @@ a granted WebSocket handshake (below). The proxy forwards the request with valid
 
 ### Who holds the CA key
 
-- The launcher keeps the CA private key on the host.
-- A host command's proxy has a CA of its own, whose key is never written ("Run on host", below).
-- Each workspace gets its own CA, created under `~/.local/state/ko-agent-sandbox/tls/<workspace>`
-  (`%LOCALAPPDATA%` on Windows).
-  - That directory is outside the workspace. So the agent can neither read the key that signs what
-    the agent is shown, nor replace the key for the next session.
-  - A CA created for one workspace cannot be used to read another workspace's traffic.
-- The launcher reissues the CA a month before expiry. The launcher reissues the leaf with the CA, a
-  month before the leaf expires, or when the resolved inspected set changes.
+- Each launch creates a CA for its run, and never writes the CA's private key: the key signs the
+  run's leaf in the launcher's memory and ends with the launcher.
+  - So no file holds a key that the agent could read or replace for a later session.
+  - A run's CA cannot be used to read another run's traffic.
+- A host command's proxy has a CA of its own, whose key is never written either ("Run on host",
+  below).
+- Each launch issues the leaf with the CA, naming the inspected set that the launch resolved.
 
 What reaches the proxy container is one leaf certificate and that leaf's own key, bind-mounted
 read-only.
@@ -1298,7 +1296,7 @@ read-only.
 
 The sandbox trusts that CA through:
 
-- a bundle assembled on the host from the image's own CA bundle plus the workspace's CA, mounted
+- a bundle assembled on the host from the image's own CA bundle plus the run's CA, mounted
   over `/etc/ssl/certs/ca-certificates.crt`;
 - for the programs with a trust store of their own rather than the system's, variables that point
   at the same file: `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`
@@ -1317,14 +1315,15 @@ The image's JDK reads none of the above: a JVM consults a `cacerts` keystore and
 
 - The image ships `ko-sandbox-jdk-use-proxy`. The script imports the CA into one JDK's store with
   that JDK's own `keytool`, and appends the proxy to that JDK's `net.properties`.
-- The launcher runs the script on the image's own JDK in a throwaway container with no network,
-  copies the files out, and mounts them read-only over the originals.
+- The launcher runs the script on the image's own JDK in a throwaway container with no network and
+  no CA, once per image, and copies the files out. Each launch adds its run's CA to a copy of the
+  store under the script's alias, and mounts both files read-only over the originals.
   - `JAVA_HOME` is read from the image's own environment. So the launcher never hardcodes the
     arch-dependent Temurin directory, and an image without a JDK skips the mounts.
   - Every root that the image shipped survives. Dropping a root would stay invisible until a TLS
     client reaches an origin signed by that public CA, so the mounted-store test checks the
     complete root set.
-  - The store is prepared at launch rather than built into the image, since the per-workspace CA
+  - The CA goes into the store at launch rather than into the image, since each run's CA
     postdates the image.
 
 Programs not covered by the launcher's prepared trust stores need separate handling:
@@ -1813,7 +1812,7 @@ commands execute outside the container, so the profile provides their confinemen
     - The trust store and the PEM file that the command is given hold the CA's certificate and no
       public root. A program with roots of its own keeps them, as Node.js does under
       `NODE_EXTRA_CA_CERTS`.
-    - The sandbox container trusts none of these CAs, and no host command trusts the workspace's CA
+    - The sandbox container trusts none of these CAs, and no host command trusts a run's CA
       ("Who holds the CA key", above). So whoever holds a leaf's key can answer as its hosts to one
       proxy's host commands, and to nothing else.
     - A program that a build starts verifies the proxy only if it reads the JVM's trust store
