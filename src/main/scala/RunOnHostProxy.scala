@@ -207,7 +207,7 @@ object RunOnHostProxy:
         record,
         sandboxExec(profileFile, invocation.head +: "-Djava.net.preferIPv4Stack=true" +: invocation.tail),
       )
-      val builder = ProcessBuilder(command*)
+      val builder = HostCommands.hostProcess(command)
       // The JVM asks for its working directory at start (SystemProps). The profile grants no directory of the
       // starter's, but it does grant the root.
       builder.directory(java.io.File("/"))

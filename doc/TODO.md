@@ -322,6 +322,18 @@ Why the refusals cover more than the creation:
   `SECURITY.md`. Each entry gives the refusal's message, what the user does, and the document that
   records the refusal's reason. The reason stays where it was decided.
 
+## The `ssh` that `podman machine ssh` runs on macOS
+
+- [ ] Check whether a workspace can supply the `ssh` that `podman machine ssh` runs on macOS.
+  - The launcher runs it on macOS (`KoAgentFs.scala`, `SandboxStats.scala`), and podman inherits
+    the launcher's `PATH`.
+  - Under `npm run`, that `PATH` starts with `node_modules/.bin`, which `findOnPath` refuses for the
+    launcher's own programs (design.md, "No repository-controlled host executable resolution").
+  - Check with a `node_modules/.bin/ssh` in a workspace and a launch from an `npm run` script.
+  - If podman runs it, put the system `ssh`'s directory first on macOS, as `hostProcess` does
+    with Windows OpenSSH (design-win.md, "Every process the launcher starts finds Windows OpenSSH
+    first").
+
 ## `src/probe/`: the shell probes as Scala CLI scripts
 
 `development.md`, "Probes", says to write a host-side probe as a standalone Scala CLI script.

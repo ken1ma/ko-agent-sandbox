@@ -98,6 +98,14 @@ struct Handle {
     append: bool,
 }
 
+/// What the caller of [`KoAgentFs::open_ino`] does with the object, which decides whether a file's
+/// classification is confirmed first ([`KoAgentFs::confirm_contexts`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OpenFor {
+    Reading,
+    Mutating,
+}
+
 /// Match a backing descriptor's `O_APPEND` to what the caller's file description carries now.
 /// Read-modify-write rather than a bare set, so the other status flags `F_SETFL` honours are left
 /// as they are.
@@ -254,14 +262,24 @@ impl KoAgentFs {
     ///   The fresh lookup moves the name to the new object's own node. That also keeps two backing
     ///   objects from sharing one node's page cache (`inode.rs`, `lookup`).
     /// - `O_TRUNC` waits for the comparison, so a refused open has truncated nothing.
-    fn open_ino(&self, ino: u64, oflag: OFlag) -> Result<OwnedFd, NixErrno> {
-        self.open_ino_compared(ino, oflag).map(|(fd, _)| fd)
+    ///
+    /// A third check confirms the classification itself. `lookup` can record a second name of a
+    /// guarded or listed entry as ordinary, and the identity comparison then passes
+    /// ([`Self::confirm_contexts`]).
+    fn open_ino(&self, ino: u64, oflag: OFlag, open_for: OpenFor) -> Result<OwnedFd, NixErrno> {
+        self.open_ino_compared(ino, oflag, open_for)
+            .map(|(fd, _)| fd)
     }
 
     /// [`Self::open_ino`] with the opened object's attributes, taken from the identity
     /// comparison's `fstat` when that still describes the object.
-    fn open_ino_with_stat(&self, ino: u64, oflag: OFlag) -> Result<(OwnedFd, FileStat), NixErrno> {
-        let (fd, compared) = self.open_ino_compared(ino, oflag)?;
+    fn open_ino_with_stat(
+        &self,
+        ino: u64,
+        oflag: OFlag,
+        open_for: OpenFor,
+    ) -> Result<(OwnedFd, FileStat), NixErrno> {
+        let (fd, compared) = self.open_ino_compared(ino, oflag, open_for)?;
         let st = match compared {
             Some(st) => st,
             None => fstat(&fd)?,
@@ -275,6 +293,7 @@ impl KoAgentFs {
         &self,
         ino: u64,
         oflag: OFlag,
+        open_for: OpenFor,
     ) -> Result<(OwnedFd, Option<FileStat>), NixErrno> {
         let fd = self.open_ino_unchecked(ino, oflag & !OFlag::O_TRUNC)?;
         let mut compared = None;
@@ -285,6 +304,7 @@ impl KoAgentFs {
             if recorded != Some(identity(&st)) {
                 return Err(NixErrno::ESTALE);
             }
+            self.confirm_contexts(ino, &st, open_for)?;
             compared = Some(st);
         }
         if oflag.contains(OFlag::O_TRUNC) {
@@ -292,6 +312,81 @@ impl KoAgentFs {
             compared = None;
         }
         Ok((fd, compared))
+    }
+
+    /// `ESTALE` when the contexts recorded for `ino` differ from the ones its opened object `st`
+    /// gets from the names beside it now ([`Self::policy_name`]): a node recorded as ordinary
+    /// whose object has a guarded or listed name, or a directory recorded under a Git context.
+    ///
+    /// - The identity comparison above cannot tell: `lookup` stats the entry and its siblings in
+    ///   separate calls. The host can remove both names in between, so the entry is recorded as
+    ///   ordinary. A new guarded entry can then take the freed inode number back under both names.
+    /// - The open descriptor holds the object, so no other entry takes its number during this
+    ///   check.
+    /// - The name must still lead to `st` after the siblings are read. Otherwise the host changed
+    ///   the name in between, and the sibling reads may have missed a guarded name removed with it.
+    /// - A file is checked only for a mutation, since the policy lets a guarded file be read. Its
+    ///   link count is no shortcut: the host can remove the other name between the open and the
+    ///   `fstat`.
+    /// - A directory is checked for every open of a name shaped like an 8.3 short name, since a
+    ///   lookup gives the directory's children contexts from its own. That includes a directory
+    ///   recorded as a gitdir root, whose children get no file rule. A directory has no hard link.
+    ///   A bind mount under an ordinary name is left out, which keeps the check off other lookups.
+    /// - A rule recorded from a listed sibling that is gone is refused too: a `writable` line can
+    ///   make it the laxer one. `lookup` gives the name a new node then (`inode.rs`, `lookup`).
+    /// - `ESTALE` makes the kernel walk the path again, and its lookup classifies the object by
+    ///   the name beside it.
+    fn confirm_contexts(&self, ino: u64, st: &FileStat, open_for: OpenFor) -> Result<(), NixErrno> {
+        let is_directory = st.st_mode & libc::S_IFMT == libc::S_IFDIR;
+        let (parent, name, parent_git, recorded) = {
+            let inner = self.inner.lock().unwrap();
+            let Some(node) = inner.table.get(ino) else {
+                return Ok(());
+            };
+            let parent_git = inner
+                .table
+                .get(node.parent)
+                .map_or(GitContext::NotGit, |parent| parent.git.clone());
+            if parent_git != GitContext::NotGit || !is_directory && node.git != GitContext::NotGit {
+                return Ok(());
+            }
+            (
+                node.parent,
+                node.name.clone(),
+                parent_git,
+                (node.git.clone(), node.rule.clone()),
+            )
+        };
+        let checked = if is_directory {
+            has_short_name_shape(name.as_bytes())
+        } else {
+            open_for == OpenFor::Mutating
+        };
+        if !checked {
+            return Ok(());
+        }
+        // Unchecked: the name check below ties the parent's descriptor to `st`, and a compared
+        // open would repeat this check for every ancestor.
+        let parentfd = self.open_ino_unchecked(parent, OFlag::O_PATH | OFlag::O_DIRECTORY)?;
+        let policy_name = self.policy_name(&parent_git, &parentfd, &name, st)?;
+        let contexts = self
+            .inner
+            .lock()
+            .unwrap()
+            .table
+            .child_contexts(parent, &policy_name);
+        if contexts != recorded {
+            return Err(NixErrno::ESTALE);
+        }
+        match fstatat(
+            &parentfd,
+            cstr(&name)?.as_c_str(),
+            AtFlags::AT_SYMLINK_NOFOLLOW,
+        ) {
+            Ok(named) if identity(&named) == identity(st) => Ok(()),
+            Ok(_) | Err(NixErrno::ENOENT) => Err(NixErrno::ESTALE),
+            Err(err) => Err(err),
+        }
     }
 
     fn open_ino_unchecked(&self, ino: u64, oflag: OFlag) -> Result<OwnedFd, NixErrno> {
@@ -314,7 +409,7 @@ impl KoAgentFs {
     }
 
     fn parent_dir(&self, ino: u64) -> Result<OwnedFd, NixErrno> {
-        self.open_ino(ino, OFlag::O_PATH | OFlag::O_DIRECTORY)
+        self.open_ino(ino, OFlag::O_PATH | OFlag::O_DIRECTORY, OpenFor::Mutating)
     }
 
     /// `NotGit` for an unknown inode.
@@ -367,42 +462,46 @@ impl KoAgentFs {
     /// - A host hard link to a `.git` pointer file is the same case.
     /// - Only an ordinary directory's children are asked. Elsewhere [`child_context`] does not read
     ///   the name for a guarded entry.
-    /// - The file rules name patterns, and no stat can try a pattern. So a name with a `~` (every
-    ///   8.3 short name has one) is compared with its siblings instead. It takes the name of the
-    ///   sibling without a `~` that is the same object.
+    /// - The file rules name patterns, and no stat can try a pattern. So a name shaped like an 8.3
+    ///   short name is compared with its siblings instead. It takes the name of the sibling without
+    ///   that shape that is the same object.
+    /// - An error that leaves a sibling unknown is returned rather than read as no sibling, with
+    ///   one exception that [`long_name_sibling`] states.
     fn policy_name<'a>(
         &self,
         parent_context: &GitContext,
         parentfd: &OwnedFd,
         name: &'a OsStr,
         st: &FileStat,
-    ) -> Cow<'a, OsStr> {
+    ) -> Result<Cow<'a, OsStr>, NixErrno> {
         if *parent_context != GitContext::NotGit
             || child_context(parent_context, name.as_bytes()) != GitContext::NotGit
         {
-            return Cow::Borrowed(name);
+            return Ok(Cow::Borrowed(name));
         }
         for guarded in GUARDED_NAMES {
             let Ok(guarded_cname) = CString::new(guarded) else {
                 continue;
             };
-            if fstatat(
+            match fstatat(
                 parentfd,
                 guarded_cname.as_c_str(),
                 AtFlags::AT_SYMLINK_NOFOLLOW,
-            )
-            .is_ok_and(|guarded_st| identity(&guarded_st) == identity(st))
-            {
-                return Cow::Borrowed(OsStr::from_bytes(guarded));
+            ) {
+                Ok(guarded_st) if identity(&guarded_st) == identity(st) => {
+                    return Ok(Cow::Borrowed(OsStr::from_bytes(guarded)));
+                }
+                Ok(_) | Err(NixErrno::ENOENT) => {}
+                Err(err) => return Err(err),
             }
         }
         if has_short_name_shape(name.as_bytes())
             && !self.inner.lock().unwrap().table.rules().lines().is_empty()
-            && let Some(long) = long_name_sibling(parentfd, name, st)
+            && let Some(long) = long_name_sibling(parentfd, name, st)?
         {
-            return Cow::Owned(long);
+            return Ok(Cow::Owned(long));
         }
-        Cow::Borrowed(name)
+        Ok(Cow::Borrowed(name))
     }
 
     /// [`Self::policy_name`] for an operation that holds only `(parent, name)`. A name with nothing
@@ -418,7 +517,9 @@ impl KoAgentFs {
         }
         let (cname, parentfd) = self.child_target(parent, name)?;
         match fstatat(&parentfd, cname.as_c_str(), AtFlags::AT_SYMLINK_NOFOLLOW) {
-            Ok(st) => Ok(self.policy_name(&parent_context, &parentfd, name, &st)),
+            Ok(st) => self
+                .policy_name(&parent_context, &parentfd, name, &st)
+                .map_err(to_errno),
             Err(NixErrno::ENOENT) => Ok(Cow::Borrowed(name)),
             Err(err) => Err(to_errno(err)),
         }
@@ -501,7 +602,9 @@ impl KoAgentFs {
         if kind != libc::S_IFDIR && kind != libc::S_IFLNK {
             return Ok(());
         }
-        let from_name = self.policy_name(&self.context(parent), &parentfd, name, &st);
+        let from_name = self
+            .policy_name(&self.context(parent), &parentfd, name, &st)
+            .map_err(to_errno)?;
         let to_name = self.existing_policy_name(newparent, newname)?;
         let inner = self.inner.lock().unwrap();
         let (from_git, from) = inner.table.child_contexts(parent, &from_name);
@@ -686,10 +789,10 @@ impl KoAgentFs {
         // reach that object before any comparison. `O_NOFOLLOW` opens a final symlink itself, since
         // a size or mode change arrives for the resolved target and never for the link.
         if let Some(size) = size {
-            let fd = self.open_ino(ino, OFlag::O_WRONLY | OFlag::O_NOFOLLOW)?;
+            let fd = self.open_ino(ino, OFlag::O_WRONLY | OFlag::O_NOFOLLOW, OpenFor::Mutating)?;
             ftruncate(&fd, size as i64)?;
         }
-        let target = self.open_ino(ino, OFlag::O_PATH | OFlag::O_NOFOLLOW)?;
+        let target = self.open_ino(ino, OFlag::O_PATH | OFlag::O_NOFOLLOW, OpenFor::Mutating)?;
         if let Some(mode) = mode {
             // `fchmod` refuses an `O_PATH` descriptor, and `fchmodat` takes `AT_EMPTY_PATH` only
             // from Linux 6.6 (`fchmodat2`).
@@ -735,8 +838,15 @@ fn proc_fd_path(fd: &OwnedFd) -> CString {
 }
 
 /// Whether `name` has the shape of an NTFS 8.3 short name, `VSCODE~1` or `NODE_M~1.JSO`: a base
-/// of at most eight bytes ending in `~` and digits, and an extension of at most three. Only such a
-/// name stands for a long one, so an editor's backup `notes.md~` costs no directory scan.
+/// of at most eight characters ending in `~` and digits, and an extension of at most three, both
+/// of characters an 8.3 name allows. Only such a name stands for a long one, so an editor's backup
+/// `notes.md~` costs no directory scan, and a long name such as `a.b~1.txt` keeps its own spelling.
+/// - Letters of either case pass, since the drive mount resolves a short name without case.
+/// - A character above ASCII passes: NTFS keeps a character its OEM code page holds, as in
+///   `SÉLECT~1.LNK`. A name that is not UTF-8 counts its bytes instead.
+/// - A double-byte code page counts such a character twice, so the shape over-accepts there. A
+///   lookup then scans the directory for nothing, and a symlink target spelled that way is
+///   refused.
 fn has_short_name_shape(name: &[u8]) -> bool {
     let (base, extension) = match name.iter().rposition(|&byte| byte == b'.') {
         Some(dot) => (&name[..dot], &name[dot + 1..]),
@@ -747,41 +857,60 @@ fn has_short_name_shape(name: &[u8]) -> bool {
         .rev()
         .take_while(|byte| byte.is_ascii_digit())
         .count();
+    let allowed = |byte: &u8| {
+        byte.is_ascii_alphanumeric() || !byte.is_ascii() || b"!#$%&'()-@^_`{}~".contains(byte)
+    };
+    let characters =
+        |bytes: &[u8]| std::str::from_utf8(bytes).map_or(bytes.len(), |text| text.chars().count());
     digits > 0
         && base.len() > digits
         && base[base.len() - digits - 1] == b'~'
-        && base.len() <= 8
-        && extension.len() <= 3
+        && characters(base) <= 8
+        && characters(extension) <= 3
+        && base.iter().chain(extension).all(allowed)
 }
 
-/// The sibling of `name` in `parentfd` without a `~` that is the backing object `st`, if any: the
-/// long name an 8.3 short name stands for ([`KoAgentFs::policy_name`]). An unreadable directory has
-/// none to offer, and the name stays its own.
-fn long_name_sibling(parentfd: &OwnedFd, name: &OsStr, st: &FileStat) -> Option<OsString> {
-    let mut dir = Dir::openat(
+/// The sibling of `name` in `parentfd` that is the backing object `st`, if any: the long name an
+/// 8.3 short name stands for ([`KoAgentFs::policy_name`]). A sibling without a short name's shape
+/// comes first, and a shaped one only when no other matches, since a long name can have the shape
+/// too. An unreadable directory has none to offer, and the name stays its own. Any other error
+/// leaves the long name unknown, so it is returned instead of a guess.
+fn long_name_sibling(
+    parentfd: &OwnedFd,
+    name: &OsStr,
+    st: &FileStat,
+) -> Result<Option<OsString>, NixErrno> {
+    let mut dir = match Dir::openat(
         parentfd,
         c".",
         OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
         Mode::empty(),
-    )
-    .ok()?;
-    let candidates: Vec<OsString> = dir
-        .iter()
-        .filter_map(Result::ok)
-        .map(|entry| OsStr::from_bytes(entry.file_name().to_bytes()).to_os_string())
-        .filter(|sibling| {
-            sibling.as_os_str() != name
-                && !sibling.as_bytes().contains(&b'~')
-                && sibling.as_bytes() != b"."
-                && sibling.as_bytes() != b".."
-        })
-        .collect();
-    candidates.into_iter().find(|sibling| {
-        cstr(sibling).is_ok_and(|csibling| {
-            fstatat(&dir, csibling.as_c_str(), AtFlags::AT_SYMLINK_NOFOLLOW)
-                .is_ok_and(|sibling_st| identity(&sibling_st) == identity(st))
-        })
-    })
+    ) {
+        Ok(dir) => dir,
+        Err(NixErrno::EACCES) => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    let mut shaped = None;
+    for entry in dir.iter() {
+        let entry = entry?;
+        let sibling = entry.file_name();
+        let sibling_bytes = sibling.to_bytes();
+        if sibling_bytes == name.as_bytes() || sibling_bytes == b"." || sibling_bytes == b".." {
+            continue;
+        }
+        match fstatat(parentfd, sibling, AtFlags::AT_SYMLINK_NOFOLLOW) {
+            Ok(sibling_st) if identity(&sibling_st) == identity(st) => {
+                let found = OsStr::from_bytes(sibling_bytes).to_os_string();
+                if !has_short_name_shape(sibling_bytes) {
+                    return Ok(Some(found));
+                }
+                shaped.get_or_insert(found);
+            }
+            Ok(_) | Err(NixErrno::ENOENT) => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(shaped)
 }
 
 /// The `open`/`create` flags the FUSE backend passes on to the backing store, out of the flags the
@@ -1114,7 +1243,11 @@ impl Filesystem for KoAgentFs {
             Ok(value) => value,
             Err(err) => return reply.error(to_errno(err)),
         };
-        let dirfd = match self.open_ino(parent.0, OFlag::O_PATH | OFlag::O_DIRECTORY) {
+        let dirfd = match self.open_ino(
+            parent.0,
+            OFlag::O_PATH | OFlag::O_DIRECTORY,
+            OpenFor::Reading,
+        ) {
             Ok(fd) => fd,
             Err(err) => return reply.error(to_errno(err)),
         };
@@ -1123,7 +1256,10 @@ impl Filesystem for KoAgentFs {
             Err(err) => return reply.error(to_errno(err)),
         };
         let root = self.is_gitdir_root(parent.0, &dirfd, name, &st);
-        let policy_name = self.policy_name(&self.context(parent.0), &dirfd, name, &st);
+        let policy_name = match self.policy_name(&self.context(parent.0), &dirfd, name, &st) {
+            Ok(policy_name) => policy_name,
+            Err(err) => return reply.error(to_errno(err)),
+        };
         let (dev, ino_id) = identity(&st);
         let ino = self.inner.lock().unwrap().table.lookup(
             parent.0,
@@ -1171,7 +1307,7 @@ impl Filesystem for KoAgentFs {
                 Err(err) => reply.error(to_errno(err)),
             };
         }
-        match self.open_ino_with_stat(ino.0, OFlag::O_PATH | OFlag::O_NOFOLLOW) {
+        match self.open_ino_with_stat(ino.0, OFlag::O_PATH | OFlag::O_NOFOLLOW, OpenFor::Reading) {
             Ok((_, st)) => reply.attr(&TTL, &to_file_attr(ino.0, &st)),
             Err(err) => reply.error(to_errno(err)),
         }
@@ -1187,10 +1323,11 @@ impl Filesystem for KoAgentFs {
             Ok(value) => value,
             Err(err) => return reply.error(to_errno(err)),
         };
-        let dirfd = match self.open_ino(parent, OFlag::O_PATH | OFlag::O_DIRECTORY) {
-            Ok(fd) => fd,
-            Err(err) => return reply.error(to_errno(err)),
-        };
+        let dirfd =
+            match self.open_ino(parent, OFlag::O_PATH | OFlag::O_DIRECTORY, OpenFor::Reading) {
+                Ok(fd) => fd,
+                Err(err) => return reply.error(to_errno(err)),
+            };
         match nix::fcntl::readlinkat(&dirfd, cname.as_c_str()) {
             Ok(target) => reply.data(target.as_bytes()),
             Err(err) => reply.error(to_errno(err)),
@@ -1216,7 +1353,12 @@ impl Filesystem for KoAgentFs {
             return reply.error(err);
         }
 
-        let fd = match self.open_ino(ino.0, passthrough_flags(flags.0)) {
+        let open_for = if wants_write {
+            OpenFor::Mutating
+        } else {
+            OpenFor::Reading
+        };
+        let fd = match self.open_ino(ino.0, passthrough_flags(flags.0), open_for) {
             Ok(fd) => fd,
             Err(err) => return reply.error(to_errno(err)),
         };
@@ -1294,7 +1436,11 @@ impl Filesystem for KoAgentFs {
     ///   zero.
     fn opendir(&self, _req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
         let _trace = self.trace(|| format!("op=opendir ino={}", self.traced_node(ino.0)));
-        let fd = match self.open_ino(ino.0, OFlag::O_RDONLY | OFlag::O_DIRECTORY) {
+        let fd = match self.open_ino(
+            ino.0,
+            OFlag::O_RDONLY | OFlag::O_DIRECTORY,
+            OpenFor::Reading,
+        ) {
             Ok(fd) => fd,
             Err(err) => return reply.error(to_errno(err)),
         };
@@ -1623,11 +1769,14 @@ impl Filesystem for KoAgentFs {
         // The source by descriptor, for `apply_setattr`'s reason: linking the node's name would
         // alias whatever that name leads to by now. `AT_EMPTY_PATH` needs `CAP_DAC_READ_SEARCH`
         // here, and the descriptor's `/proc` path, followed, does not; it links a symlink itself.
-        let (source, source_st) =
-            match self.open_ino_with_stat(ino.0, OFlag::O_PATH | OFlag::O_NOFOLLOW) {
-                Ok(pair) => pair,
-                Err(err) => return reply.error(to_errno(err)),
-            };
+        let (source, source_st) = match self.open_ino_with_stat(
+            ino.0,
+            OFlag::O_PATH | OFlag::O_NOFOLLOW,
+            OpenFor::Mutating,
+        ) {
+            Ok(pair) => pair,
+            Err(err) => return reply.error(to_errno(err)),
+        };
         // A hard link of a symlink is a second copy of its relative target, read from wherever the
         // new name is: the region check a rename gets (`allow_region_move`).
         if source_st.st_mode & libc::S_IFMT == libc::S_IFLNK {
@@ -1798,7 +1947,7 @@ impl Filesystem for KoAgentFs {
             let mode = match self.handle_fd(fh) {
                 Some(fd) => fstat(fd.as_ref()).map(|st| st.st_mode),
                 None => self
-                    .open_ino_with_stat(ino.0, OFlag::O_PATH | OFlag::O_NOFOLLOW)
+                    .open_ino_with_stat(ino.0, OFlag::O_PATH | OFlag::O_NOFOLLOW, OpenFor::Reading)
                     .map(|(_, st)| st.st_mode),
             };
             match mode {
@@ -1828,7 +1977,7 @@ impl Filesystem for KoAgentFs {
         if let Err(err) = self.apply_setattr(ino.0, mode, uid, gid, size, atime, mtime) {
             return reply.error(to_errno(err));
         }
-        match self.open_ino_with_stat(ino.0, OFlag::O_PATH | OFlag::O_NOFOLLOW) {
+        match self.open_ino_with_stat(ino.0, OFlag::O_PATH | OFlag::O_NOFOLLOW, OpenFor::Reading) {
             Ok((_, st)) => reply.attr(&TTL, &to_file_attr(ino.0, &st)),
             Err(err) => reply.error(to_errno(err)),
         }
@@ -1970,7 +2119,11 @@ impl Filesystem for KoAgentFs {
                 self.traced_node(ino.0),
             )
         });
-        let fd = match self.open_ino(ino.0, OFlag::O_RDONLY | OFlag::O_DIRECTORY) {
+        let fd = match self.open_ino(
+            ino.0,
+            OFlag::O_RDONLY | OFlag::O_DIRECTORY,
+            OpenFor::Reading,
+        ) {
             Ok(fd) => fd,
             Err(err) => return reply.error(to_errno(err)),
         };
@@ -2060,19 +2213,182 @@ mod tests {
         );
 
         let (_, st) = fs
-            .open_ino_with_stat(file, OFlag::O_PATH | OFlag::O_NOFOLLOW)
+            .open_ino_with_stat(file, OFlag::O_PATH | OFlag::O_NOFOLLOW, OpenFor::Reading)
             .unwrap();
         assert_eq!((identity(&st), st.st_size), ((dev, ino_id), 3));
         // The root records no identity, so no comparison stats it.
         let (_, st) = fs
-            .open_ino_with_stat(ROOT_INO, OFlag::O_PATH | OFlag::O_DIRECTORY)
+            .open_ino_with_stat(
+                ROOT_INO,
+                OFlag::O_PATH | OFlag::O_DIRECTORY,
+                OpenFor::Reading,
+            )
             .unwrap();
         assert_eq!(identity(&st), root_identity);
         // The comparison reads the file before `O_TRUNC` empties it.
         let (_, st) = fs
-            .open_ino_with_stat(file, OFlag::O_WRONLY | OFlag::O_TRUNC)
+            .open_ino_with_stat(file, OFlag::O_WRONLY | OFlag::O_TRUNC, OpenFor::Mutating)
             .unwrap();
         assert_eq!(st.st_size, 0);
+
+        drop(fs);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn an_open_refuses_a_node_whose_names_no_longer_give_its_recorded_contexts() {
+        // The state a lookup leaves when the host removes and recreates an entry between its
+        // `fstatat` calls, and the new object takes the old inode number: the second name is
+        // recorded as an ordinary node with the guarded object's identity (`policy_name`).
+        let base =
+            std::env::temp_dir().join(format!("ko-agent-fs-second-name-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        for dir in ["SHORT~1", "notes", "sub"] {
+            std::fs::create_dir_all(base.join(dir)).unwrap();
+        }
+        let link = |path: &str, second_names: &[&str]| {
+            std::fs::write(base.join(path), b"x").unwrap();
+            for second in second_names {
+                std::fs::hard_link(base.join(path), base.join(second)).unwrap();
+            }
+        };
+        link(".git", &["GIT~1", "copy"]);
+        link("secret.txt", &["SECRET~1.TXT"]);
+        link("plain", &["PLAIN~1"]);
+        link("LONE~1", &[]);
+        link("notes/todo.txt", &["notes/TODO~1.TXT"]);
+        link("sub/.git", &["sub/gone"]);
+        let root: OwnedFd = nix::fcntl::open(
+            &base,
+            OFlag::O_PATH | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        )
+        .unwrap();
+        let rules = ko_agent_fs::rulefile::parse(
+            "read-only secret.txt\nread-only notes\nwritable notes/todo.txt\n",
+        )
+        .unwrap()
+        .rules;
+        let fs = KoAgentFs::new(root, rules);
+        let recorded_under = |parent: u64, path: &str, policy_name: &str| {
+            let (dev, ino_id) = identity(&nix::sys::stat::lstat(&base.join(path)).unwrap());
+            let name = Path::new(path).file_name().unwrap();
+            fs.inner.lock().unwrap().table.lookup(
+                parent,
+                name,
+                OsStr::new(policy_name),
+                false,
+                dev,
+                ino_id,
+            )
+        };
+        let recorded = |name: &str| recorded_under(ROOT_INO, name, name);
+
+        // `copy` has an ordinary spelling: only a mutation's check finds its guarded sibling.
+        for name in ["GIT~1", "copy", "SECRET~1.TXT"] {
+            let ino = recorded(name);
+            for oflag in [
+                OFlag::O_RDWR,
+                OFlag::O_WRONLY | OFlag::O_TRUNC,
+                OFlag::O_PATH | OFlag::O_NOFOLLOW,
+            ] {
+                assert_eq!(
+                    fs.open_ino(ino, oflag, OpenFor::Mutating).unwrap_err(),
+                    NixErrno::ESTALE,
+                    "{name} {oflag:?}",
+                );
+            }
+            // The refused `O_TRUNC` truncated nothing.
+            assert_eq!(std::fs::read(base.join(name)).unwrap(), b"x", "{name}");
+            // The policy lets a guarded file be read.
+            assert!(
+                fs.open_ino(ino, OFlag::O_RDONLY, OpenFor::Reading).is_ok(),
+                "{name}"
+            );
+        }
+        // A second name of an ordinary object, and short-shaped names without a second name.
+        for name in ["PLAIN~1", "plain", "LONE~1"] {
+            let ino = recorded(name);
+            assert!(
+                fs.open_ino(ino, OFlag::O_RDWR, OpenFor::Mutating).is_ok(),
+                "{name}"
+            );
+        }
+        let directory = OFlag::O_PATH | OFlag::O_DIRECTORY;
+        assert!(
+            fs.open_ino(recorded("SHORT~1"), directory, OpenFor::Reading)
+                .is_ok()
+        );
+        // A directory recorded with a rule its names no longer give, as a lookup's parent open
+        // finds it.
+        let stale_directory = recorded_under(ROOT_INO, "SHORT~1", "secret.txt");
+        assert_eq!(
+            fs.open_ino(stale_directory, directory, OpenFor::Reading)
+                .unwrap_err(),
+            NixErrno::ESTALE,
+        );
+        // A directory recorded as a gitdir root, whose children get Git contexts and no file rule,
+        // that no guarded name stands beside now.
+        let stale_gitdir = recorded_under(ROOT_INO, "SHORT~1", ".git");
+        assert_ne!(stale_gitdir, stale_directory);
+        assert_eq!(
+            fs.open_ino(stale_gitdir, directory, OpenFor::Reading)
+                .unwrap_err(),
+            NixErrno::ESTALE,
+        );
+
+        // A listed sibling that goes away takes its rule along, in either direction: the open is
+        // refused, and a new lookup gives the name a node with its own rule.
+        let notes = recorded("notes");
+        for (parent, path, long, writable_after) in [
+            (ROOT_INO, "SECRET~1.TXT", "secret.txt", true),
+            (notes, "notes/TODO~1.TXT", "notes/todo.txt", false),
+        ] {
+            let long_name = Path::new(long).file_name().unwrap().to_str().unwrap();
+            let alias = recorded_under(parent, path, long_name);
+            std::fs::remove_file(base.join(long)).unwrap();
+            assert_eq!(
+                fs.open_ino(alias, OFlag::O_RDWR, OpenFor::Mutating)
+                    .unwrap_err(),
+                NixErrno::ESTALE,
+                "{path}",
+            );
+            let own_name = Path::new(path).file_name().unwrap().to_str().unwrap();
+            let fresh = recorded_under(parent, path, own_name);
+            assert_ne!(fresh, alias, "{path}");
+            assert!(
+                fs.open_ino(fresh, OFlag::O_RDWR, OpenFor::Mutating).is_ok(),
+                "{path}"
+            );
+            assert_eq!(
+                fs.allow_ino(fresh, Mutation::Write, "open-write").is_ok(),
+                writable_after,
+                "{path}",
+            );
+        }
+
+        // The host removes the ordinary name between the open and its `fstat`, which leaves the
+        // guarded file a single link.
+        let sub = recorded("sub");
+        let gone = recorded_under(sub, "sub/gone", "gone");
+        let fd = fs.open_ino_unchecked(gone, OFlag::O_RDWR).unwrap();
+        std::fs::remove_file(base.join("sub/gone")).unwrap();
+        let st = fstat(&fd).unwrap();
+        assert_eq!(st.st_nlink, 1);
+        assert_eq!(
+            fs.confirm_contexts(gone, &st, OpenFor::Mutating)
+                .unwrap_err(),
+            NixErrno::ESTALE,
+        );
+        // The host removes the guarded name too: no sibling is left to compare, and only the name
+        // check refuses.
+        std::fs::remove_file(base.join("sub/.git")).unwrap();
+        let st = fstat(&fd).unwrap();
+        assert_eq!(
+            fs.confirm_contexts(gone, &st, OpenFor::Mutating)
+                .unwrap_err(),
+            NixErrno::ESTALE,
+        );
 
         drop(fs);
         std::fs::remove_dir_all(&base).unwrap();
@@ -2125,7 +2441,15 @@ mod tests {
 
     #[test]
     fn only_a_name_shaped_like_an_8_3_short_name_is_looked_up_by_its_siblings() {
-        for short in ["VSCODE~1", "NODE_M~1", "CLAUDE~1.JSO", "AB12CD~1", "X~12"] {
+        for short in [
+            "VSCODE~1",
+            "NODE_M~1",
+            "CLAUDE~1.JSO",
+            "AB12CD~1",
+            "X~12",
+            "SÉLECT~1.LNK",
+            "ÉÉÉÉÉÉ~1.ÉÉÉ",
+        ] {
             assert!(has_short_name_shape(short.as_bytes()), "{short}");
         }
         for other in [
@@ -2136,19 +2460,36 @@ mod tests {
             "VSCODE~1.JSON",
             "TOOLONGNM~1",
             ".vscode",
+            "a.b~1.txt",
+            "a+b~1.txt",
+            "A B~1.TXT",
         ] {
             assert!(!has_short_name_shape(other.as_bytes()), "{other}");
         }
+        // Not UTF-8, so each byte counts: a ten-byte base is too long.
+        assert!(!has_short_name_shape(b"\x80\x80\x80\x80\x80\x80\x80\x80~1"));
+        assert!(has_short_name_shape(b"\x80\x80\x80\x80\x80\x80~1"));
     }
 
     #[test]
-    fn a_long_name_sibling_is_the_same_object_under_a_name_without_a_tilde() {
+    fn a_long_name_sibling_is_the_same_object_under_a_name_without_a_short_names_shape() {
         let dir = std::env::temp_dir().join(format!("ko-agent-fs-sibling-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(".envrc"), b"x").unwrap();
         std::fs::write(dir.join("LONE~1"), b"x").unwrap();
         std::fs::hard_link(dir.join(".envrc"), dir.join("ENVRC~1")).unwrap();
+        std::fs::hard_link(dir.join(".envrc"), dir.join("ENVRC~2")).unwrap();
+        // A long name may hold a `~`, and a pattern such as `*.json` covers it but not its alias.
+        std::fs::write(dir.join("a~b.json"), b"x").unwrap();
+        std::fs::hard_link(dir.join("a~b.json"), dir.join("AB~1.JSO")).unwrap();
+        // Two periods, which no 8.3 name has: `*.b*.txt` covers the long name but not its alias.
+        std::fs::write(dir.join("a.b~1.txt"), b"x").unwrap();
+        std::fs::hard_link(dir.join("a.b~1.txt"), dir.join("AB~2.TXT")).unwrap();
+        // Seven characters but twelve bytes in code page 932, so NTFS gives it an alias, though
+        // it has the shape itself: with no other match, the shaped long name is the one.
+        std::fs::write(dir.join("日本語ファ~1.txt"), b"x").unwrap();
+        std::fs::hard_link(dir.join("日本語ファ~1.txt"), dir.join("日本語~1.TXT")).unwrap();
         let parentfd: OwnedFd = nix::fcntl::open(
             &dir,
             OFlag::O_PATH | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
@@ -2158,12 +2499,27 @@ mod tests {
         let st = fstatat(&parentfd, c"ENVRC~1", AtFlags::AT_SYMLINK_NOFOLLOW).unwrap();
         assert_eq!(
             long_name_sibling(&parentfd, OsStr::new("ENVRC~1"), &st),
-            Some(OsString::from(".envrc")),
+            Ok(Some(OsString::from(".envrc"))),
+        );
+        let tilde = fstatat(&parentfd, c"AB~1.JSO", AtFlags::AT_SYMLINK_NOFOLLOW).unwrap();
+        assert_eq!(
+            long_name_sibling(&parentfd, OsStr::new("AB~1.JSO"), &tilde),
+            Ok(Some(OsString::from("a~b.json"))),
+        );
+        let dotted = fstatat(&parentfd, c"AB~2.TXT", AtFlags::AT_SYMLINK_NOFOLLOW).unwrap();
+        assert_eq!(
+            long_name_sibling(&parentfd, OsStr::new("AB~2.TXT"), &dotted),
+            Ok(Some(OsString::from("a.b~1.txt"))),
+        );
+        let japanese = fstatat(&parentfd, c"日本語~1.TXT", AtFlags::AT_SYMLINK_NOFOLLOW).unwrap();
+        assert_eq!(
+            long_name_sibling(&parentfd, OsStr::new("日本語~1.TXT"), &japanese),
+            Ok(Some(OsString::from("日本語ファ~1.txt"))),
         );
         let lone = fstatat(&parentfd, c"LONE~1", AtFlags::AT_SYMLINK_NOFOLLOW).unwrap();
         assert_eq!(
             long_name_sibling(&parentfd, OsStr::new("LONE~1"), &lone),
-            None,
+            Ok(None),
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -16,7 +16,9 @@ import scala.jdk.CollectionConverters.*
 
 import AgentSandboxLauncher.Reader
 import FileHelper.{directoryEntries, isExecutableFile}
-import HostCommands.{colorStderr, consented, displayPath, pathInline, renderArgument, shown, warn, weakened}
+import HostCommands.{
+  colorStderr, consented, displayPath, hostProcess, pathInline, renderArgument, shown, warn, weakened,
+}
 import RunOnHostPrereqs.{Program, Refusal}
 import RunOnHostSandbox.StepRefusal
 
@@ -159,7 +161,7 @@ object RunOnHostProvisioning:
   /** The run itself: the command runs in its build directory and prints its output on this terminal. */
   def runInBuildDirectory(provisionable: Finding.Provisionable): Either[String, Int] =
     try
-      val builder = ProcessBuilder(provisionable.command*).directory(provisionable.buildDirectory.toFile).inheritIO()
+      val builder = hostProcess(provisionable.command).directory(provisionable.buildDirectory.toFile).inheritIO()
       EgressCredentials.scrub(builder).environment().putAll(provisionable.environment.asJava)
       Right(builder.start().waitFor())
     catch case ex: IOException => Left(ex.getMessage)

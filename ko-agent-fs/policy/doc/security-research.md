@@ -146,6 +146,14 @@ short names", has the run). The check rests on these findings:
     of a guarded file.
   - A change of mode, owner or times, and a hard link, reach the daemon as the node, with no handle.
     So `apply_setattr` and `link` act on the descriptor `open_ino` compared, never on the name.
+- A lookup can record a second name as ordinary. The host removes both names between the lookup's
+  `fstatat` calls, and a new guarded entry takes the freed inode number back.
+  - So before a mutation, the resolver checks the siblings again (`../../fuse/src/fs.rs`,
+    `confirm_contexts`).
+  - A directory under a short name's shape is checked at every open, also one recorded as a
+    gitdir root, whose children get no file rule.
+  - `../../fuse/doc/verification-log.md`, "A second name under a reused inode number", has the
+    Windows runs of the `create` test with and without the check.
 - Only the two guarded names need the check.
   - Inside a gitdir, a name the layout does not know classifies as protected. This covers
     `CONFIG~1.WOR` for `config.worktree`, and `REBASE~1`.
@@ -161,9 +169,24 @@ short names", has the run). The check rests on these findings:
 
 What the check does not cover:
 
-- **Open:** the `create` test failed in two of three runs on Windows: a create opened the host's
-  pointer file. `../../fuse/doc/TODO.md` ("A second name arriving during a name-based mutation") has
-  the runs and the unverified cause.
+- A directory that a host bind mount also shows under a guarded name beside its ordinary name.
+  - A new path walk classifies it as the guarded entry. A node the session holds under the ordinary
+    name, such as its working directory, or one the race above recorded keeps its ordinary context.
+  - The resolver checks a directory again only under a name shaped like a short name
+    (`../../fuse/src/fs.rs`, `confirm_contexts`). Checking every directory would add a parent open
+    and the sibling stats to every lookup.
+  - The host's own bind mounts are out of scope, as its hard links are (`git-metadata.md`,
+    "Operations that make these mutations").
+- A short name in a directory the daemon can search but not list keeps its own spelling, so a file
+  rule on its long name does not reach it (`../../fuse/src/fs.rs`, `long_name_sibling`).
+  - Windows grants listing and traversal as separate rights. The scan for the long name then
+    fails with `EACCES`, while the guarded names need no listing and are still found.
+- A host change that makes an entry guarded or read-only takes effect at the next open. A write
+  handle opened before it keeps writing, and an open whose sibling check ran before it goes through
+  (`../../fuse/src/fs.rs`, `open` and `confirm_contexts`).
+- A held descendant of a directory that becomes a guarded entry after the descendant's lookup,
+  while the stored path still resolves. The resolver checks the final component only
+  (`../../fuse/doc/TODO.md`, "A guarded ancestor above a held descendant").
 - **Open:** `rename`, `unlink` and `rmdir` exist by name only.
   - So `allow_child` and `allow_create` decide about a name, and the backing syscall then resolves
     that name again.

@@ -5,6 +5,7 @@
 package agentsandbox.launcher
 
 import java.nio.file.{Files, Paths}
+import scala.jdk.CollectionConverters.*
 
 import HostCommands.*
 import FileHelper.*
@@ -345,6 +346,28 @@ class HostCommandsTest extends munit.FunSuite:
         hit <- printedLabel.findFirstIn(Files.readString(file))
       yield s"${file.getFileName}: $hit"
     assertEquals(offenders, Vector.empty)
+
+  test("every process the launcher starts comes from hostProcess, which puts Windows OpenSSH first on PATH"):
+    // A ProcessBuilder of its own would give a Windows child the inherited PATH, where Git Bash's ssh comes first and
+    // writes podman's `NUL` into the working directory.
+    val builders =
+      for
+        file <- directoryEntries(Paths.get("src", "main", "scala"))
+        _ <- raw"\bProcessBuilder\(".r.findAllMatchIn(Files.readString(file))
+      yield file.getFileName.toString
+    assertEquals(builders, Vector("HostCommands.scala"))
+    val openSsh = Paths.get(raw"C:\Windows\System32\OpenSSH")
+    def environmentAfterPreferOnPath(inherited: Map[String, String]): Map[String, String] =
+      val builder = ProcessBuilder("unstarted")
+      builder.environment.clear()
+      builder.environment.putAll(inherited.asJava)
+      preferOnPath(builder, openSsh).environment.asScala.toMap
+    // Windows names it `Path`, and ProcessBuilder's environment keeps the name's case.
+    assertEquals(
+      environmentAfterPreferOnPath(Map("Path" -> raw"C:\Program Files\Git\usr\bin;C:\Windows\System32")),
+      Map("Path" -> raw"C:\Windows\System32\OpenSSH;C:\Program Files\Git\usr\bin;C:\Windows\System32"),
+    )
+    assertEquals(environmentAfterPreferOnPath(Map.empty), Map("Path" -> raw"C:\Windows\System32\OpenSSH"))
 
   /** A JVM of its own that runs `fixture`'s main on this test's classes, with native access as the jar's manifest
     * grants it. */

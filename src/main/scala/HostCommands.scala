@@ -9,6 +9,7 @@ package agentsandbox.launcher
 import java.io.IOException
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Path, Paths}
+import scala.jdk.CollectionConverters.*
 
 object HostCommands:
 
@@ -378,7 +379,7 @@ object HostCommands:
 
   def stepOk(command: String*): Boolean =
     echoCommand(command)
-    ProcessBuilder(command*).inheritIO().start().waitFor() == 0
+    hostProcess(command).inheritIO().start().waitFor() == 0
 
   /** The echoed line. `bareNames` maps each announced executable's path to the name that the echo shows. */
   def renderCommand(command: Seq[String], bareNames: Map[String, String]): String =
@@ -460,7 +461,35 @@ object HostCommands:
   def printingCommand(text: String): String =
     s"printf %s ${java.util.Base64.getEncoder.encodeToString(text.getBytes(StandardCharsets.UTF_8))} | base64 -d"
 
-  def run(command: String*): Run = runProcess(ProcessBuilder(command*))
+  /** The ProcessBuilder for every process the launcher starts. On Windows, the child finds Windows OpenSSH's `ssh`
+    * before any other on PATH (design-win.md, "Every process the launcher starts finds Windows OpenSSH first"). */
+  def hostProcess(command: Seq[String], os: Os = currentOs): ProcessBuilder =
+    val builder = ProcessBuilder(command*)
+    if os == Os.Windows then
+      windowsOpenSsh.foreach(preferOnPath(builder, _))
+    builder
+
+  /** Puts `directory` first on the Windows PATH of `builder`'s child, under the name the PATH already has.
+    * - The edited environment starts from the JVM's copy, so the withheld credentials are removed from it too
+    *   (`EgressCredentials.withhold`).
+    * - ProcessBuilder's environment compares names with case even on Windows, where only `System.getenv(String)`
+    *   ignores it. A put under another spelling adds a second PATH, and a child such as podman may read either one.
+    */
+  def preferOnPath(builder: ProcessBuilder, directory: Path): ProcessBuilder =
+    val environment = EgressCredentials.scrub(builder).environment
+    val names = environment.keySet.asScala.filter(_.equalsIgnoreCase("PATH")).toVector
+    val inherited = names.headOption.map(environment.get).filter(_.nonEmpty)
+    names.foreach(environment.remove)
+    environment.put(names.headOption.getOrElse("Path"), inherited.fold(directory.toString)(path => s"$directory;$path"))
+    builder
+
+  /** Windows OpenSSH's directory under `%SystemRoot%`, where Windows installs it, when it holds `ssh.exe`. */
+  private lazy val windowsOpenSsh: Option[Path] =
+    env("SystemRoot")
+      .map(root => Paths.get(root, "System32", "OpenSSH"))
+      .filter(directory => FileHelper.isExecutableFile(directory.resolve("ssh.exe")))
+
+  def run(command: String*): Run = runProcess(hostProcess(command))
 
   /** The names a listing such as `podman ps --format {{.Names}}` prints one per line, or its stderr when it fails. */
   def listedNames(command: String*): Either[String, Vector[String]] =
@@ -471,7 +500,7 @@ object HostCommands:
     * from there. */
   def runWithEnvironment(environment: Map[String, String], command: String*): Run =
     // Scrubbed, because an edited environment starts from the JVM's copy, which still holds the withheld names.
-    val builder = EgressCredentials.scrub(ProcessBuilder(command*))
+    val builder = EgressCredentials.scrub(hostProcess(command))
     environment.foreach(builder.environment.put(_, _))
     runProcess(builder)
 
@@ -490,7 +519,7 @@ object HostCommands:
    *   a daemon thread, so it does not hold up the JVM's exit, and no caller sees its buffer.
    */
   def runWithin(bound: java.time.Duration, command: String*): Run =
-    val process = ProcessBuilder(command*).start()
+    val process = hostProcess(command).start()
     process.getOutputStream.close()
     collectWithin(process, bound, command.mkString(" "))
 
@@ -706,7 +735,7 @@ object HostCommands:
   /** What a relay's request reader in the sandbox prints, up to `maxBytes`. A reader that reaches the cap is cut
     * there and ended. */
   def relayRequest(command: Seq[String], maxBytes: Int): Array[Byte] =
-    val reader = ProcessBuilder(command*)
+    val reader = hostProcess(command)
       .redirectError(ProcessBuilder.Redirect.DISCARD)
       .start()
     reader.getOutputStream.close()

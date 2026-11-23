@@ -17,7 +17,7 @@ import scala.util.control.NonFatal
 
 import agentsandbox.egress.{BrokeredCredential, CredentialGrammar}
 
-import HostCommands.Os
+import HostCommands.{Os, hostProcess}
 
 object RunOnHostChannel:
 
@@ -256,7 +256,7 @@ object RunOnHostChannel:
       if !served then Thread.sleep(1000)
 
   private def sandboxShell(transport: Transport, script: String): ProcessBuilder =
-    ProcessBuilder((transport.execPrefix ++ Seq("sh", "-c", script))*)
+    hostProcess(transport.execPrefix ++ Seq("sh", "-c", script))
 
   /**
    * Kills a transport exec whole, descendants first.
@@ -435,7 +435,7 @@ object RunOnHostChannel:
       // The supervisor's stdin is this runner's pipe. The runner writes the word below once, and then holds the pipe.
       // The pipe's EOF means that the runner is gone, killed or ended. The supervisor ends the command at that EOF
       // (RunOnHostSandbox.runCommandMain), as this runner ends the command at ctl's EOF.
-      val child = ProcessBuilder(command*).start()
+      val child = hostProcess(command).start()
       val ended = AtomicBoolean(false)
       val requesterGone = AtomicBoolean(false)
       val phase = AtomicReference(ChildPhase.Waiting)
@@ -601,8 +601,8 @@ object RunOnHostChannel:
     credentials: Seq[BrokeredCredential] = Seq.empty,
   ): Boolean =
     try
-      val builder = ProcessBuilder(
-        (Seq("/bin/sh", "-c", "trap '' INT HUP; exec \"$@\"", "ko-agent-run-on-host-runner")
+      val builder = hostProcess(
+        Seq("/bin/sh", "-c", "trap '' INT HUP; exec \"$@\"", "ko-agent-run-on-host-runner")
           ++ RunOnHostSandbox.selfInvocation(
             (Seq(
               "--serve-run-on-host", podman, container, workspaceRoot.toString,
@@ -610,7 +610,7 @@ object RunOnHostChannel:
             ) ++ forwards.map(forward => RunOnHostSandbox.EnvOption + forward.name)
               ++ fileRules.map(file => RunOnHostSandbox.FileRulesOption + file)
               ++ Option.when(credentials.nonEmpty)(RunOnHostSandbox.CredentialsOption) :+ mount)*,
-          ))*,
+          ),
       )
       EgressCredentials.scrub(builder)
       forwards.foreach: forward =>

@@ -36,52 +36,15 @@ can put a second name of a guarded entry there first (`../../policy/doc/security
     removes those).
   - Staged mode keeps session mutations off the host tree. Its apply step needs the same protection
     against a concurrent replacement.
-- [ ] `a_create_never_reopens_a_guarded_entry_that_arrives_under_a_second_name`
-  (`tests/mounted_races.rs`) fails in some `--self-test` runs on Windows with "SECURITY: a create
-  opened the host's pointer file".
-  - On 2026-09-27 it failed in two of three runs, the second at `ac405d2` (Windows Server 24H2,
-    x86_64, WSL2 kernel 6.18.33.2).
-  - On 2026-11-09 it failed in four of six runs (WSL2 kernel 6.18.54.1).
-  - On 2026-11-11 it failed again on WSL2 kernel 6.18.54.1. In that run, 3,468 `.git` writes took
-    4 inode numbers, and all 288 of the sandbox's `GIT~1` files took a number a `.git` had.
-  - It passed in the first run of 2026-09-27 and of 2026-11-09, on the macOS rig, and in
-    `--self-test` on macOS.
-  - Suspected cause, which a failing run's inode record supports (below): an entry's identity is
-    `(st_dev, st_ino)` (`fs.rs`, `identity`), and `lookup` reads the entry and its guarded siblings
-    in separate `fstatat` calls (`policy_name`). One inode-number reuse suffices, in this
-    interleaving:
-    1. `lookup`'s `fstatat` of `GIT~1` finds the host's link, inode Y. The host removes `GIT~1`
-       and `.git`. `policy_name`'s `fstatat` of `.git` finds nothing, so the node is recorded as
-       ordinary with identity Y.
-    2. The host writes `.git` again, which gets inode Y back, and links `GIT~1`. The kernel's
-       `OPEN` for the ordinary node opens that name, `open_ino_compared` finds Y equal to Y, and
-       the pointer file is open for writing.
-
-    The test's backing is the container's temporary directory. Why the macOS rig passes is
+- [ ] A guarded ancestor above a held descendant. `fs.rs`, `confirm_contexts`, checks only the
+  final component, so a held descendant keeps the ordinary context its ancestor had at the
+  descendant's lookup.
+  - The ancestor must become a guarded entry while the stored path still resolves. A directory has
+    no hard link, so that takes an NTFS short name that stays the same across the rename to `.git`,
+    or a host bind mount. Whether NTFS ever gives the renamed directory the same short name is
     unmeasured.
-  - The failing run's inode record (2026-11-09, `InodeRecord` in `tests/mounted_races.rs`): 9,529
-    `.git` writes took 5 inode numbers, and all 705 of the sandbox's `GIT~1` files took a number a
-    `.git` had. On that backing a freed number returns at once, as step 2 needs. How fast a real
-    share (9p over NTFS, virtiofs over APFS) returns one is unmeasured.
-    - Step 1 is not visible to the test: a debug build that logs the identity the daemon recorded
-      would show it.
-  - Next steps:
-    - the failure rate on the macOS rig, from repeated `probe/rig.sh a_create_never_reopens`;
-    - a check that holds whatever the identity's strength, written up before it changes the core:
-      `open_ino_compared` compares the opened descriptor's identity with the parent's guarded
-      siblings, as `policy_name` does, and answers `ESTALE` on a match, so the kernel's re-walk
-      records the guarded context and `allow_ino` refuses the write. The open descriptor pins its
-      inode, so no later `.git` takes the number during the check. It costs the two `fstatat`
-      calls `lookup` pays, for nodes recorded as ordinary under a parent outside git metadata, and
-      covers `open`, `setattr` and `link`, not the name-based `rename`, `unlink` and `rmdir` above.
-      - Its window: the host removes `GIT~1` and `.git` after the backing open and before the
-        comparison. No sibling matches, and the descriptor still holds the pointer file, which the
-        test's read then detects. The descriptor's `st_nlink` is 0 at that point, so answering
-        `ESTALE` to a descriptor without a name closes the window as far as the test's host goes:
-        that host never leaves the pointer file a name other than `.git` and `GIT~1`. A host that
-        renames `.git` to an ordinary name has made the entry ordinary. Reasoned from `fs.rs` and
-        `tests/mounted_races.rs`, not run;
-    - a stronger identity (change or birth time beside the number), the alternative.
+  - A fix checks each short-name-shaped ancestor at every open: a parent open and three `fstatat`
+    calls each, with no descriptor holding the ancestor during its check.
 
 ## P1 — Platform verification (needs real filesystems)
 
@@ -331,6 +294,14 @@ user meets it.
     never pay the walk.
   - It combines with the cache-TTL option below, which helps only programs that walk paths. Reuse
     *across* operations is the directory-fd cache row below.
+- [ ] **Measure the second-name check on a mutating open.** Before a write or `O_TRUNC` open, a
+  `setattr` or a `link` of an existing file, `fs.rs`, `confirm_contexts`, opens the parent by path
+  and stats `.git`, `.ko-agent-sandbox` and the file's own name.
+  - A name shaped like an 8.3 short name also costs a directory scan when file rules exist.
+  - `bench/` measures walks and stats, which skip the check. A case that opens existing files for
+    append at several depths, with and without the check, on Windows and macOS, gives the cost.
+  - If it matters, reusing the parent directory's fd within one operation (the row above) saves
+    the second walk.
 - [ ] **A directory-fd cache for the requests that change nothing.** Every request walks its full
   path again (`fs.rs`, `open_ino`), so its cost grows with depth.
   - Counted from the code, in path components resolved plus stat calls:
@@ -599,6 +570,9 @@ Timed to the work that needs it, so the findings are fresh when they are used.
   - The one place identity enters classification is a second name of `.git` or
     `.ko-agent-sandbox`. There, a changed answer takes a new number (`fs.rs`, `policy_name`;
     `inode.rs`, `lookup`).
+    - A reused number can make `lookup` record such a name as ordinary, between its separate
+      `fstatat` calls. The resolver checks the siblings again before a mutation through such a name
+      (`fs.rs`, `confirm_contexts`).
   - The stale-handle tests hold their handle one level below a recreated name. So what they measure
     is the FUSE backend's own `RESOLVE_NO_SYMLINKS` refusal, not a kernel or table artifact
     (`tests/mounted_mutate.rs`).

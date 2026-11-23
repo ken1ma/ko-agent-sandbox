@@ -974,7 +974,7 @@ object RunOnHostSession:
     def signal(pid: Long, name: String): Unit = kill(name, pid.toString)
 
     private def kill(name: String, target: String): Unit =
-      java.lang.ProcessBuilder("/bin/kill", s"-$name", "--", target).start().waitFor()
+      HostCommands.hostProcess(Seq("/bin/kill", s"-$name", "--", target)).start().waitFor()
 
     /** The trimmed, non-empty lines a host command prints; nothing when it cannot run. */
     private[launcher] def lines(command: String*): Vector[String] = linesOf(HostCommands.run(command*))

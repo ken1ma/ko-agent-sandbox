@@ -98,6 +98,10 @@ Inode { parent: u64, name: OsString, nlookup: u64, git: GitContext, rule: RuleCo
     - with `ELOOP` through a symlink;
     - with `ESTALE` at another object. Without the check, a second name of a guarded entry would let
       an ordinary chain reach that object.
+    - with `ESTALE` at the recorded object when the names beside it now give it other contexts:
+      for a file before a mutation, for a directory under a short name's shape at any open.
+      `lookup` stats the entry and its siblings in separate calls, so it can record a second name
+      with the wrong contexts (`fs.rs`, `confirm_contexts`).
   - The alternative, one fd per inode, trades the staleness for a quirk of its own: an fd to a
     subtree renamed away keeps operating on the moved inode. It also holds one open fd per live
     inode, which at 100k files is real fd pressure. The path model holds one fd for the root, and

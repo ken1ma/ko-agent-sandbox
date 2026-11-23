@@ -439,7 +439,8 @@ restore permission prompts and set the Claude Code status line.
                          set an environment variable in the sandbox and --run-on-host
                          commands.
                          An explicit <value> needs no export on the host.
-                         Without <value>, use the host's value; an unset name fails.
+                         Without <value>, use the host's value; an unset name fails,
+                         and so does PATH.
                          Repeatable; KO_AGENT_SANDBOX_* names are refused.
                          Before forwarding a secret, read SECURITY.md; in the options file,
                          name it without its value

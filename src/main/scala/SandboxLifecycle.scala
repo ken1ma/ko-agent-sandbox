@@ -46,7 +46,7 @@ object SandboxLifecycle:
       try FFMHelper.libc.execvp(command)
       catch case NonFatal(_) => ()
     val process =
-      try ProcessBuilder(command*).inheritIO().start()
+      try hostProcess(command).inheritIO().start()
       catch
         case ex: IOException =>
           // No child exists after all, so this process removes what this run made again.
@@ -374,11 +374,11 @@ object SandboxLifecycle:
     mic: Option[MicJob],
   ): Boolean =
     try
-      val builder = ProcessBuilder(
+      val builder = hostProcess(
         reaperCommand(
           podman, sandboxContainer, proxyContainer, sandboxNetwork, egressNetwork,
           teardownMode, teardownScript, clipboardMode, clipboard, mic,
-        )*
+        ),
       )
       builder.redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))
       builder.redirectOutput(ProcessBuilder.Redirect.DISCARD)

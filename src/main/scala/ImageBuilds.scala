@@ -520,7 +520,7 @@ object ImageBuilds:
 
   /** A build command run in the context, its output the user's, and its exit status. */
   private def executeIn(context: Path, command: Vector[String]): Int =
-    ProcessBuilder(command*).directory(context.toFile).inheritIO().start().waitFor()
+    hostProcess(command).directory(context.toFile).inheritIO().start().waitFor()
 
   private def imageId(podman: String, image: String): Option[String] =
     val inspected = run(podman, "image", "inspect", "--format", "{{.Id}}", image)
@@ -646,7 +646,7 @@ object ImageBuilds:
       sys.exit(Vector(suiteExit, corpusExit, shareExit).find(_ != 0).getOrElse(0))
 
     val unprivileged = selfTestRunCommand(podman, asRoot = false)
-    val exit = ProcessBuilder(unprivileged*).inheritIO().start().waitFor()
+    val exit = hostProcess(unprivileged).inheritIO().start().waitFor()
     if exit != SelfTestSetupExit then finish(exit)
 
     System.err.println(
@@ -657,4 +657,4 @@ object ImageBuilds:
         "  (ko-agent-fs/fuse/doc/verification-log.md).",
     )
     val privileged = selfTestRunCommand(podman, asRoot = true)
-    finish(ProcessBuilder(privileged*).inheritIO().start().waitFor())
+    finish(hostProcess(privileged).inheritIO().start().waitFor())

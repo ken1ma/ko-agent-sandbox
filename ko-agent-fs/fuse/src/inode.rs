@@ -141,9 +141,12 @@ impl InodeTable {
     ///   answer.
     ///
     /// `policy_name` is the name the contexts are computed from: `name`, or the guarded or listed
-    /// name that `name` is an alias of (`fs.rs`, `policy_name`). An entry whose contexts differ
-    /// from the ones `policy_name` gives is not reused. So a name that becomes an alias after its
-    /// first lookup, such as a host hard link, does not keep its ordinary contexts.
+    /// name that `name` is an alias of (`fs.rs`, `policy_name`). An entry is not reused when its
+    /// contexts differ from the ones `policy_name` gives, the gitdir-root hint above aside.
+    /// - So a name that becomes an alias after its first lookup, such as a host hard link, does not
+    ///   keep its ordinary contexts.
+    /// - A name whose alias goes away does not keep the alias's contexts either. A `writable` line
+    ///   can make the alias's rule the laxer one, and a gitdir's context leaves file rules out.
     ///
     /// `(dev, ino_id)` is the backing identity, freshly stat'd, of what the name resolves to now.
     /// - An existing entry is reused only when it matches. A host replacement can leave size and
@@ -171,21 +174,24 @@ impl InodeTable {
         dev: u64,
         ino_id: u64,
     ) -> u64 {
-        let contexts = |table: &Self| {
-            let (git, rule) = table.child_contexts(parent, policy_name);
-            match git {
-                GitContext::ModuleNamespace if is_gitdir_root => (gitdir_root(), rule),
-                other => (other, rule),
-            }
+        let (name_git, rule) = self.child_contexts(parent, policy_name);
+        let is_namespace = name_git == GitContext::ModuleNamespace;
+        let git = if is_namespace && is_gitdir_root {
+            gitdir_root()
+        } else {
+            name_git
         };
-        let is_alias = policy_name != name;
 
         let key = (parent, name.to_os_string());
         if let Some(&ino) = self.by_name.get(&key)
             && self.by_ino.get(&ino).is_some_and(|node| {
                 node.dev == dev
                     && node.ino_id == ino_id
-                    && (!is_alias || (node.git.clone(), node.rule.clone()) == contexts(self))
+                    && node.rule == rule
+                    && (node.git == git
+                        || is_namespace
+                            && (node.git == GitContext::ModuleNamespace
+                                || node.git == gitdir_root()))
             })
         {
             if let Some(node) = self.by_ino.get_mut(&ino) {
@@ -193,7 +199,6 @@ impl InodeTable {
             }
             return ino;
         }
-        let (git, rule) = contexts(self);
 
         let ino = self.next_ino;
         self.next_ino += 1;
@@ -394,6 +399,14 @@ mod tests {
             classify(&table.get(config).unwrap().git),
             GitPathClass::Protected,
         );
+
+        // `.git` is gone, and the same object is ordinary again.
+        let ordinary_again = table.lookup(ROOT_INO, os("GIT~1"), os("GIT~1"), false, 7, 100);
+        assert_ne!(
+            ordinary_again, alias,
+            "the alias's context must not be reused"
+        );
+        assert_eq!(table.get(ordinary_again).unwrap().git, GitContext::NotGit);
     }
 
     #[test]

@@ -2475,6 +2475,12 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     // gives the reason); a name that the host lacks has no value.
     assertEquals(forwardedEnvironment(Vector(EnvForward("EMPTY", None)), host.get), Right(Vector("--env=EMPTY=")))
     assert(forwardedEnvironment(Vector(EnvForward("MISSING", None)), host.get).swap.exists(_.contains("not set")))
+    // The host's PATH names host directories, so PATH needs a value, under any spelling.
+    Vector("PATH", "Path").foreach: name =>
+      assertEquals(
+        forwardedEnvironment(Vector(EnvForward(name, None)), Map(name -> "/usr/bin").get),
+        Left(s"error: --env=$name; the host's PATH names host directories; give --env=$name=<value>"),
+      )
     // An explicit value never consults the host, so it need not be exported there.
     assertEquals(
       forwardedEnvironment(Vector(EnvForward("MISSING", Some("x"))), host.get),

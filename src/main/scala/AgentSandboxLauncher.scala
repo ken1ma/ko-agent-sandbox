@@ -319,7 +319,7 @@ object AgentSandboxLauncher:
       val client =
         try
           Right(
-            ProcessBuilder(podman, "start", "--attach", "--interactive", "--sig-proxy=false", container)
+            hostProcess(Seq(podman, "start", "--attach", "--interactive", "--sig-proxy=false", container))
               .redirectOutput(ProcessBuilder.Redirect.DISCARD)
               .start(),
           )
@@ -1919,6 +1919,7 @@ object AgentSandboxLauncher:
     // (EgressCredentials.withhold).
     val credentials =
       EgressCredentials.resolve(parsed.credentialBindings, name => Option(System.getenv(name))).fold(fail(_), identity)
+    EgressCredentials.withholdingRefusal(credentials.map(_.binding.name), os).foreach(fail(_))
     EgressCredentials.withhold(credentials.map(_.binding.name), os)
 
     val (image, imageOverridden) = sandboxImageChoice(parsed.image)

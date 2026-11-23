@@ -24,7 +24,7 @@ import agentsandbox.egress.{BrokeredCredential, CredentialGrammar}
 import RunOnHostPrereqs.*
 import RunOnHostProxy.*
 import RunOnHostSession.Session
-import HostCommands.Os
+import HostCommands.{Os, hostProcess}
 import FileHelper.{directoryEntries, directoryEntriesIfAny, isExecutableFile, realPath}
 import SandboxWorkspace.workspaceIdOf
 
@@ -969,7 +969,7 @@ object RunOnHostSandbox:
     record: Path, profileFile: Path, command: Seq[String], buildDirectory: Path, environment: Map[String, String],
     output: Path,
   ): Process =
-    val builder = ProcessBuilder(RunOnHostSession.registeredSpawn(record, sandboxExec(profileFile, command))*)
+    val builder = hostProcess(RunOnHostSession.registeredSpawn(record, sandboxExec(profileFile, command)))
     builder.directory(buildDirectory.toFile)
     builder.redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))
     builder.redirectOutput(ProcessBuilder.Redirect.appendTo(output.toFile))
@@ -1227,7 +1227,7 @@ object RunOnHostSandbox:
       record,
       sandboxExec(profileFile, programCommand),
     )
-    val builder = ProcessBuilder(command*)
+    val builder = hostProcess(command)
     builder.directory(buildDirectory.toFile)
     // Not the supervisor's own stdin, which is the supervisor's liveness pipe under the runner (runCommandMain).
     builder.redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))

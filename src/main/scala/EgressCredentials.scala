@@ -214,7 +214,7 @@ object EgressCredentials:
    * - A child started without a changed environment inherits the process's current environment, so
    *   removing the names there reaches every such start.
    * - A child whose environment a ProcessBuilder edits starts from the JVM's copy, taken at JVM start,
-   *   which still has the names (`scrub`).
+   *   which still has the names (`scrub`). On Windows, `HostCommands.hostProcess` edits every child's.
    */
   def withhold(names: Seq[String], os: HostCommands.Os): Unit =
     withheldNames = withheldNames ++ names
@@ -222,10 +222,22 @@ object EgressCredentials:
       if os == HostCommands.Os.Windows then FFMHelper.kernel32.clearEnvironmentVariable(name)
       else FFMHelper.libc.unsetenv(name)
 
+  /** Why `withhold` cannot withhold one of `names`, if it cannot. Java's ProcessImpl puts its own SystemRoot into
+    * every Windows child whose environment a ProcessBuilder edits. */
+  def withholdingRefusal(names: Seq[String], os: HostCommands.Os): Option[String] =
+    names.find(name => os == HostCommands.Os.Windows && name.equalsIgnoreCase("SystemRoot")).map: name =>
+      s"error: --egress-cred=$name@...; Windows children always get SystemRoot; export the value under another name"
+
   @volatile private var withheldNames: Set[String] = Set.empty
 
   /** Removes the withheld names from a ProcessBuilder's copy of the environment, for a builder whose
-    * environment the code edits. */
-  def scrub(builder: ProcessBuilder): ProcessBuilder =
-    withheldNames.foreach(builder.environment.remove)
+    * environment the code edits.
+    * - On Windows, every spelling of a name goes: `System.getenv(String)` resolved the binding without case,
+    *   while the copy is a case-sensitive map.
+    * - Java's ProcessImpl adds SystemRoot back to an edited Windows environment, so `withholdingRefusal` names it. */
+  def scrub(builder: ProcessBuilder, os: HostCommands.Os = HostCommands.currentOs): ProcessBuilder =
+    val environment = builder.environment
+    if os == HostCommands.Os.Windows then
+      environment.keySet.removeIf(key => withheldNames.exists(_.equalsIgnoreCase(key)))
+    else withheldNames.foreach(environment.remove)
     builder

@@ -45,3 +45,24 @@ Revisit if Windows consoles default to code page 65001 (UTF-8), or if the launch
 console's code page itself (`SetConsoleOutputCP`). Every process attached to that console would
 then share that code page.
 
+
+### Every process the launcher starts finds Windows OpenSSH first
+
+The launcher puts `%SystemRoot%\System32\OpenSSH` first on the PATH of every process it starts
+(`HostCommands.hostProcess`). `podman machine ssh` runs the first `ssh` on PATH and tells it to
+keep host keys in `NUL`, the Windows null device. Git's MSYS `ssh` writes a file named `NUL` into
+its working directory instead, which is the directory the launch started in. Measured from Git
+Bash on Windows 10.0.26100.32522 with podman 6.2.0 (2026-11-22):
+
+- `which -a ssh` lists Git's `/usr/bin/ssh` before `/c/Windows/System32/OpenSSH/ssh`.
+- After `--self-test`, the directory it started in held a file `NUL` with one known-hosts line for
+  `[localhost]:53872`, the port `podman machine inspect --format '{{.SSHConfig.Port}}'` prints.
+- With OpenSSH first, `--self-test` from Git Bash leaves no `NUL` file, and a launch from
+  PowerShell starts (2026-11-23).
+
+Every child gets that PATH, not only podman, since a script the launcher starts can start podman
+itself. Where `ssh.exe` is missing from that directory, the inherited PATH stays as it is. A
+value-less `--env=PATH` is refused, since podman would fill it from that PATH
+(`CommandLine.forwardedEnvironment`).
+
+Revisit if podman runs its `ssh` by a path of its own choosing.

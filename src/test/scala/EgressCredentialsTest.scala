@@ -270,6 +270,7 @@ class EgressCredentialsTest extends munit.FunSuite:
     assertEquals(brokeredParagraph(Vector.empty), "")
 
   test("a withheld name is gone from what a started process inherits, and from an edited environment's copy"):
+    // hostProcess edits every Windows child's environment (HostCommands.preferOnPath), so it scrubs too.
     val name = "KO_AGENT_EGRESS_CREDENTIALS_TEST"
     val windows = HostCommands.currentOs == HostCommands.Os.Windows
     val linker = Linker.nativeLinker()
@@ -300,6 +301,26 @@ class EgressCredentialsTest extends munit.FunSuite:
     edited.environment.put(name, "copied")
     EgressCredentials.scrub(edited)
     assert(!edited.environment.containsKey(name))
+    val preferring = ProcessBuilder(printEnvironment*)
+    preferring.environment.put(name, "copied")
+    HostCommands.preferOnPath(preferring, Path.of("OpenSSH"))
+    assert(!preferring.environment.containsKey(name))
+    // Windows resolved the binding without case, so every spelling of it goes there.
+    val respelled = name.toLowerCase
+    val windowsEdited = ProcessBuilder(printEnvironment*)
+    windowsEdited.environment.put(respelled, "copied")
+    EgressCredentials.scrub(windowsEdited, HostCommands.Os.Windows)
+    assert(!windowsEdited.environment.containsKey(respelled))
+
+  test("Windows cannot withhold SystemRoot, which Java gives every child whose environment it edits"):
+    assertEquals(
+      EgressCredentials.withholdingRefusal(Vector("GH_TOKEN", "SYSTEMROOT"), HostCommands.Os.Windows),
+      Some(
+        "error: --egress-cred=SYSTEMROOT@...; Windows children always get SystemRoot; export the value under another " +
+          "name",
+      ),
+    )
+    assertEquals(EgressCredentials.withholdingRefusal(Vector("SYSTEMROOT"), HostCommands.Os.Linux), None)
 
   test("a host proxy's audit log is named after its session's log, in the channel log's directory"):
     val channelLog = Path.of("/s/log/p/run-20261004T120000Z-abcd1234/run-on-host.log")

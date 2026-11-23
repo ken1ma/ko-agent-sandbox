@@ -12,7 +12,7 @@ import java.io.IOException
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Path
 
-import HostCommands.{Os, findOnPath, relayRequest, run}
+import HostCommands.{Os, findOnPath, hostProcess, relayRequest, run}
 import Podman.{ExecWithInput, quoteFreeSh, serveWhileRunning}
 
 object ClipboardRelay:
@@ -329,7 +329,7 @@ object ClipboardRelay:
 
   /** The command's stdout and its exit status: Types and Get read the bytes, Set the status. */
   private def host(powershell: Path, command: String, stdin: Array[Byte]): (Array[Byte], Int) =
-    val process = ProcessBuilder((powershell.toString +: PowerShellArgs :+ command)*)
+    val process = hostProcess(powershell.toString +: PowerShellArgs :+ command)
       .redirectError(ProcessBuilder.Redirect.DISCARD)
       .start()
     val feeder = Thread(() =>
@@ -344,7 +344,7 @@ object ClipboardRelay:
 
   private def respond(podman: String, sandboxContainer: String, body: Array[Byte]): Unit =
     val command = (podman +: ExecWithInput :+ sandboxContainer) ++ quoteFreeSh(sandboxResponseWriter())
-    val writer = ProcessBuilder(command*)
+    val writer = hostProcess(command)
       .redirectOutput(ProcessBuilder.Redirect.DISCARD)
       .redirectError(ProcessBuilder.Redirect.DISCARD)
       .start()

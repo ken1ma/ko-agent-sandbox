@@ -187,9 +187,6 @@ it.
   guarded entry as it would have the ordinary one.
 - A guarded entry moved to an ordinary name is an ordinary entry there. The entry's Git
   configuration and hooks, or its egress rules, are writable under the new name.
-- On Windows, the test that a `create` never reopens a guarded entry arriving under a second name
-  failed in two of three runs ("a create opened the host's pointer file"). The cause is unverified
-  (`ko-agent-fs/fuse/doc/TODO.md`, "A second name arriving during a name-based mutation").
 - This exception affects the claims above, including the protection of repositories created
   mid-session and of `.ko-agent-sandbox` (`ko-agent-fs/policy/doc/security-research.md`, "Windows
   8.3 short names"). `ko-agent-fs/fuse/doc/TODO.md` keeps the exception open.

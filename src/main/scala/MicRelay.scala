@@ -16,7 +16,7 @@ import java.nio.file.{Files, Path, StandardOpenOption}
 import java.time.Instant
 import java.util.concurrent.TimeUnit
 
-import HostCommands.{Os, findOnPath, relayRequest, run}
+import HostCommands.{Os, findOnPath, hostProcess, relayRequest, run}
 import Podman.{ExecWithInput, quoteFreeSh, serveWhileRunning}
 
 object MicRelay:
@@ -652,7 +652,7 @@ object MicRelay:
           register(Thread(() => endAll(), "ko-agent-sandbox-mic-recorders"))
           registered = true
         Option.unless(ended):
-          val process = ProcessBuilder(command*).start()
+          val process = hostProcess(command).start()
           live.add(process)
           process.getOutputStream.close()
           process.onExit().thenRun(() => live.remove(process))
@@ -789,7 +789,7 @@ object MicRelay:
           val process =
             try
               Some(
-                ProcessBuilder(((podman +: ExecWithInput :+ sandboxContainer) ++ writerCommand(sandboxDir))*)
+                hostProcess((podman +: ExecWithInput :+ sandboxContainer) ++ writerCommand(sandboxDir))
                   .redirectError(ProcessBuilder.Redirect.appendTo(log.toFile))
                   .start(),
               )

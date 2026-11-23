@@ -573,7 +573,7 @@ object KoAgentFs:
   /** A started MachineShell process, its stdout and stderr drained from the start, since either can
     * fill its pipe before the script arrives. */
   private final class StartedShell(command: Vector[String]):
-    private val process = ProcessBuilder(command*).start()
+    private val process = hostProcess(command).start()
     private def drained(stream: java.io.InputStream) =
       val task = java.util.concurrent.FutureTask(() => stream.readAllBytes())
       val reader = Thread(task)

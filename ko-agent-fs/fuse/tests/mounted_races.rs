@@ -143,10 +143,9 @@ fn a_concurrent_rename_cannot_smuggle_a_write_into_a_frozen_tree() {
 }
 
 /// The backing inode numbers of the host's `.git` writes and the sandbox's `GIT~1` creations, in
-/// the order they happened, for the failure message of the test below. The suspected cause needs a
-/// `.git` that takes back a number an earlier `.git` had (`../doc/TODO.md`, "A second name arriving
-/// during a name-based mutation"): a failure without a repeated `.git` number refutes it, and a
-/// pass shows nothing.
+/// the order they happened, for the failure message of the test below. The failure this test guards
+/// against needs a `.git` that takes back a number an earlier `.git` had, which `confirm_contexts`
+/// refuses (`fs.rs`): a failure without a repeated `.git` number has another cause.
 #[derive(Default)]
 struct InodeRecord {
     events: Vec<(&'static str, u64)>,

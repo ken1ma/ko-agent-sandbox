@@ -241,6 +241,8 @@ object CommandLine:
    * - An empty host value uses `--env=NAME=`, because the empty value contains no secret, and the argument avoids
    *   relying on podman's handling of empty host variables.
    * - The launcher's own output carries names alone.
+   * - A value-less PATH is refused. The host's PATH names host directories, and on Windows podman would fill it from
+   *   its own PATH, which starts with OpenSSH (HostCommands.hostProcess).
    */
   def forwardedEnvironment(
     forwards: Vector[EnvForward],
@@ -249,7 +251,12 @@ object CommandLine:
     forwards.map(_.name).find(_.startsWith(RefusedForwardPrefix)) match
       case Some(name) =>
         Left(s"error: --env=$name; the launcher sets $RefusedForwardPrefix* itself, and a forward would replace it")
-      case None => resolve(forwards, hostEnv)
+      case None =>
+        forwards.find(forward => forward.value.isEmpty && forward.name.equalsIgnoreCase("PATH")) match
+          case Some(forward) =>
+            val name = forward.name
+            Left(s"error: --env=$name; the host's PATH names host directories; give --env=$name=<value>")
+          case None => resolve(forwards, hostEnv)
 
   private def resolve(forwards: Vector[EnvForward], hostEnv: String => Option[String]): Either[String, Vector[String]] =
     val resolved = forwards.map: forward =>

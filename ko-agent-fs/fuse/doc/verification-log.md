@@ -248,6 +248,32 @@ passed:
 - the established mmap showed it 0ms behind `read()`.
 
 
+## A second name under a reused inode number
+
+### Verified: a create never reopens a guarded entry (Windows, WSL2 6.18.58.1; 2026-11-23)
+
+The test `a_create_never_reopens_a_guarded_entry_that_arrives_under_a_second_name` runs over the
+container's temporary directory, where a freed inode number returns at once
+(`tests/mounted_races.rs`).
+
+- With `confirm_contexts` (`fs.rs`), it passed in a `--self-test` run on Windows on 2026-11-23,
+  WSL 3.0.5.0 (kernel 6.18.58.1), podman 6.2.0. All 213 tests passed.
+- Earlier forms of the check passed in six more runs on that host:
+  - three on 2026-11-22 with a form that skipped a directory recorded under a Git context and
+    measured short names in bytes;
+  - three with a first form, which checked every open of a name shaped like a short name, and of
+    a file with another link.
+- Without it, it failed in `--self-test` on Windows: two of three runs on 2026-09-27 (Server 24H2,
+  WSL2 6.18.33.2), four of six on 2026-11-09 (6.18.54.1), and three of three on 2026-11-22.
+  - In the inode record of each failing run that printed one, every `GIT~1` the sandbox created
+    took a number a `.git` had: 705 of 705 on 2026-11-09, 288 of 288 on 2026-11-11 and 51 of 51 on
+    2026-11-22.
+  - It passed on the macOS rig and in `--self-test` on macOS.
+- A unit test holds the state the race leaves: a second name recorded as ordinary, with the
+  guarded object's identity (`fs.rs`,
+  `an_open_refuses_a_node_whose_names_no_longer_give_its_recorded_contexts`).
+
+
 ## The cost of a path walk
 
 ### Measured: cost per operation and per component (macOS 26.4.1, podman 6.1.1; 2026-09-19)
