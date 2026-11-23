@@ -820,7 +820,7 @@ object AgentEgressProxy:
       else if interimRead == MaxInterimResponses then
         throw IOException(s"origin sent more than $MaxInterimResponses interim responses")
       else
-        headToClient(response.toClientBytes)
+        headToClient(response.toClientBytes(BodyFraming.Empty))
         finalResponseHead(interimRead + 1)
 
     try
@@ -831,7 +831,7 @@ object AgentEgressProxy:
       else
         val responseFraming = response.bodyFraming(head.method)
 
-        headToClient(response.toClientBytes)
+        headToClient(response.toClientBytes(responseFraming))
         val bodyToClient = ClientOutput(toClient)
         try
           forwardResponseBody(fromOrigin, bodyToClient, responseFraming)

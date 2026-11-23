@@ -172,9 +172,6 @@ object HTTPHelper:
 
     /** Refuses ambiguous framing rather than resolving it, as HTTPHelper's Scaladoc explains. */
     def bodyFraming: BodyFraming =
-      protectedConnectionNomination(values("Connection")).foreach: name =>
-        throw BadRequest(s"Connection nominates $name, which this proxy reads")
-
       val encodings = values("Transfer-Encoding")
       val lengths = values("Content-Length")
 
@@ -188,9 +185,7 @@ object HTTPHelper:
 
         BodyFraming.Chunked
       else if lengths.nonEmpty then
-        val declared =
-          lengths.map: value =>
-            parseDecimal(value).getOrElse(throw BadRequest("invalid Content-Length"))
+        val declared = contentLengths(lengths).getOrElse(throw BadRequest("invalid Content-Length"))
 
         if declared.distinct.size != 1 then
           throw BadRequest("conflicting Content-Length headers")
@@ -201,12 +196,13 @@ object HTTPHelper:
     /** HTTP/1.1, with this hop's headers removed and `Connection: close` added. This hop's headers are the fixed
       * hop-by-hop set plus whatever the message's own Connection header names. End-of-stream then frames the
       * response. */
-    def toOriginBytes: Array[Byte] = serialized(s"$method $target HTTP/1.1", headers, "Connection: close\r\n")
+    def toOriginBytes: Array[Byte] =
+      serialized(s"$method $target HTTP/1.1", headers, ConnectionProtectedHeaders, "Connection: close\r\n")
 
     /** A granted WebSocket handshake as toOriginBytes sends a request, with the upgrade's pair in place of
       * `Connection: close`: the origin upgrades only on seeing them (RFC 6455 §4.1). */
     def toOriginUpgradeBytes(upgrade: String): Array[Byte] =
-      serialized(s"$method $target HTTP/1.1", headers, upgradePair(upgrade))
+      serialized(s"$method $target HTTP/1.1", headers, ConnectionProtectedHeaders, upgradePair(upgrade))
 
   val HopByHopHeaders =
     Set(
@@ -220,11 +216,18 @@ object HTTPHelper:
       "upgrade",
     )
 
-  /** A head with this hop's headers removed (endToEnd), and `hop`, this hop's own header lines, after the rest. */
-  private def serialized(startLine: String, headers: Vector[(String, String)], hop: String): Array[Byte] =
+  /** A head with this hop's headers removed (endToEnd), a repeated length declared once (withOneContentLength), and
+    * `hop`, this hop's own header lines, after the rest. */
+  private def serialized(
+    startLine: String,
+    headers: Vector[(String, String)],
+    carried: Set[String],
+    hop: String,
+  ): Array[Byte] =
     val builder = StringBuilder()
     builder.append(s"$startLine\r\n")
-    endToEnd(headers).foreach((name, value) => builder.append(s"$name: $value\r\n"))
+    withOneContentLength(endToEnd(headers, carried)).foreach: (name, value) =>
+      builder.append(s"$name: $value\r\n")
     builder.append(s"$hop\r\n")
     builder.toString.getBytes(StandardCharsets.ISO_8859_1)
 
@@ -254,9 +257,11 @@ object HTTPHelper:
     headers.collect:
       case (header, value) if header.toLowerCase(Locale.ROOT) == wanted => value
 
-  /** The headers less this hop's: the fixed hop-by-hop set and whatever the Connection header names. */
-  private def endToEnd(headers: Vector[(String, String)]): Vector[(String, String)] =
-    val dropped = HopByHopHeaders ++ connectionNamedHeaders(headerValues(headers, "Connection"))
+  /** The headers less this hop's: the fixed hop-by-hop set and whatever the Connection header names, except
+    * `carried`, the headers that this hop read and forwards the message by (ConnectionProtectedHeaders). */
+  private def endToEnd(headers: Vector[(String, String)], carried: Set[String]): Vector[(String, String)] =
+    val connectionNamed = connectionNamedHeaders(headerValues(headers, "Connection")) -- carried
+    val dropped = HopByHopHeaders ++ connectionNamed
     headers.filterNot((name, _) => dropped.contains(name.toLowerCase(Locale.ROOT)))
 
   /** The header names a message's own Connection header declares hop-by-hop (RFC 9110 §7.6.1):
@@ -268,18 +273,53 @@ object HTTPHelper:
       .filter(_.nonEmpty)
       .toSet
 
-  /** The headers that this hop reads for itself: the framing pair, and the Host that must match the authorized
-    * CONNECT host.
+  /** The counts that Content-Length field lines declare, each line a comma-separated list, or None when an element
+    * is not a decimal count. bodyFraming accepts the counts when they are all equal (RFC 9112 §6.3 item 5).
     *
-    * - A Connection header that nominates one of them asks this hop to strip a header that it has already acted
-    *   on. The body would go out framed by a header that the message no longer carries, which is a smuggling
-    *   primitive, not a hop-by-hop courtesy.
-    * - Both bodyFraming implementations refuse such a nomination. The two are the framing authorities, and each runs
-    *   before a byte of its message is forwarded. */
-  val ConnectionProtectedHeaders: Set[String] = Set("content-length", "transfer-encoding", "host")
+    * - Senders repeat an equal count: undici 6's fetch sends `Content-Length: 36, 36` (nodejs/undici#5993), and
+    *   servers repeat the field line (golang/go#16490, nodejs/node#6517).
+    * - An empty element is refused, though RFC 9110 §5.6.1 lets a list carry one: none of those senders emits it. */
+  def contentLengths(lines: Vector[String]): Option[Vector[Long]] =
+    val elements = lines.flatMap(_.split(",", -1)).map(stripOptionalWhitespace)
+    val counts = elements.flatMap(parseDecimal)
+    Option.when(counts.size == elements.size)(counts)
 
-  def protectedConnectionNomination(connection: Vector[String]): Option[String] =
-    connectionNamedHeaders(connection).intersect(ConnectionProtectedHeaders).toVector.sorted.headOption
+  /** `headers` with an equal count repeated in Content-Length declared once: the first element, as the sender spelled
+    * it, in the first Content-Length line, and no other Content-Length line.
+    *
+    * - llhttp, Node's parser, refuses a second Content-Length line, and undici refuses `36, 36`.
+    * - A single count stays as sent: a rewritten count would break a message signature over the field (RFC 9421).
+    * - Counts that differ stay as sent. bodyFraming refuses them where they frame the body.
+    * - On a response without a body (HEAD, 1xx, 204, 304), Content-Length frames nothing (RFC 9112 §6.3, rule 1), so
+    *   this hop forwards differing counts there and declares an equal repeated count once.
+    *   - A client that misreads those counts meets no second message: this hop relays nothing after the head, then
+    *     closes.
+    *   - curl ignores Content-Length on 1xx, 204 and 304 responses, so a refusal there would fail curl only through
+    *     this proxy. */
+  private def withOneContentLength(headers: Vector[(String, String)]): Vector[(String, String)] =
+    def isContentLength(name: String) = name.equalsIgnoreCase("Content-Length")
+    val lines = headers.collect { case (name, value) if isContentLength(name) => value }
+    contentLengths(lines) match
+      case Some(counts) if counts.size > 1 && counts.distinct.size == 1 =>
+        val first = headers.indexWhere((name, _) => isContentLength(name))
+        val spelled = stripOptionalWhitespace(lines.head.split(",", -1).head)
+        headers.zipWithIndex.collect:
+          case ((name, _), index) if index == first          => (name, spelled)
+          case ((name, value), _) if !isContentLength(name) => (name, value)
+      case _ => headers
+
+  /** The headers that this hop reads for itself: the framing pair, and the Host that must match the authorized
+    * CONNECT host. A Connection header's nomination leaves such a header in the forwarded head (endToEnd) where
+    * this hop forwards the message by it: on a request, all three; on a response, the one that frames its body.
+    *
+    * - This hop forwards the body in the framing that it read, to the Host that the ruleset checked. The header that
+    *   it read therefore describes the next hop's message too, so the forwarded head carries the same header.
+    * - Removing it would forward the body without its framing, where the body could read to the origin as a second
+    *   request, or the request without the Host that the ruleset checked.
+    * - Elsewhere the nomination removes the header, as RFC 9110 §7.6.1 has it: a response's Host, and a framing
+    *   header on a response without a body (HttpResponseHead.bodyFraming).
+    * - The nomination itself goes no further: endToEnd drops the Connection header, and this hop sends its own. */
+  val ConnectionProtectedHeaders: Set[String] = Set("content-length", "transfer-encoding", "host")
 
   object HttpRequestHead:
     def parse(bytes: Array[Byte]): HttpRequestHead =
@@ -324,7 +364,8 @@ object HTTPHelper:
 
   /**
    * The response head, parsed for status and framing only: just enough to tell a completed body from a truncated
-   * one. The proxy relays the head with only its version and hop-by-hop headers replaced (toClientBytes).
+   * one. The proxy relays the head with only its version and hop-by-hop headers replaced, and a repeated length
+   * declared once (toClientBytes).
    *
    * - This proxy verifies response framing and sets its own connection's headers. The proxy never rewrites or
    *   filters response content, because that would require the response-content rule language that this proxy
@@ -342,7 +383,8 @@ object HTTPHelper:
 
     /** The head as the client receives it, an interim head as well as the final one.
       *
-      * - The status, the reason and the end-to-end headers stay unchanged.
+      * - The status, the reason and the end-to-end headers stay unchanged, except that a repeated length reaches the
+      *   client once (withOneContentLength).
       * - The version is this hop's own: RFC 9112 §2.3 has an intermediary send its version, not the origin's.
       * - The hop-by-hop headers are this hop's own too, since the origin's hop-by-hop headers describe the
       *   origin↔proxy leg.
@@ -351,14 +393,21 @@ object HTTPHelper:
       *   - A client that misses `Connection: close` reuses the connection or pipelines. The client's next request
       *     meets the closed socket's RST, and the RST destroys this response's unread tail in the client's buffer.
       *   - apt shows this failure as intermittent mid-download EOFs, which the proxy's own log does not record.
-      * - An interim head carries no Connection at all: the final head states the disposition. */
-    def toClientBytes: Array[Byte] =
-      serialized(s"HTTP/1.1 $status $reason", headers, if interim then "" else "Connection: close\r\n")
+      * - An interim head carries no Connection at all: the final head states the disposition.
+      *
+      * `framing` is bodyFraming's result, which the body's relay uses too; an interim head passes Empty. */
+    def toClientBytes(framing: BodyFraming): Array[Byte] =
+      val carried = framing match
+        case BodyFraming.Chunked   => Set("transfer-encoding")
+        case BodyFraming.Length(_) => Set("content-length")
+        case _                     => Set()
+      val hop = if interim then "" else "Connection: close\r\n"
+      serialized(s"HTTP/1.1 $status $reason", headers, carried, hop)
 
     /** A checked `101` as toClientBytes sends a head, with the upgrade's pair that the client checks (RFC 6455
       * §4.1). `upgrade` is the client's own spelling from its handshake. */
     def toClientUpgradeBytes(upgrade: String): Array[Byte] =
-      serialized(s"HTTP/1.1 $status $reason", headers, upgradePair(upgrade))
+      serialized(s"HTTP/1.1 $status $reason", headers, Set(), upgradePair(upgrade))
 
     /** RFC 9112 §6.3 for the connections that this proxy closes after one request.
       *
@@ -366,11 +415,8 @@ object HTTPHelper:
       * - The no-framing default differs by design: UntilClose, because this proxy sends `Connection: close` to the
       *   origin.
       * - This method stays separate from the request's: every refusal's wording differs, so one implementation
-      *   would take five messages as parameters. */
+      *   would take four messages as parameters. */
     def bodyFraming(requestMethod: String): BodyFraming =
-      protectedConnectionNomination(values("Connection")).foreach: name =>
-        throw IOException(s"origin's Connection nominates $name, which this proxy reads")
-
       if requestMethod == "HEAD" || interim || status == 204 || status == 304 then
         BodyFraming.Empty
       else
@@ -387,9 +433,7 @@ object HTTPHelper:
 
           BodyFraming.Chunked
         else if lengths.nonEmpty then
-          val declared =
-            lengths.map: value =>
-              parseDecimal(value).getOrElse(throw IOException("origin sent an invalid Content-Length"))
+          val declared = contentLengths(lengths).getOrElse(throw IOException("origin sent an invalid Content-Length"))
 
           if declared.distinct.size != 1 then
             throw IOException("origin sent conflicting Content-Length headers")

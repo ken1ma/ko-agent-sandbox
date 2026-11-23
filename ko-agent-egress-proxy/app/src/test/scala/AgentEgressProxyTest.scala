@@ -1186,7 +1186,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
   test("the relayed status line carries this hop's version and the origin's status and reason"):
     def relayed(statusLine: String): String =
-      String(HttpResponseHead.parse(ascii(s"$statusLine\r\n\r\n")).toClientBytes, StandardCharsets.ISO_8859_1)
+      val head = HttpResponseHead.parse(ascii(s"$statusLine\r\n\r\n"))
+      String(head.toClientBytes(BodyFraming.Empty), StandardCharsets.ISO_8859_1)
     assert(relayed("HTTP/1.0 200 OK").startsWith("HTTP/1.1 200 OK\r\n"))
     assert(relayed("HTTP/1.9 404 Not Found Here").startsWith("HTTP/1.1 404 Not Found Here\r\n"))
     assert(relayed("HTTP/1.1 204").startsWith("HTTP/1.1 204 \r\n"))
@@ -1223,7 +1224,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
           "Content-Length: 5\r\nETag: \"abc\"\r\n\r\n",
       ),
     )
-    val relayed = String(head.toClientBytes, StandardCharsets.ISO_8859_1)
+    val relayed = String(head.toClientBytes(head.bodyFraming("GET")), StandardCharsets.ISO_8859_1)
     assert(relayed.startsWith("HTTP/1.1 200 OK\r\n"), relayed)
     assert(relayed.endsWith("Connection: close\r\n\r\n"), relayed)
     assert(!relayed.toLowerCase.contains("keep-alive"), relayed)
@@ -1246,44 +1247,52 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val response = HttpResponseHead.parse(
       ascii("HTTP/1.1 200 OK\r\nConnection: x-server-hint\r\nX-Server-Hint: h2\r\nVary: A\r\n\r\n"),
     )
-    val relayed = String(response.toClientBytes, StandardCharsets.ISO_8859_1)
+    val relayed = String(response.toClientBytes(response.bodyFraming("GET")), StandardCharsets.ISO_8859_1)
     assert(!relayed.contains("X-Server-Hint"), relayed)
     assert(relayed.contains("Vary: A\r\n"), relayed)
 
-  test("a Connection header may not nominate a header this hop reads, on either side"):
-    // The nomination would strip the framing that the proxy already trusted, or the Host that the ruleset checked.
-    // Without its framing header, the body forwarded by the original framing could read to the origin as a second
-    // request.
-    // The test covers every name in the protected set, in both directions, so the set and the rule cannot drift
-    // apart. The spelling is the peer's, so one name is mixed-case.
-    ConnectionProtectedHeaders.foreach: name =>
-      val spelled = if name == "host" then "Host" else name
-      val request = head(
-        s"POST /r.git/git-upload-pack HTTP/1.1\r\nHost: github.com\r\nContent-Length: 4\r\n" +
-          s"Connection: keep-alive, $spelled\r\n\r\n",
-      )
-      val refused = intercept[BadRequest](request.bodyFraming)
-      assert(refused.getMessage.contains(name), refused.getMessage)
-      // The relay's own check, before any byte goes to the origin.
-      intercept[BadRequest](authorizeInspectedRequest("github.com", request, whole("git-fetch")))
-
-      val response = HttpResponseHead.parse(
-        ascii(s"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: $spelled\r\n\r\n"),
-      )
-      val unframed = intercept[IOException](response.bodyFraming("GET"))
-      assert(unframed.getMessage.contains(name), unframed.getMessage)
-
-    // A nomination of any other header leaves the framing as it is.
-    assertEquals(
-      head(
-        "POST /x HTTP/1.1\r\nHost: github.com\r\nContent-Length: 4\r\nConnection: x-tracing\r\n\r\n",
-      ).bodyFraming,
-      BodyFraming.Length(4),
+  test("a Connection nomination leaves a header this hop reads only where this hop forwards the message by it"):
+    // Removing the header would forward the body without the framing that the proxy forwards it in, or the request
+    // without the Host that the ruleset checked. Without its framing header, the body could read to the origin as a
+    // second request. Elsewhere the nomination removes the header (RFC 9110 §7.6.1).
+    // Each direction lists every protected name, and the spelling is the peer's, so one name is mixed-case.
+    // (nominated name, the request's framing line, the line that the forwarded head keeps)
+    val requestCases = Vector(
+      ("Host", "Content-Length: 4", "Host: github.com"),
+      ("content-length", "Content-Length: 4", "Content-Length: 4"),
+      ("transfer-encoding", "Transfer-Encoding: chunked", "Transfer-Encoding: chunked"),
     )
+    assertEquals(requestCases.map(_._1.toLowerCase).toSet, ConnectionProtectedHeaders)
+    requestCases.foreach: (nominated, framingLine, keptLine) =>
+      val request = head(
+        s"POST /x HTTP/1.1\r\nHost: github.com\r\n$framingLine\r\nConnection: keep-alive, $nominated\r\n\r\n",
+      )
+      authorizeInspectedRequest("github.com", request, whole("POST"))
+      val sent = String(request.toOriginBytes, StandardCharsets.ISO_8859_1)
+      assert(sent.contains(s"\r\n$keptLine\r\n"), sent)
+      assert(!sent.contains("Connection: keep-alive"), sent)
 
-  test("relayInspected refuses an origin whose Connection strips its own framing, before the head"):
-    // On the wire: the refusal has to be written before toClientBytes, while a 502 is still possible. Afterwards,
-    // the client would read chunk markers as payload.
+    // (request method, status, nominated name, the nominated field line, whether the client receives it)
+    val responseCases = Vector(
+      ("GET", "200 OK", "content-length", "Content-Length: 4", true),
+      ("GET", "200 OK", "transfer-encoding", "Transfer-Encoding: chunked", true),
+      ("GET", "200 OK", "Host", "Host: origin.example", false),
+      ("HEAD", "200 OK", "content-length", "Content-Length: 4", false),
+      ("GET", "204 No Content", "transfer-encoding", "Transfer-Encoding: chunked", false),
+      ("GET", "103 Early Hints", "content-length", "Content-Length: 4", false),
+    )
+    assertEquals(responseCases.map(_._3.toLowerCase).toSet, ConnectionProtectedHeaders)
+    responseCases.foreach: (method, status, nominated, fieldLine, received) =>
+      val response = HttpResponseHead.parse(
+        ascii(s"HTTP/1.1 $status\r\n$fieldLine\r\nConnection: $nominated\r\n\r\n"),
+      )
+      val relayed = String(response.toClientBytes(response.bodyFraming(method)), StandardCharsets.ISO_8859_1)
+      assertEquals(relayed.contains(s"\r\n$fieldLine\r\n"), received, relayed)
+      assert(!relayed.contains(s"Connection: $nominated"), relayed)
+
+  test("relayInspected relays a chunked response whose Connection nominates Transfer-Encoding, framed as received"):
+    // On the wire: bugs.openjdk.org and openjdk.org nominate Transfer-Encoding in the Connection header of their
+    // chunked responses. Without its Transfer-Encoding, the client would read the chunk markers as payload.
     val (client, clientPeer) = socketPair()
     val (origin, originPeer) = socketPair()
     val served = playOrigin(
@@ -1296,11 +1305,13 @@ class AgentEgressProxyTest extends munit.FunSuite:
     clientPeer.shutdownOutput()
 
     val head = HttpRequestHead.parse(ascii("GET /f HTTP/1.1\r\nHost: docs.python.org\r\n\r\n"))
-    intercept[IOException]:
-      relayInspected(client, origin, origin, head)
+    relayInspected(client, origin, origin, head)
     client.close()
     served.join()
-    assertEquals(clientPeer.getInputStream.readAllBytes().length, 0, "bytes reached the client")
+    assertEquals(
+      String(clientPeer.getInputStream.readAllBytes(), StandardCharsets.ISO_8859_1),
+      "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+    )
 
   test("HTTP/1.0 is refused by name, at CONNECT and inside the tunnel"):
     val connect = intercept[BadRequest](
@@ -3215,6 +3226,47 @@ class AgentEgressProxyTest extends munit.FunSuite:
         "POST /owner/repo.git/git-upload-pack HTTP/1.1\r\nHost: github.com\r\n" +
           "Transfer-Encoding: gzip\r\n\r\n",
       )
+
+  test("an equal count repeated in Content-Length reaches the next hop once, in either form and either direction"):
+    // undici 6's fetch sends `36, 36`, and servers repeat the line. At the next hop, llhttp refuses a second line and
+    // undici refuses `36, 36`. The last forms are nominated by Connection, and spelled with a leading zero.
+    // (the head's Content-Length lines, the one line forwarded)
+    val forms = Vector(
+      ("Content-Length: 4, 4\r\n", "Content-Length: 4"),
+      ("Content-Length: 4\r\ncontent-length: 4\r\n", "Content-Length: 4"),
+      ("Content-Length: 4 ,\t4\r\n", "Content-Length: 4"),
+      ("Content-Length: 4\r\nConnection: content-length\r\nContent-Length: 4, 4\r\n", "Content-Length: 4"),
+      ("Content-Length: 04, 4\r\n", "Content-Length: 04"),
+      // A single count stays as sent, since a message signature can cover it (RFC 9421).
+      ("Content-Length: 04\r\n", "Content-Length: 04"),
+    )
+    forms.foreach: (lines, forwarded) =>
+      val request = head(s"POST /x HTTP/1.1\r\nHost: github.com\r\n$lines\r\n")
+      assertEquals(request.bodyFraming, BodyFraming.Length(4))
+      assertEquals(
+        String(request.toOriginBytes, StandardCharsets.ISO_8859_1),
+        s"POST /x HTTP/1.1\r\nHost: github.com\r\n$forwarded\r\nConnection: close\r\n\r\n",
+      )
+
+      // A HEAD or 304 response's Content-Length frames no body, and a strict client still parses it. There, a
+      // nomination removes it.
+      Vector(("GET", "200 OK", BodyFraming.Length(4)), ("HEAD", "200 OK", BodyFraming.Empty),
+        ("GET", "304 Not Modified", BodyFraming.Empty)).foreach: (method, status, framing) =>
+        val response = HttpResponseHead.parse(ascii(s"HTTP/1.1 $status\r\n$lines\r\n"))
+        assertEquals(response.bodyFraming(method), framing)
+        val removed = framing == BodyFraming.Empty && lines.contains("Connection: content-length")
+        val forwardedLine = if removed then "" else s"$forwarded\r\n"
+        assertEquals(
+          String(response.toClientBytes(framing), StandardCharsets.ISO_8859_1),
+          s"HTTP/1.1 $status\r\n${forwardedLine}Connection: close\r\n\r\n",
+        )
+
+    // Different counts conflict, and an empty or non-decimal element is invalid.
+    Vector("4, 5", "4,", ", 4", "4,,4", "4, x").foreach: value =>
+      intercept[BadRequest]:
+        head(s"POST /x HTTP/1.1\r\nHost: github.com\r\nContent-Length: $value\r\n\r\n").bodyFraming
+      intercept[IOException]:
+        HttpResponseHead.parse(ascii(s"HTTP/1.1 200 OK\r\nContent-Length: $value\r\n\r\n")).bodyFraming("GET")
 
   test("message framing is read from the headers"):
     assertEquals(
