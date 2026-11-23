@@ -2,7 +2,9 @@ package agentsandbox.launcher
 
 import java.nio.file.{Files, Path}
 
-class RunOnHostIdleTest extends munit.FunSuite:
+class RunOnHostIdleTest extends UnixHostSuite:
+
+  def unixHostClue = "the run-on-host checks run on macOS alone, and the fixtures are POSIX paths"
 
   // The lock file stands in for the open descriptors that lsof observes: it holds the pids that hold it. So these
   // cases need neither macOS nor a live runner in the developer's checkout.

@@ -368,12 +368,13 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val release = HostCommands.Run(0, "7.2.5-200.fc44.aarch64".getBytes, "")
     val path = "/opt/podman/bin/podman"
     val version = Some(HostCommands.Run(0, "podman version 6.1.4".getBytes, ""))
-    assertEquals(
-      Podman.podmanUsingLine(
-        path, version, machineKernel(Os.Mac, release, color = false), Os.Mac, _ => None, color = false,
-      ),
-      s"using: $path (6.1.4), podman machine kernel 7.2.5-200.fc44.aarch64",
-    )
+    if PosixPaths.readable then
+      assertEquals(
+        Podman.podmanUsingLine(
+          path, version, machineKernel(Os.Mac, release, color = false), Os.Mac, _ => None, color = false,
+        ),
+        s"using: $path (6.1.4), podman machine kernel 7.2.5-200.fc44.aarch64",
+      )
     assertEquals(machineKernel(Os.Linux, release, color = false), Some("Linux kernel 7.2.5-200.fc44.aarch64"))
     assertEquals(machineKernel(Os.Windows, HostCommands.Run(0, "".getBytes, ""), color = false), None)
 
@@ -598,7 +599,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val state = Paths.get("/state")
     assertEquals(
       nestingArguments("none", state),
-      Vector("--security-opt=seccomp=/state/seccomp/nesting-none.json", variable + "none"),
+      Vector(s"--security-opt=seccomp=${SeccompProfile.profileFile(state)}", variable + "none"),
     )
     assertEquals(nestingArguments("user-namespace", state), Vector(variable + "user-namespace"))
     assertEquals(nestingArguments("same-uid", state), NestingLoosenings :+ (variable + "same-uid"))
@@ -690,7 +691,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     val main = Paths.get("/src/app")
     assertEquals(mainWorktreeVolume(main, Os.Linux), s"ko-agent-sandbox-persistent-${workspaceIdOf(main, Os.Linux)}")
     assert(mainWorktreeVolumeNote(main, Os.Linux).contains(mainWorktreeVolume(main, Os.Linux)))
-    assert(mainWorktreeVolumeNote(main, Os.Linux).contains("run --reset in /src/app"))
+    if PosixPaths.readable then assert(mainWorktreeVolumeNote(main, Os.Linux).contains("run --reset in /src/app"))
 
   test("the clipboard defaults to off, is selected once, and fails closed on anything else"):
     assertEquals(parseCommandLine(List("claude")).map(_.clipboardMode), Right("off"))
@@ -2142,7 +2143,7 @@ class AgentSandboxLauncherTest extends munit.FunSuite:
     assert(!fuse.contains("Unix socket"), fuse)
 
   test("the mount-path probe tells an image entry, an unreachable ancestor and a free path apart"):
-    assume(!System.getProperty("os.name").toLowerCase.contains("win"))
+    assume(!scala.util.Properties.isWin, "the probe runs under the local sh, as the image's shell")
     // The image's tree stands in: /usr/local/bin exists, /tmp exists, and /root exists but cannot be entered.
     val image = Files.createTempDirectory("mount-path-probe")
     Files.createDirectories(image.resolve("usr/local/bin"))

@@ -65,4 +65,8 @@ itself. Where `ssh.exe` is missing from that directory, the inherited PATH stays
 value-less `--env=PATH` is refused, since podman would fill it from that PATH
 (`CommandLine.forwardedEnvironment`).
 
+The host drivers' commands get the same PATH (`HostDriver.run`, `HostDriver.hostProcess`).
+A `podman machine ssh` typed in Git Bash still finds Git's `ssh`, and leaves `NUL` in the current
+directory.
+
 Revisit if podman runs its `ssh` by a path of its own choosing.

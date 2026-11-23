@@ -1462,20 +1462,45 @@ class AgentEgressProxyTest extends munit.FunSuite:
     def resetAfter(headAndPartialBody: String): Unit =
       val (client, clientPeer) = socketPair()
       val (origin, originPeer) = socketPair()
+      // A Windows socket discards unread data on a reset, so the origin resets only once the head has reached the
+      // client. Both waits are bounded, so a relay that never sends the head fails the test rather than hanging it.
+      // The origin's worker alone closes originPeer. It writes out abortiveClose's two steps, since abortiveClose
+      // ignores a failure, and closes plainly on any other path, so that the relay never waits out its origin timeout.
+      val relayedHead = java.util.concurrent.CountDownLatch(1)
+      val headReached = java.util.concurrent.atomic.AtomicBoolean(false)
+      val resetStarted = java.util.concurrent.atomic.AtomicBoolean(false)
+      val reset = java.util.concurrent.atomic.AtomicBoolean(false)
+      clientPeer.setSoTimeout(10_000)
       val served = Thread.startVirtualThread: () =>
         try
           readHttpHeader(originPeer.getInputStream, 64 * 1024)
           originPeer.getOutputStream.write(ascii(headAndPartialBody))
-          abortiveClose(originPeer)
+          if relayedHead.await(10, java.util.concurrent.TimeUnit.SECONDS) && headReached.get then
+            resetStarted.set(true)
+            originPeer.setSoLinger(true, 0)
+            originPeer.close()
+            reset.set(true)
         catch case _: Exception => ()
-      clientPeer.shutdownOutput()
-      val head = HttpRequestHead.parse(ascii("GET /f HTTP/1.1\r\nHost: docs.python.org\r\n\r\n"))
-      val failure = intercept[TruncatedResponse]:
-        relayInspected(client, origin, origin, head)
-      assert(!failure.getMessage.startsWith("client: "), failure.getMessage)
-      served.join()
-      closeQuietly(client)
-      closeQuietly(clientPeer)
+        finally closeQuietly(originPeer)
+      val reader = Thread.startVirtualThread: () =>
+        try
+          readHttpHeader(clientPeer.getInputStream, 64 * 1024)
+          headReached.set(true)
+        catch case _: Exception => ()
+        finally relayedHead.countDown()
+      try
+        clientPeer.shutdownOutput()
+        val head = HttpRequestHead.parse(ascii("GET /f HTTP/1.1\r\nHost: docs.python.org\r\n\r\n"))
+        val failure = intercept[TruncatedResponse]:
+          relayInspected(client, origin, origin, head)
+        assert(resetStarted.get, s"the relay failed before the origin's reset: ${failure.getMessage}")
+        assert(!failure.getMessage.startsWith("client: "), failure.getMessage)
+      finally
+        Seq(client, clientPeer, origin).foreach(closeQuietly)
+        served.join()
+        reader.join()
+      assert(headReached.get, "the relay never delivered the head to the client")
+      assert(reset.get, "the origin's abortive close failed")
     resetAfter("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nhalf")
     resetAfter("HTTP/1.1 200 OK\r\n\r\nhalf")
 
@@ -2092,6 +2117,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assert(finalHead.get.startsWith("HTTP/1.1 417 Expectation Failed\r\n"), finalHead.get)
 
   test("close_notify meeting a full send buffer is given up on at the deadline, the transport closed under it"):
+    assume(!scala.util.Properties.isWin, "a Windows socket lets close_notify out of the fill; the proxy runs on Unix")
     val (inspection, clientContext) = testTls()
     // A channel-backed transport: non-blocking writes fill the pipe exactly, so the writer has completed, and only
     // the alert meets the backpressure.
@@ -2459,6 +2485,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assert(log.tail.length == 1 && log(1).startsWith("chunked-end docs.example POST /upload id=1 send="), log.toString)
 
   test("an incomplete chunked body's line comes with a deny or error line when the client's body failed"):
+    assume(!scala.util.Properties.isWin, "a Windows socket reports the client's close before the request head; " +
+      "the proxy runs on Unix")
     val head = "POST /upload HTTP/1.1\r\nHost: docs.example\r\nTransfer-Encoding: chunked\r\n\r\n"
     def upload(send: java.net.Socket => Unit, serve: java.net.Socket => Unit): Vector[String] =
       val log = inspectedExchange("docs.example", Vector.empty, Map("/" -> Set("read", "POST")), send, serve)
@@ -2503,6 +2531,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assertEquals(answeredFirst, Vector("chunked-end docs.example POST /upload id=1 send=3 incomplete"))
 
   test("a client that resets before a response head reaches it gets a client error line"):
+    assume(!scala.util.Properties.isWin, "a Windows socket reports the client's reset as the origin's; the proxy " +
+      "runs on Unix")
     // The JDK names this write's failure as it names an origin's reset, so only the label tells the peers apart.
     // Interim and final heads reach the client the same way (headToClient).
     for answer <- Vector("HTTP/1.1 100 Continue\r\n\r\n", "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n") do
@@ -3334,13 +3364,13 @@ class AgentEgressProxyTest extends munit.FunSuite:
     stamped.print("tail without newline")
     stamped.flush()
 
+    // println ends its line with the JVM's line separator, which is CRLF on Windows.
+    val separator = System.lineSeparator
     assertEquals(
       String(sink.toByteArray, StandardCharsets.US_ASCII),
-      """2026-08-26T11:59:38Z allow github.com CONNECT -> 140.82.112.3
-        |2026-08-26T11:59:39Z deny x.example CONNECT host not allowed
-        |2026-08-26T11:59:40Z a
-        |2026-08-26T11:59:41Z b
-        |2026-08-26T11:59:42Z tail without newline""".stripMargin
+      s"2026-08-26T11:59:38Z allow github.com CONNECT -> 140.82.112.3$separator" +
+        s"2026-08-26T11:59:39Z deny x.example CONNECT host not allowed$separator" +
+        "2026-08-26T11:59:40Z a\n2026-08-26T11:59:41Z b\n2026-08-26T11:59:42Z tail without newline",
     )
 
   test("the audit tee writes and flushes every byte to both sinks"):
@@ -3371,7 +3401,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
       stream.println("deny x.example")
       assertEquals(
         String(written.toByteArray, StandardCharsets.US_ASCII),
-        "2026-08-26T11:59:38Z allow github.com\n2026-08-26T11:59:38Z deny x.example\n",
+        s"2026-08-26T11:59:38Z allow github.com${System.lineSeparator}" +
+          s"2026-08-26T11:59:38Z deny x.example${System.lineSeparator}",
       )
       assertEquals(first.get.getMessage, "No space left on device")
 
@@ -3384,7 +3415,7 @@ class AgentEgressProxyTest extends munit.FunSuite:
     val logFailure = java.util.concurrent.atomic.AtomicReference[java.io.IOException]()
     val copy = keepingFirstFailure(failing("Broken pipe"), java.util.concurrent.atomic.AtomicReference())
     java.io.PrintStream(teeOutput(copy, keepingFirstFailure(log, logFailure)), true).println("allow github.com")
-    assertEquals(String(log.toByteArray, StandardCharsets.US_ASCII), "allow github.com\n")
+    assertEquals(String(log.toByteArray, StandardCharsets.US_ASCII), s"allow github.com${System.lineSeparator}")
     assertEquals(logFailure.get, null)
 
   test("EGRESS_BIND unset or empty is the wildcard on the fixed port"):

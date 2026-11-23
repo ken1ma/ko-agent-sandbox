@@ -33,7 +33,9 @@ object RunOnHostSessionTest:
         munit.Assertions.assume(false, s"needs a directory under /tmp, short enough for the server's socket: $ex")
         throw ex
 
-class RunOnHostSessionTest extends munit.FunSuite:
+class RunOnHostSessionTest extends UnixHostSuite:
+
+  def unixHostClue = "--run-on-host runs on macOS alone, and its sessions need POSIX permissions and /bin/sh"
 
   // --------------------------------------------------------------------------
   // Records

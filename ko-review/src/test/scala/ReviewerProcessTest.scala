@@ -8,7 +8,9 @@ import scala.concurrent.duration.Duration
 
 /** The cases of a turn's cleanup that a fake reviewer cannot force: a timer, a reap and a reader that fail or pause at
   * a chosen moment. */
-class ReviewerProcessTest extends munit.FunSuite:
+class ReviewerProcessTest extends UnixHostSuite:
+
+  def unixHostClue = "the reviewer's group is a POSIX process group, led by cat"
 
   override val munitTimeout: Duration = Duration(2, "min")
 

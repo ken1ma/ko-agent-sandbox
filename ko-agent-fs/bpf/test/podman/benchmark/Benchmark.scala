@@ -312,7 +312,7 @@ object Benchmark:
   class Sampling(vm: Vm, name: String) extends AutoCloseable:
     private val file = samplesFile(name)
     private val marked = vm(s"touch ${file}.run").ok
-    private val process = ProcessBuilder("podman", "machine", "ssh", s"sh $VmDir/sample.sh $file")
+    private val process = hostProcess(Seq("podman", "machine", "ssh", s"sh $VmDir/sample.sh $file"))
       .redirectOutput(Redirect.DISCARD).redirectErrorStream(true).start()
     process.getOutputStream.close()
     private var ended = false

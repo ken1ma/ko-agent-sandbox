@@ -629,7 +629,7 @@ object SandboxWorkspace:
    * - The image's git does not know the extension and refuses the whole repository over it, so a
    *   bind would promise git that the session does not have.
    * - The config is read as scanBare reads `bare`, in any section, and a doubt counts as set.
-   * - This check goes with the image's git upgrade (doc/TODO.md, "Deferred — a linked worktree's
+   * - This check goes with the image's git upgrade (doc/TODO-win.md, "Deferred — a linked worktree's
    *   absolute pointer on Windows").
    */
   def setsRelativeWorktrees(commonGitdir: Path): Boolean =

@@ -26,6 +26,9 @@ Run the commands in this section from the repository root.
    Inside that session, run `sbt testFull`, which also runs `SessionBoundaryTest`.
 
 1. `testFull` runs every test every time, while `test` is incremental.
+1. `-- --tests=REGEX` after a suite runs only the tests whose names match. Write each space in the
+   name as `.`, since sbt splits the argument at spaces:
+   `sbt "testOnly agentsandbox.launcher.SandboxWorkspaceTest -- --tests=a.session.without.git.*"`.
 
 ## egress-proxy
 
@@ -202,6 +205,8 @@ Alternatively, on the host: copy the worktree
    virtualization podman needs. The
    [Windows 11 Enterprise 25H2 x64 Evaluation](https://www.microsoft.com/en-us/evalcenter/evaluate-windows-11-enterprise)
    itself runs for 90 days without a product key.
+1. Run the suites as Administrator, or with Developer Mode on: many of them create symlinks, which
+   Windows otherwise refuses.
 1. In an Administrator PowerShell, allow the podman machine to reach TCP port 58036, where
    `ProxyContainerTest`'s upstream proxy listens:
 
@@ -217,15 +222,6 @@ Alternatively, on the host: copy the worktree
     1. The rule is limited to the WSL interface, since the test proxy accepts any client.
     1. A rule naming the listener's `java.exe` instead let no connection through (measured
        2026-10-27).
-1. Run only the container-launching suites: the other suites assume a Unix JVM (TODO.md, "The
-   ordinary suites on a Windows host").
-
-   ```powershell
-   $suites = '*RunTopologyTest *MountLifecycleTest *MountPathTest ' +
-     '*EgressSessionTest *ProxyContainerTest *BundleLockTest ' +
-     '*ResetRecordTest *WithPodmanTest *SandboxMarkdownLinkCheckTest *StageCacheTagTest'
-   sbt "testWithPodman $suites"
-   ```
 1. When a run aborts with `ZipFile invalid LOC header`, or the server fails to start with
    `Could not create lock for \\.\pipe\sbt-server-…`, run `sbt shutdownall`, then `sbt dist`.
 

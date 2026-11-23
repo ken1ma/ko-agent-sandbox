@@ -78,7 +78,7 @@ class DirectoryStreamsTest extends munit.FunSuite:
       val expected = LauncherImages.bundleSourceId(Vector("nested/file" -> Files.readAllBytes(file)))
       assertNoDescriptorGrowth("source hashing"):
         assertEquals(LauncherImages.contextSourceId(root, "context"), expected)
-      assume(Files.getFileStore(root).supportsFileAttributeView("posix"))
+      assume(Files.getFileStore(root).supportsFileAttributeView("posix"), "POSIX permissions only")
       val permissions = Files.getPosixFilePermissions(file)
       try
         Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("---------"))
@@ -89,7 +89,7 @@ class DirectoryStreamsTest extends munit.FunSuite:
 
   test("recursive deletion and hashing close ancestor directories when traversal fails"):
     withDirectory: root =>
-      assume(Files.getFileStore(root).supportsFileAttributeView("posix"))
+      assume(Files.getFileStore(root).supportsFileAttributeView("posix"), "POSIX permissions only")
       val blocked = Files.createDirectories(root.resolve("context/nested/blocked"))
       val permissions = Files.getPosixFilePermissions(blocked)
       try

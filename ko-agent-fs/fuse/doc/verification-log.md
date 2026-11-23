@@ -274,6 +274,23 @@ container's temporary directory, where a freed inode number returns at once
   `an_open_refuses_a_node_whose_names_no_longer_give_its_recorded_contexts`).
 
 
+## A symlink target spelled with Windows separators
+
+### Measured: Windows follows none of them (Windows, WSL2 6.18.58.1, podman 6.2.0; 2026-11-23)
+
+A session under the BPF backend made three symlinks on the WSL drive mount `/mnt/c`, with the
+targets `..\..\x`, `..\.git` and `C:\Windows`. The link `..\..\x` pointed at a file that existed.
+On the host, PowerShell found:
+
+- `fsutil reparsepoint query`: each link holds the tag `0xa000001d`, `IO_REPARSE_TAG_LX_SYMLINK`.
+  None is an NT symbolic link, and `Get-ChildItem` reports no `LinkType` or `Target` for any of
+  them.
+- `Get-Content` of the `..\..\x` link fails with "cannot access the file" instead of printing
+  `x`.
+- `Get-ChildItem` of the `C:\Windows` link lists the link itself, a 0-byte file, instead of
+  `C:\Windows`.
+
+
 ## The cost of a path walk
 
 ### Measured: cost per operation and per component (macOS 26.4.1, podman 6.1.1; 2026-09-19)

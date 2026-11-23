@@ -61,6 +61,7 @@ class SandboxStatsTest extends munit.FunSuite:
     assertEquals(liveTable(Vector.empty, Map.empty), "0 live sessions\n")
 
   test("runners are the locked runner sessions, each named by its run file, one row per directory served"):
+    assume(!scala.util.Properties.isWin, "the runners are --run-on-host's, which runs on macOS alone")
     val root = Files.createTempDirectory("ko-agent")
     val workspaceRoot = Files.createTempDirectory("workspace")
     val nested = workspaceRoot.resolve("nested")
@@ -156,6 +157,7 @@ class SandboxStatsTest extends munit.FunSuite:
     assertEquals(dfSpace("df: /nowhere: No such file or directory"), None)
 
   test("storage says which machine holds each filesystem, and a root's path only when the host's are split"):
+    PosixPaths.assume()
     val state = HostRoot(Paths.get("/home/me/.local/state/x"), "/home (/dev/sda2)", 936L << 30, 1610L << 30)
     val cache = HostRoot(Paths.get("/home/me/.cache/x"), "/home (/dev/sda2)", 936L << 30, 1610L << 30)
     val store = HostRoot(Paths.get("/var/lib/containers"), "/var (/dev/sda3)", 30L << 30, 250L << 30)

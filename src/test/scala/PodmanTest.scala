@@ -16,7 +16,8 @@ class PodmanTest extends munit.FunSuite:
   test("the Podman announcement includes the client version without depending on a running service"):
     val noHome: String => Option[String] = _ => None
     for
-      (path, os) <- Seq("/opt/podman/bin/podman" -> Os.Mac, "C:\\Podman\\podman.exe" -> Os.Windows)
+      (path, os) <- Seq("/opt/podman/bin/podman" -> Os.Mac).filter(_ => PosixPaths.readable) :+
+        ("C:\\Podman\\podman.exe" -> Os.Windows)
       version <- Seq("6.1.1", "6.2.0-dev", "6.1.1+vendor.1")
     do
       val result = Run(0, s"podman version $version\r\n".getBytes, "")
@@ -25,14 +26,16 @@ class PodmanTest extends munit.FunSuite:
         s"using: $path ($version)",
       )
 
-    val path = "/usr/bin/podman"
-    for result <- Seq(
-        None,
-        Some(Run(127, "podman version 6.1.1".getBytes, "cannot execute")),
-        Some(Run(0, Array.emptyByteArray, "")),
-        Some(Run(0, "unexpected output\nsecond line".getBytes, "")),
-      )
-    do assertEquals(podmanUsingLine(path, result, os = Os.Linux, environment = noHome, color = false), s"using: $path")
+    if PosixPaths.readable then
+      val path = "/usr/bin/podman"
+      for result <- Seq(
+          None,
+          Some(Run(127, "podman version 6.1.1".getBytes, "cannot execute")),
+          Some(Run(0, Array.emptyByteArray, "")),
+          Some(Run(0, "unexpected output\nsecond line".getBytes, "")),
+        )
+      do
+        assertEquals(podmanUsingLine(path, result, os = Os.Linux, environment = noHome, color = false), s"using: $path")
 
   test("a podman older than README.md's prerequisite gets a warning, and an unparsed answer none"):
     def warning(answer: String, exit: Int = 0) = podmanUpgradeWarning(Some(Run(exit, answer.getBytes, "")))
@@ -50,10 +53,11 @@ class PodmanTest extends munit.FunSuite:
   test("the Podman announcement shows the path as the log dir line does, with all but the name grayed"):
     val (gray, off) = ("\u001b[38;5;245m", "\u001b[0m")
     val home: String => Option[String] = Map("HOME" -> "/Users/me").get
-    assertEquals(
-      podmanUsingLine("/Users/me/homebrew/bin/podman", None, os = Os.Mac, environment = home, color = true),
-      s"using: $gray~/homebrew/bin/${off}podman",
-    )
+    if PosixPaths.readable then
+      assertEquals(
+        podmanUsingLine("/Users/me/homebrew/bin/podman", None, os = Os.Mac, environment = home, color = true),
+        s"using: $gray~/homebrew/bin/${off}podman",
+      )
     assertEquals(
       podmanUsingLine("C:\\Program Files\\Podman\\podman.exe", None, os = Os.Windows, color = true),
       s"using: $gray\"C:\\Program Files\\Podman\\${off}podman$gray.exe\"$off",

@@ -255,9 +255,9 @@ A launch from a linked worktree is the exception:
   is writable.
 - The session reads that directory's configuration and hooks as a launch from the main worktree
   does, and can change nothing in that directory.
-- `doc/TODO.md` holds the writable form ("writable git from a linked worktree"). `doc/TODO.md` also
-  holds why a relative pointer is not yet a route ("a linked worktree's absolute pointer on
-  Windows").
+- `doc/TODO.md` holds the writable form ("writable git from a linked worktree"). `doc/TODO-win.md`
+  holds why the relative pointer that git writes is not yet a route on Windows, where a
+  hand-written one is ("a linked worktree's absolute pointer on Windows").
 
 These are the default protections. "Not defended" qualifies them:
 

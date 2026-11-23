@@ -43,6 +43,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
   // --------------------------------------------------------------------------
 
   test("cache root falls back to $HOME/.cache when XDG_CACHE_HOME is unset"):
+    PosixPaths.assume()
     // An unset XDG_CACHE_HOME is the ordinary case on macOS, not the exception. Mill's own bootstrap takes the same
     // fallback.
     assertEquals(
@@ -51,12 +52,14 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     )
 
   test("cache root honours an absolute XDG_CACHE_HOME"):
+    PosixPaths.assume()
     assertEquals(
       cacheRootOf(Os.Mac, env("HOME" -> home, "XDG_CACHE_HOME" -> "/var/cache/mine")),
       Right(Paths.get("/var/cache/mine/ko-agent-sandbox")),
     )
 
   test("an empty XDG_CACHE_HOME is treated as unset, not as a relative path"):
+    PosixPaths.assume()
     assertEquals(
       cacheRootOf(Os.Mac, env("HOME" -> home, "XDG_CACHE_HOME" -> "")),
       Right(Paths.get(s"$home/.cache/ko-agent-sandbox")),
@@ -91,12 +94,14 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
   // --------------------------------------------------------------------------
 
   test("the macOS Coursier archive and JVM caches and install directory are the Library spellings"):
+    PosixPaths.assume()
     assertEquals(coursierUnpacked(Os.Mac, env("HOME" -> home)), Right(unpacked))
     assertEquals(coursierInstallDir(Os.Mac, env("HOME" -> home)), Some(installDir))
     // The install directory contains a space, and nothing downstream may split on it.
     assert(clue(installDir.toString).contains(" "))
 
   test("the Linux spellings differ, and are testable from either host"):
+    PosixPaths.assume()
     val coursierLinux = Paths.get(s"$home/.cache/coursier")
     assertEquals(coursierCacheBase(Os.Linux, env("HOME" -> home)), Right(coursierLinux))
     assertEquals(
@@ -111,6 +116,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     )
 
   test("COURSIER_ARCHIVE_CACHE, COURSIER_JVM_CACHE and COURSIER_BIN_DIR override discovery"):
+    PosixPaths.assume()
     assertEquals(
       coursierUnpacked(
         Os.Mac,
@@ -137,10 +143,12 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assert(cacheRootOutsideWorkspace(alias, workspace, Os.Mac, _ => Left("cannot inspect")).isLeft)
 
   test("the data-volume spelling of the workspace is the workspace"):
+    PosixPaths.assume()
     val inside = Paths.get("/System/Volumes/Data" + workspace.toString + "/.cache/ko-agent-sandbox")
     assert(cacheRootOutsideWorkspace(inside, workspace, Os.Mac, Right(_)).isLeft)
 
   test("a cache path overlapping the state root is refused, unless under the state root's own tree"):
+    PosixPaths.assume()
     val state = Paths.get(s"$home/.local/state/ko-agent-sandbox")
     val tree = runOnHostCachesOf(Paths.get(s"$home/.cache/ko-agent-sandbox"))
     assertEquals(cachePathClearOfStateRoot(tree, state, Os.Mac), Right(tree))
@@ -168,6 +176,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
   private val javaBinary = jdkHome.resolve("bin/java")
 
   test("a set COURSIER_CACHE names v1 alone, so the JDK and the sbt distribution are still found in arc"):
+    PosixPaths.assume()
     val found = coursierUnpacked(Os.Mac, env("HOME" -> home, "COURSIER_CACHE" -> coursierBase.resolve("v1").toString))
     assertEquals(found, Right(unpacked))
     val known = exists(jdkHome, javaBinary, archiveCache)
@@ -333,6 +342,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     )
 
   test("the pinned version is read from each place the bootstrap reads, in its order"):
+    PosixPaths.assume()
     assertEquals(millVersion(workspace, files(".mill-version" -> Seq("1.1.8"))), Right("1.1.8"))
     assertEquals(
       millVersion(workspace, files(".config/mill-version" -> Seq("1.1.8"))),
@@ -403,6 +413,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
         Left(Refusal.PrereqMillJvmUnreadable(value)))
 
   test("the JVM source is mill's loadMillConfig order, the first existing file authoritative"):
+    PosixPaths.assume()
     assertEquals(millJvm(workspace, files(".config/mill-jvm-version" -> Seq("system"))), Right(MillJvm.System))
     // .mill-jvm-version beats .config, which beats the header. An empty first file is the answer, and mill reads no
     // line of it as unset.
@@ -507,6 +518,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     )
 
   test("canonical paths compare exactly: a case-sensitive volume keeps coursier and Coursier apart"):
+    PosixPaths.assume()
     val sibling = Paths.get(s"$home/Library/Caches/coursier/arc/jdk/Contents/Home")
     val binary = sibling.resolve("bin/java")
     val known = exists(sibling, binary, archiveCache)
@@ -552,12 +564,14 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assert(wording(refusal.swap.toOption.get).contains("MILL_VERSION=1.2.0-jvm ./mill version"))
 
   test("a refusal spells host paths absolute for the agent, and as the launcher's terminal shows them on request"):
+    PosixPaths.assume()
     val refusal = Refusal.PrereqMillExecutableMissing("1.2.0-jvm", Paths.get("/home/me/.cache/mill/download"))
     assert(clue(wording(refusal)).contains("under /home/me/.cache/mill/download;"))
     val shown = HostCommands.displayPath(_, Os.Linux, Map("HOME" -> "/home/me").get)
     assert(clue(wording(refusal, shown)).contains("under ~/.cache/mill/download;"))
 
   test("a pinned or unset mill-jvm-version runs on the JDK mill's java-home file records, checked as JAVA_HOME is"):
+    PosixPaths.assume()
     val present = exists(jdkHome, javaBinary, archiveCache)
     def recordedJdk(id: Option[String], recorded: Option[String], canonicalize: Path => Option[Path]) =
       millRecordedJdk(id, "1.1.10-jvm", recorded, unpacked, canonicalize, _ == javaBinary)
@@ -604,6 +618,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assertEquals(unsetJdk(recorded(key, jdkHome), escaping), unsetNotCoursier)
 
   test("the daemon configuration changes with what Mill restarts on, from the source Mill selects"):
+    PosixPaths.assume()
     val pinned = Seq("mill-version: 1.1.9", "mill-jvm-version: system")
     def yaml(extra: String*) = files("build.mill.yaml" -> (pinned ++ extra))
     def yamlAnd(extra: (String, Seq[String])*) = files(("build.mill.yaml" -> pinned) +: extra*)
@@ -695,6 +710,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assert(cwd(s"$workspace/link", canonical).isLeft)
 
   test("a canonical case-different sibling is outside the workspace; a lexical one still folds"):
+    PosixPaths.assume()
     // Canonical spellings are the volume's own: on a case-sensitive volume, `Ko-Agent-Sandbox` is another directory.
     // The lexical check before canonicalization keeps folding case, since a request on a folding volume may arrive in
     // either case.
@@ -705,6 +721,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assertEquals(folded, Right(workspace.resolve("sub")))
 
   test("a canonical case-different sibling of the workspace is a safe cache root"):
+    PosixPaths.assume()
     val sibling = Paths.get(s"$home/Ko-Agent-Sandbox/.cache")
     assertEquals(cacheRootOutsideWorkspace(sibling, workspace, Os.Mac, Right(_)), Right(sibling))
 
@@ -733,6 +750,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
   // --------------------------------------------------------------------------
 
   test("containment folds case where the filesystem does"):
+    PosixPaths.assume()
     // The probe reports this host's workspace volume as case-insensitive. A guard that compares exactly would accept a
     // path that the filesystem treats as the guarded one.
     assert(startsWith(Paths.get("/Users/K/P/.GIT/config"), Paths.get("/Users/k/p/.git"), Os.Mac))
@@ -1186,6 +1204,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assert(malformed.swap.exists(reason => reason.contains("not UTF-8") && reason.contains("mill")), malformed.toString)
 
   test("an unreadable rule file is refused by name, not thrown"):
+    assume(!scala.util.Properties.isWin, "POSIX permissions only")
     val workspace = workspaceWith(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
     val rule = workspace.resolve(".ko-agent-sandbox/run-on-host/sbt/egress/rule")
     Files.setPosixFilePermissions(rule, java.nio.file.attribute.PosixFilePermissions.fromString("---------"))
@@ -1194,6 +1213,7 @@ class RunOnHostPrereqsTest extends munit.FunSuite:
     assert(refused.swap.exists(reason => reason.contains("cannot read") && reason.contains("sbt")), refused.toString)
 
   test("every path a refusal names is spelled out where a terminal would act on it"):
+    assume(!scala.util.Properties.isWin, "a Windows path refuses the escape and the carriage return in the name")
     val parent = Files.createTempDirectory("run-on-host")
     def workspaceNamed(paths: String*): Path =
       val workspace = Files.createDirectory(parent.resolve(s"proj\u001b[2K\r${paths.size}"))

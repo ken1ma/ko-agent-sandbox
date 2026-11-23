@@ -11,7 +11,9 @@ import java.nio.file.{Files, Path, Paths}
 import RunOnHostPrereqs.{CommandPrereqs, Program}
 import SeatbeltProfile.*
 
-class SeatbeltProfileTest extends munit.FunSuite:
+class SeatbeltProfileTest extends UnixHostSuite:
+
+  def unixHostClue = "the Seatbelt profile, macOS's alone, renders POSIX paths"
 
   private val home = "/Users/kenichi"
   private val workspace = Paths.get(s"$home/ko-agent-sandbox")

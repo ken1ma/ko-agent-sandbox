@@ -459,6 +459,7 @@ class MicRelayTest extends munit.FunSuite:
 
   test("the launch probe's candidates on each OS, in order, a refusal naming the package, and a failure naming " +
     "each reason and its next step"):
+    assume(!scala.util.Properties.isWin, "the stand-in recorders are POSIX executables")
     val bin = Files.createTempDirectory("mic-candidates").toRealPath()
     Vector("rec", "sox_ng.exe", "arecord", "parecord").foreach(name => executable(bin.resolve(name), "#!/bin/sh\n"))
     def commands(os: HostCommands.Os): Vector[Vector[String]] =
@@ -505,9 +506,10 @@ class MicRelayTest extends munit.FunSuite:
     Using.resource(Files.walk(bin))(_.iterator().asScala.toVector.reverse.foreach(Files.deleteIfExists))
     Files.delete(empty)
 
+  private def diagnosis(endpoints: String, permissions: String): Vector[String] =
+    MicRelay.windowsDiagnosis(s"endpoints $endpoints\npermissions $permissions\n")
+
   test("a failed Windows probe is explained by the endpoint count, the default device and the permission values"):
-    def diagnosis(endpoints: String, permissions: String): Vector[String] =
-      MicRelay.windowsDiagnosis(s"endpoints $endpoints\npermissions $permissions\n")
     assert(diagnosis("0 nodefault", "Allow Allow Allow").head.contains("no active capture device"))
     assert(diagnosis("1 nodefault", "Allow Allow Allow").head.contains("no default communications capture device"))
     assertEquals(diagnosis("1 default", "Allow Allow Allow"), Vector.empty)
@@ -520,7 +522,10 @@ class MicRelayTest extends munit.FunSuite:
     // An absent NonPackaged or machine-wide value leaves the recorder recording.
     assertEquals(diagnosis("1 default", "Allow absent absent"), Vector.empty)
     assertEquals(diagnosis("0 nodefault", "Deny Allow Allow").length, 2, "the endpoints, then the permission")
-    // The test runs through the script's runner, with a stand-in that answers as the script prints.
+
+  test("the Windows diagnostics run through the script's runner, and a script that failed explains nothing"):
+    assume(!scala.util.Properties.isWin, "the stand-in for powershell is a /bin/sh script")
+    // The stand-in answers as the script prints.
     val dir = Files.createTempDirectory("mic-diagnostics").toRealPath()
     val powershell = dir.resolve("powershell")
     executable(powershell, "#!/bin/sh\nprintf 'endpoints 0 nodefault\\npermissions Allow Allow Allow\\n'\n")

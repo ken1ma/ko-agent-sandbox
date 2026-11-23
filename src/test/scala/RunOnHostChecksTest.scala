@@ -6,7 +6,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 import RunOnHostChecks.*
 
-class RunOnHostChecksTest extends munit.FunSuite:
+class RunOnHostChecksTest extends UnixHostSuite:
+
+  def unixHostClue = "the run-on-host checks run on macOS alone, and read Unix ids"
 
   private def checkRun(): CheckRun =
     val out = Files.createTempDirectory("checks")

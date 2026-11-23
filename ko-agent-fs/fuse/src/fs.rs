@@ -1055,6 +1055,11 @@ fn to_errno(err: NixErrno) -> Errno {
 /// So this is a portability rule, not a containment one. Containment is `RESOLVE_IN_ROOT` on every
 /// path the daemon itself resolves, and the daemon does not resolve this one.
 ///
+/// A target spelled with `\` or `:` is one name here and passes. On a Windows drive mount, WSL
+/// wrote each measured target (`..\..\x`, `..\.git`, `C:\Windows`) as a WSL symlink, which
+/// Windows does not follow, so Windows did not read any of them as a path either
+/// (`doc/verification-log.md`, "A symlink target spelled with Windows separators").
+///
 /// Know this limit before relying on the rule:
 /// - `depth` is judged once, where the link is created, but a relative target is read again from
 ///   whichever directory holds the link.

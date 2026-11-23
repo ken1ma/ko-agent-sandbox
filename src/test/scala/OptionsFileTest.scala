@@ -364,6 +364,7 @@ class OptionsFileTest extends munit.FunSuite:
     assertEquals(OptionsInForce(defaults, none, None).egressProfileSource, ValueSource.Default)
 
   test("the file's options are printed once, each naming the file, an --env by its name alone"):
+    PosixPaths.assume()
     val (parsed, supplied) =
       merged("--memory=8g\n--env=SECRET=hunter2\n--nesting=same-uid\n--image=i", "--image=j").fold(fail(_), identity)
     val options = OptionsInForce(parsed, supplied, Some(Path.of("/home/me/.config/ko-agent-sandbox/options")))

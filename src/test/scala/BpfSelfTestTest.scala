@@ -44,7 +44,7 @@ class BpfSelfTestTest extends munit.FunSuite:
     Vector(
       "--rm", "--pull=never", "--network=none", "--entrypoint=", "--security-opt", "seccomp=unconfined",
       s"--user=${AgentSandboxLauncher.ContainerUid}:${AgentSandboxLauncher.ContainerGid}",
-      "--volume=/Users/me/state/bpf/self-test:/Users/me/state/bpf/self-test",
+      s"--volume=${Path.of("/Users/me/state/bpf/self-test")}:/Users/me/state/bpf/self-test",
       "--cgroup-parent=ko-agent-bpf-ko-agent-self-test-bpf.slice",
     ).foreach(argument => assert(command.contains(argument), s"$argument: $shown"))
     assert(command.exists(_.startsWith("--userns=keep-id:uid=")), shown)

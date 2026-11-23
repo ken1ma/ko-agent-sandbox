@@ -57,11 +57,11 @@ class AwsCredentialTest extends munit.FunSuite:
   test("the commands name the profile as an argument: one line per value, then the region"):
     assertEquals(
       command(aws, "team"),
-      Vector("/usr/local/bin/aws", "configure", "export-credentials", "--profile", "team", "--format", "env-no-export"),
+      Vector(aws.toString, "configure", "export-credentials", "--profile", "team", "--format", "env-no-export"),
     )
     assertEquals(
       regionCommand(aws, "team"),
-      Vector("/usr/local/bin/aws", "configure", "get", "region", "--profile", "team"),
+      Vector(aws.toString, "configure", "get", "region", "--profile", "team"),
     )
 
   test("the values are read by name, in the order the sandbox lists them, with the expiry and the region"):

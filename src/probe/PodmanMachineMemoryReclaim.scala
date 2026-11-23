@@ -1,5 +1,6 @@
 #!/usr/bin/env -S scala shebang
 //> using scala 3.10.1
+//> using file ../test/scala/HostDriver.scala
 
 /*
   Measures whether the podman machine gives a build's memory back to the host, on macOS and on Windows. The section
@@ -143,7 +144,7 @@ def say(label: String, value: String): Unit = println(f"$label%-28s $value")
 
 /** A command's output, both streams merged and decoded as UTF-8, and its exit status. */
 def run(command: Seq[String], environment: Map[String, String] = Map.empty): (Int, String) =
-  val builder = ProcessBuilder(command*).redirectErrorStream(true)
+  val builder = agentsandbox.launcher.HostDriver.hostProcess(command).redirectErrorStream(true)
   environment.foreach((name, value) => builder.environment.put(name, value))
   val process =
     try builder.start()
@@ -328,7 +329,7 @@ def windowsSamples(phase: String): Seq[Sample] =
   val started = System.nanoTime
   // The launcher's start prompt would otherwise wait for a user who reads the sampler's output, so the default command
   // passes --session-start=immediate.
-  val status = ProcessBuilder(command*).inheritIO().start().waitFor()
+  val status = agentsandbox.launcher.HostDriver.hostProcess(command).inheritIO().start().waitFor()
   println(s"command exited $status after ${(System.nanoTime - started) / 1_000_000_000L}s")
   guest("build") = guestMemInfo
   println(s"== after: ${options.afterSeconds}s")

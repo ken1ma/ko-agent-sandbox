@@ -208,7 +208,7 @@ class SeccompProfileTest extends munit.FunSuite:
   test("the profile is one file under the state root, named to podman create by its path, built or refused"):
     val state = Paths.get("/state")
     assertEquals(profileFile(state), Paths.get("/state/seccomp/nesting-none.json"))
-    assertEquals(createArgument(state), "--security-opt=seccomp=/state/seccomp/nesting-none.json")
+    assertEquals(createArgument(state), s"--security-opt=seccomp=${profileFile(state)}")
     val root = Files.createTempDirectory("ko-agent-sandbox-seccomp")
     assert(missingReason(root).exists(_.startsWith(s"error: the seccomp profile for --nesting=none is not built: ")))
     assert(missingReason(root).exists(_.contains("Run --build, or --update")))

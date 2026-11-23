@@ -19,9 +19,6 @@ class CacheOverlayTest extends munit.FunSuite:
 
   private val windowsJvm = HostCommands.currentOs == Os.Windows
 
-  /** The tests that spell POSIX paths: a Windows JVM reads them as relative, and refuses a `:` in one. */
-  private def posixPaths(): Unit = assume(!windowsJvm, "a Windows JVM does not read the test's POSIX paths as absolute")
-
   /** `posix` as an absolute path of the JVM's own: on drive C: under a Windows JVM. */
   private def native(posix: String): String = if windowsJvm then "C:" + posix.replace('/', '\\') else posix
 
@@ -67,7 +64,7 @@ class CacheOverlayTest extends munit.FunSuite:
     assert(found(Os.Linux, "COURSIER_CACHE" -> "cs", "HOME" -> "/home/me").swap.exists(_.contains("'cs'")))
 
   test("without COURSIER_CACHE, Linux finds v1 under XDG_CACHE_HOME, else under ~/.cache"):
-    posixPaths()
+    PosixPaths.assume()
     def found(os: Os, env: (String, String)*): Either[String, Path] = coursierDownloadCache(os, env.toMap.get)
     assertEquals(found(Os.Linux, "HOME" -> "/home/me"), Right(Paths.get("/home/me/.cache/coursier/v1")))
     assertEquals(found(Os.Linux, "HOME" -> "/home/me", "XDG_CACHE_HOME" -> "/x"), Right(Paths.get("/x/coursier/v1")))
@@ -92,13 +89,13 @@ class CacheOverlayTest extends munit.FunSuite:
     refusal(Paths.get(cache), homes, Vector(workspace, state, storage), os, mounts)
 
   test("a filesystem root, a home or what holds one, and another user's home refuse"):
-    posixPaths()
+    PosixPaths.assume()
     assertEquals(refused("/"), Some("it is a filesystem root"))
     Vector("/home/me", "/home", "/home/other").foreach: cache =>
       assert(refused(cache).exists(_.contains("home directory")), cache)
 
   test("an overlap with a protected directory refuses in either direction, and a narrower cache passes"):
-    posixPaths()
+    PosixPaths.assume()
     assert(refused("/home/me/src/app/cache").exists(_.contains("the workspace")))
     assert(refused("/home/me/src").exists(_.contains("the workspace")))
     assert(refused("/home/me/.local/state").exists(_.contains("the launcher's state")))
@@ -108,7 +105,7 @@ class CacheOverlayTest extends munit.FunSuite:
     assertEquals(refused("/var/cache/coursier/v1"), None)
 
   test("on Linux, a bind mount that shows the cache within the workspace, or the workspace at the cache, refuses"):
-    posixPaths()
+    PosixPaths.assume()
     // Device 8:1 holds /, and two mounts show its directories again: the cache inside the workspace, and the workspace
     // at a path with a space, which the kernel spells \040.
     val mounts = parseMountInfo(
@@ -128,7 +125,7 @@ class CacheOverlayTest extends munit.FunSuite:
     assertEquals(mounted("/data/home/me/.cache/coursier/v1"), None, "another device's directory of the same name")
 
   test("on Linux, the mount that shows a path is found by parent ids, so a mount hidden by an overmount is skipped"):
-    posixPaths()
+    PosixPaths.assume()
     // 31 lies below /x on mount 30, and 32 overmounts /x with the workspace, which hides 31 though mountinfo lists it.
     val mounts = parseMountInfo(
       Vector(
@@ -142,7 +139,7 @@ class CacheOverlayTest extends munit.FunSuite:
     assert(refused.exists(_.contains("the workspace")), refused)
 
   test("on Linux, a mount that shows a home, or the directory of homes, at another path refuses as the home does"):
-    posixPaths()
+    PosixPaths.assume()
     val mounts = parseMountInfo(
       Vector("22 1 8:1 / / rw - ext4 /dev/sda1 rw", "23 22 8:1 /home /mnt/homes rw - ext4 /dev/sda1 rw")
         .mkString("\n"),
@@ -153,7 +150,7 @@ class CacheOverlayTest extends munit.FunSuite:
     assertEquals(mounted("/mnt/homes/me/.cache/coursier/v1"), None, "a cache inside a home passes, as without a mount")
 
   test("on Linux, a root mount that is its own parent is found, and a mount table without a root, or empty, refuses"):
-    posixPaths()
+    PosixPaths.assume()
     // The root lists itself as its parent; another user's home is a device of its own, bound again at /mnt/o.
     val mounts = parseMountInfo(
       Vector(
@@ -174,7 +171,7 @@ class CacheOverlayTest extends munit.FunSuite:
     assert(empty.exists(_.contains("lists no root mount")), empty)
 
   test("a path podman cannot take as a --volume source, or whose ',' would split the overlay's options, refuses"):
-    posixPaths()
+    PosixPaths.assume()
     assert(refused("/var/cache/a:b").exists(_.contains("podman cannot mount it")))
     assert(refused("/var/cache/a,upperdir=x/v1").exists(_.contains("a path with a ','")))
     assert(refused("/var/cache/a\\b/v1").exists(_.contains("as an escape")))
@@ -195,7 +192,7 @@ class CacheOverlayTest extends munit.FunSuite:
     )
 
   test("resolve canonicalizes the directory, and refuses a missing one, a file, and one the session cannot use"):
-    posixPaths()
+    PosixPaths.assume()
     withDirectory: root =>
       val cache = Files.createDirectories(root.resolve("v1"))
       val link = Files.createSymbolicLink(root.resolve("link"), cache)
@@ -251,7 +248,7 @@ class CacheOverlayTest extends munit.FunSuite:
     assertEquals(refused, Left(s"error: --cache-overlay=coursier; $MacRefusal"))
 
   test("COURSIER_CACHE keeps its spelling until the file system resolves it, as the explicit directory does"):
-    posixPaths()
+    PosixPaths.assume()
     withDirectory: root =>
       // The link's `..` leads to sub, the link target's parent; dropping `link/..` as text would lead to root.
       Files.createDirectories(root.resolve("sub/inner"))
@@ -266,7 +263,7 @@ class CacheOverlayTest extends munit.FunSuite:
       )
 
   test("podman's storage roots are read from its JSON, a trailing space included"):
-    posixPaths()
+    PosixPaths.assume()
     assertEquals(
       AgentSandboxLauncher.podmanStorageRoots("""{"graphRoot":"/g ","runRoot":"/r","volumePath":"/g /volumes"}"""),
       Right(Vector(Paths.get("/g "), Paths.get("/r"), Paths.get("/g /volumes"))),
@@ -275,7 +272,7 @@ class CacheOverlayTest extends munit.FunSuite:
     assert(AgentSandboxLauncher.podmanStorageRoots("not json").isLeft)
 
   test("a resolved cache adds one --volume ending in :O at the kind's fixed destination"):
-    posixPaths()
+    PosixPaths.assume()
     assertEquals(
       Resolved(Kind.Coursier, Paths.get("/home/me/.cache/coursier/v1")).volumeArg,
       "--volume=/home/me/.cache/coursier/v1:/home/nonroot/.cache/coursier/v1:O",

@@ -3,7 +3,8 @@
 This file lists remaining work that adds real security or maintainability for the actual threat
 model. This file also lists ideas whose benefit is uncertain, each with the condition that decides
 whether to build it. design.md records each idea examined and found without benefit, with its
-reason, so that nobody proposes it again. `TODO-run-on-host.md` lists the work on `--run-on-host`.
+reason, so that nobody proposes it again. `TODO-run-on-host.md` lists the work on `--run-on-host`,
+and `TODO-win.md` the work that only a Windows host has.
 
 ## Credential brokering — `--egress-cred`, then the preset plan
 
@@ -209,20 +210,13 @@ Five probes in `src/probe/` are shell scripts. Four run on the macOS host, and
   that cite its path: `jvm-proxy-rule.sh`, `loopback-rule.sh`, `podman-attach-stdin.sh`,
   `seatbelt-semantics.sh` and `session-recovery.sh`.
 
-## Open questions under the `--nesting=none` seccomp profile
-
-- [ ] Rerun ko-review's suites in a `--nesting=none` session on Windows, in a `/mnt/c` workspace.
-  The review-cycle test of the helper's Python version exceeded its 300s timeout there
-  (2026-10-26); should the suites slow there too, find whether the profile or the share's speed
-  causes it.
-
 ## BPF suite reruns
 
 The suites whose sources changed since their evidence was measured. One rerun of a suite clears
 its item (`../ko-agent-fs/bpf/doc/evidence.md` has the procedure).
 
-- [ ] Rerun the Launcher suite on macOS and WSL, and rewrite both of its sections from the reruns.
-  The code of `KoAgentBpf.scala` differs from the sources of its evidence of 2026-11-09.
+- [ ] Rerun the Launcher suite on macOS, and rewrite "Launcher on macOS" from the rerun. The code of
+  `KoAgentBpf.scala` differs from the sources of that section's evidence of 2026-11-09.
 
 ## The BPF backend's later versions
 
@@ -408,33 +402,6 @@ built.
   - Podman's maintainers call the copy expected: the kernel allows ID-mapped mounts to root alone,
     and they know of no plan to change that.
     https://github.com/podman-container-tools/podman/issues/26479
-
-## The ordinary suites on a Windows host
-
-`sbt testWithPodman` typed in PowerShell runs `testFull` in the Windows JVM, and the ordinary
-suites assume a Unix JVM. Until those suites are fixed, `development.md` ("On Windows x64") runs
-only the container-launching suites. That document's command returns to
-`sbt testWithPodman` once the suites are fixed. The failures below are from Codex's run of
-2026-10-27 on the EC2 machine, and a run of 2026-10-28 fails the same suites.
-
-- [ ] Skip, with a clue, the tests that need a Unix host:
-  - those running `sh`, `/bin/bash` or `/usr/bin/perl` (`RunOnHostSandboxTest`,
-    `RunOnHostSessionTest`);
-  - those setting POSIX permissions or reading the `unix` attribute view
-    (`RunOnHostProvisioningTest`, `MicRelayTest`, `RunOnHostSessionTest`, and
-    `SandboxStatsTest` and `RunOnHostSandboxTest` through `RunOnHostSession.publish`);
-  - those calling `com.sun.security.auth.module.UnixSystem`, whose `UnsatisfiedLinkError` munit
-    treats as fatal, aborting the rest of `RunOnHostSandboxTest`;
-  - the Mill file and lock cases of `RunOnHostSandboxTest`, whose code answers `None` without a
-    `SecureDirectoryStream`, which Windows lacks.
-- [ ] Make the fixtures that spell Unix paths independent of the JVM's filesystem. An `Os.Mac` or
-  `Os.Linux` argument does not change how `Path` parses a string. The fixtures are in
-  `SeatbeltProfileTest`, `SeccompProfileTest`, `RunOnHostPrereqsTest` and `RunOnHostSandboxTest`,
-  and in path cases of `OptionsFileTest`, `AwsCredentialTest`, `AgentSandboxLauncherTest`,
-  `EgressRulesTest`, `SandboxStatsTest`, `SandboxWorkspaceTest`, `ClaudePluginsTest` and
-  `SandboxLifecycleTest`.
-- [ ] `ClaudePluginsTest`'s directory-symlink fixture loses `elsewhere/sbt-global`. The fixture
-  makes the link before the link's target, and which link type Windows then makes is unchecked.
 
 ## Capabilities a `NESTING=none` session could keep
 
@@ -662,32 +629,6 @@ worktree's working files stay out of the session.
 - The mount-path probe already asks about the target. The SELinux label question does not arise:
   the FUSE backend's mountpoint needs no relabel.
 
-## Deferred — a linked worktree's absolute pointer on Windows
-
-`git worktree add` writes the pointer as `C:/Users/<me>/repo/.git/worktrees/<name>`, which the
-container's git cannot follow at `/mnt/c/...`, so the read-only bind is skipped there
-(`SandboxWorkspace.linkedGitdirBind`). Two routes:
-
-- A relative pointer resolves under `/mnt/c` as it does under `C:`, and the bind serves one.
-  - But `git worktree add --relative-paths`, or `git worktree repair --relative-paths` for an
-    existing worktree (git 2.48 or later), also sets `extensions.relativeWorktrees`. The image's
-    git, Debian trixie's 2.47.3, refuses a repository with an extension it does not know, in the
-    main worktree as in the linked one.
-  - The launch reads the extension from the common config, and keeps the no-git warning with a
-    note rather than promise git (`SandboxWorkspace.setsRelativeWorktrees`).
-  - The route opens when the image's git is 2.48 or later, and that check goes with the upgrade.
-    Until then only a hand-written relative pointer works, and `git worktree repair` rewrites such
-    a pointer absolute.
-  - "The workspace root mounted at its own path" has the row that measures the hand-written
-    pointer.
-- For an absolute pointer, bind a launcher-written pointer file naming the `/mnt/<drive>` spelling
-  over `<mountPath>/.git`. The bind hides the FUSE backend's protected pointer from the container
-  alone.
-  - Setting `GIT_DIR` and `GIT_WORK_TREE` instead would redirect git in every other repository the
-    agent uses, such as clones under `~`.
-  - `<main>/.git/worktrees/<name>/gitdir` keeps the `C:/` spelling either way. `git worktree list`
-    reads that file, and nothing the read-only bind serves needs it.
-
 ## Deferred — LAN destinations, as a session option
 
 The proxy refuses every private, loopback, link-local and CGNAT address after resolution, and the
@@ -882,9 +823,6 @@ global fails fast on podman-less machines and kills the test JVM.
 - [ ] On Windows, run the launcher inside a WSL distribution — as a Linux program, with Java and
   rootless podman installed there — from `/mnt/c/Users/<me>/src/app`: `bash -c pwd` must print
   that path, the one a PowerShell launch of the same directory prints.
-- [ ] On Windows, from a linked worktree whose `.git` holds a relative pointer (hand-written until
-  the image's git reads `extensions.relativeWorktrees`): the launch must print `git is read-only
-  in this session`, `git status` must work in the session, and `git add` must fail.
 
 Recorded macOS results (2026-09-18):
 
@@ -905,16 +843,27 @@ Recorded Windows results (Windows Server 2025, 10.0.26100.32522, podman 6.1.0; 2
 - Under `KO_AGENT_SANDBOX_CLIPBOARD=paste`, `xclip -selection clipboard -t image/png -o` in the
   session reads a copied image, 15498 bytes, through both wrapped clipboard execs.
 
+Recorded Windows results (WSL2 6.18.58.1, podman 6.2.0, BPF backend; 2026-11-23), from a linked
+worktree whose `.git` holds the hand-written pointer `gitdir: ../<main>/.git/worktrees/<name>`:
+
+- The launch prints `git is read-only in this session`.
+- `git status` in the session works, and `git add` fails: git cannot create `index.lock` in the
+  main worktree's Git directory, a read-only file system there.
+
 ## Claude Code plugins (`--claude-plugin-dir`)
 
-- [ ] On Windows, a plugin holding a file with a second name (`mklink /H`) must be refused with
-  "has a second name", and a plugin without one must be accepted. `FFMHelper.kernel32.numberOfLinks`
-  has never run; its struct offset and flags come from the Windows API reference.
-- [ ] On Windows, a plugin holding a directory junction (`mklink /J`) must be refused as "a
-  junction, device or pipe". The walk's `isOther` check is measured on POSIX with a pipe alone.
 - [ ] Inside a session launched with the probe (`src/test/claude-plugins/managed-probe/README.md`),
   run `sbt testFull`. `SessionBoundaryTest`'s plugin-mount test runs only there, and has not run
   yet.
+
+Recorded Windows results (WSL2 6.18.58.1, podman 6.2.0; 2026-11-23), from launches with
+`--claude-plugin-dir` on plugins under `%TEMP%`:
+
+- A plugin holding a file with a second name (`New-Item -ItemType HardLink`) is refused with "has
+  a second name (a hard link)", so `FFMHelper.kernel32.numberOfLinks` counts links.
+- A plugin holding a directory junction (`New-Item -ItemType Junction`) is refused as "a junction,
+  device or pipe".
+- A plugin with neither is accepted, and the banner lists it as `ok@host`.
 
 ## Deferred — the native-image launcher
 

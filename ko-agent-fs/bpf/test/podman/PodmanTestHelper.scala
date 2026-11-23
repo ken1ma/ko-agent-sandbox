@@ -185,6 +185,23 @@ object PodmanTestHelper:
   /** The sandbox image the launcher's `--build` makes, which the sessions and the stacks run. */
   val SandboxImage = "ko-agent-sandbox:latest"
 
+  /** Where the INDEX lists the assembled ko-review plugin (build.sbt, `pluginFiles`). */
+  val AssembledKoReviewPlugin = "ko-agent-sandbox/claude-code/plugins/ko-review/"
+
+  /** The checkout file that an INDEX entry of the assembled ko-review plugin copies, and how to undo the change that
+    * ko-review/build.sbt's `pluginAssembly` makes to the copy: the task renames `claude-plugin/` to `.claude-plugin/`
+    * and adds a version line to the manifest. None for `lib/`, which the task generates and no checkout file holds. */
+  def assembledPluginSource(repoDir: Path, listed: String): Option[(Path, Array[Byte] => Array[Byte])] =
+    val relative = listed.stripPrefix(AssembledKoReviewPlugin)
+    Option.unless(relative.startsWith("lib/")):
+      val source = repoDir / "ko-review" / "plugin" / relative.replaceFirst("^\\.claude-plugin/", "claude-plugin/")
+      val unversioned: Array[Byte] => Array[Byte] =
+        if relative != ".claude-plugin/plugin.json" then identity
+        else bytes =>
+          String(bytes, java.nio.charset.StandardCharsets.UTF_8).replaceFirst("\n  \"version\": \"[^\"]*\",", "")
+            .getBytes(java.nio.charset.StandardCharsets.UTF_8)
+      (source, unversioned)
+
   /** Where a bundled build context's entry lies in the checkout: build.sbt stores each relative to its
     * context's parent, the root for ko-agent-fs/ and ko-agent-egress-proxy/ and container/ for the images. The
     * context's directory at the root decides, so that moving a context needs no change here. */
@@ -196,7 +213,10 @@ object PodmanTestHelper:
   /** Compares the jar's bundled build context with the checkout. Returns the first file in the bundle's
     * INDEX (the launcher's own listing, LauncherImages.bundleIndex) whose entry differs from the
     * checkout's file or is missing, or None. The jar can hold more under `sandbox-build/`: sbt 2 leaves
-    * files an earlier bundle copied into its classes directory, and the launcher reads none of them. */
+    * files an earlier bundle copied into its classes directory, and the launcher reads none of them.
+    *
+    * The INDEX also lists the assembled ko-review plugin. Its copied files are compared with their sources
+    * (assembledPluginSource), and its generated files need only be in the jar. */
   def staleEntry(jar: Path, repoDir: Path): Option[String] =
     Using.resource(JarFile(jar.toFile)): opened =>
       def read(name: String): Option[Array[Byte]] =
@@ -206,9 +226,15 @@ object PodmanTestHelper:
         case Some(index) =>
           String(index, java.nio.charset.StandardCharsets.UTF_8).linesIterator.map(_.trim).filter(_.nonEmpty)
             .find: listed =>
-              val file = checkoutFile(repoDir, listed)
-              !Files.isRegularFile(file) || !read(s"sandbox-build/$listed").exists(java.util.Arrays.equals(Files
-                .readAllBytes(file), _))
+              val bundled = read(s"sandbox-build/$listed")
+              val source: Option[(Path, Array[Byte] => Array[Byte])] =
+                if !listed.startsWith(AssembledKoReviewPlugin) then Some((checkoutFile(repoDir, listed), identity))
+                else assembledPluginSource(repoDir, listed)
+              source match
+                case None => bundled.isEmpty
+                case Some((file, asCopied)) =>
+                  !Files.isRegularFile(file)
+                    || !bundled.exists(bytes => java.util.Arrays.equals(Files.readAllBytes(file), asCopied(bytes)))
             .map("sandbox-build/" + _)
 
   /** Where the jar holds a copy of the compiled source at REPO_PATH, relative to the repository root. build.sbt

@@ -1359,25 +1359,23 @@ and its `--build`.
 
 ### Launcher on WSL
 
-Measured on 2026-11-09 with `../test/podman/launcher/Launcher.scala` (`scala shebang`) on the
-Windows machine of "One hook on WSL", kernel 6.18.54.1, podman 6.1.4 under the cgroupfs manager,
-crun 1.28, through the launcher's jar and its `--build`.
+Measured on 2026-11-23 with `../test/podman/launcher/Launcher.scala` (`scala shebang`) on a Windows
+machine, kernel 6.18.58.1, podman 6.2.0 under the cgroupfs manager, crun 1.30, through the
+launcher's jar from `sbt dist` and its `--build`.
 
 - The installed `policy.bpf.o` has SHA-256
-  `f8cd2eae6c890ad1e29ee0af77cb55cacbd07f98e2b4a964d4bfa55001f021b7`, from sources of code digest
-  `c2dfa0f6ee5ea9caf6d717a0a8e26561262a1a6f74e45985d51c37546fbc9940`, the sources "Launcher on
-  macOS" measures.
-  - "Policy on WSL" and "Lifecycle on WSL" built the same object, byte for byte.
+  `2eebf9ea3fab63466af54ad2e46956baa77f60cf30da446b2d5d4a792dcd9a41`, from sources of code digest
+  `7b4063becd4a27ea7bbb00f7a42cbd762418da64ddf52631fd9d4c5b3d2efec5`.
 - Every one of the 42 rows passes in one run of 30 launches.
 - The rows below name what differs from macOS; every other row passed as there.
 
 | row                      | measured                                                              |
 | ------------------------ | --------------------------------------------------------------------- |
 | the preloaded set        | the six launches whose steps the suite read each took one; the four   |
-|                          | whose steps it prints attached in 0.1 to 0.2ms, read back in 26.0 to  |
-|                          | 31.9ms and tested in 238 to 367ms on 9p                               |
-| the proof's cgroup       | on every launch the launcher's own proof joined the leaf below the    |
-|                          | attach cgroup from a transient scope of the user manager, as          |
+|                          | whose steps it prints attached in 0.1ms, read back in 25.7 to 34.8ms  |
+|                          | and tested in 282 to 385ms on 9p                                      |
+| the proof's cgroup       | the first launch's own proof joined the leaf below the attach cgroup  |
+|                          | from a transient scope of the user manager, as                        |
 |                          | "Lifecycle on WSL" measured of the suite's; a scope that cannot be    |
 |                          | made or a join that fails ends the launch script with status 4 before |
 |                          | its placement step, which `KoAgentBpfTest` runs with those failures   |
@@ -1387,9 +1385,9 @@ crun 1.28, through the launcher's jar and its `--build`.
 | a FIFO the host made     | not measured: NTFS makes none                                         |
 | the refusals             | the cases without a linked worktree or a host rename, 8 refusals, as  |
 |                          | on macOS. A linked worktree's launch is refused by the guard for the  |
-|                          | worktree's absolute pointer (`../../../doc/TODO.md`, "Deferred — a   |
-|                          | linked worktree's absolute pointer on Windows"), and the host refuses |
-|                          | to rename a directory a live session's share holds                    |
+|                          | worktree's absolute pointer (`../../../doc/TODO-win.md`,              |
+|                          | "Deferred — a linked worktree's absolute pointer on Windows"), and   |
+|                          | the host refuses to rename a directory a live session's share holds   |
 | in a session             | measured on 2026-10-27 in a `live,bpf,unix-socket` session, the rows  |
 |                          | of macOS's; the share's `ENOTSUP` answers every bind on it, so the    |
 |                          | share rows measure the share, not the policy. A launch took the       |

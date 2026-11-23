@@ -10,8 +10,10 @@ import scala.jdk.CollectionConverters.*
 
 /** The fixtures of the helper's suites: a repository with something to review, a fake `codex` and `claude` on the
   * PATH, and the helper run in this JVM, as the command line runs it. */
-abstract class HelperFixture extends munit.FunSuite:
+abstract class HelperFixture extends UnixHostSuite:
   import HelperFixture.*
+
+  def unixHostClue = "the helper runs reviewers in POSIX process groups, and the fake reviewers are /bin/sh scripts"
 
   override val munitTimeout: Duration = Duration(5, "min")
 
@@ -30,7 +32,7 @@ abstract class HelperFixture extends munit.FunSuite:
   def otherHost: String = if reviewer == "codex" then "api.anthropic.com" else "api.openai.com"
   def display: String = if reviewer == "codex" then "Codex" else "Claude"
 
-  override def beforeEach(context: BeforeEach): Unit =
+  override def beforeEach(context: BeforeEach): Unit = if unixHost then
     root = Files.createTempDirectory("ko-review-").toRealPath()
     bin = Files.createDirectory(root.resolve("bin"))
     installFakeReviewer(bin)
@@ -47,7 +49,7 @@ abstract class HelperFixture extends munit.FunSuite:
     git("commit", "-q", "-m", "init")
     write("work.py", "print('work in progress')\n") // something to review: a clean tree is refused
 
-  override def afterEach(context: AfterEach): Unit = deleteTree(root)
+  override def afterEach(context: AfterEach): Unit = if unixHost then deleteTree(root)
 
   def git(args: String*): String = gitIn(repo, args*)
 

@@ -82,11 +82,12 @@ class ClaudePluginsTest extends munit.FunSuite:
     // The test checks the comparison that resolve makes between the two spellings that macOS gives one
     // directory. The test uses literal paths: a real path keeps the spelling it was given, so a
     // temporary directory cannot stand in for the aliased one.
-    val aliased = Path.of("/System/Volumes/Data/Users/me/workspace/mods/x")
-    assert(SandboxWorkspace.overlapsInAnySpelling(Os.Mac, aliased, Path.of("/Users/me/workspace")))
-    val aliasedWorkspace = Path.of("/System/Volumes/Data/Users/me/workspace")
-    assert(SandboxWorkspace.overlapsInAnySpelling(Os.Mac, Path.of("/Users/me/workspace/mods/x"), aliasedWorkspace))
-    assert(!SandboxWorkspace.overlapsInAnySpelling(Os.Linux, aliased, Path.of("/Users/me/workspace")))
+    if PosixPaths.readable then
+      val aliased = Path.of("/System/Volumes/Data/Users/me/workspace/mods/x")
+      assert(SandboxWorkspace.overlapsInAnySpelling(Os.Mac, aliased, Path.of("/Users/me/workspace")))
+      val aliasedWorkspace = Path.of("/System/Volumes/Data/Users/me/workspace")
+      assert(SandboxWorkspace.overlapsInAnySpelling(Os.Mac, Path.of("/Users/me/workspace/mods/x"), aliasedWorkspace))
+      assert(!SandboxWorkspace.overlapsInAnySpelling(Os.Linux, aliased, Path.of("/Users/me/workspace")))
 
   test("a cache a symlink redirects out of the cache root is a directory host commands write"):
     val root = Files.createTempDirectory("claude-plugins").toRealPath()
@@ -96,8 +97,9 @@ class ClaudePluginsTest extends munit.FunSuite:
     // The runner follows a symlink at a cache, and a symlink at the workspace's directory (run-on-host/<id>).
     val workspaceCaches = Files.createDirectories(RunOnHostPrereqs.runOnHostCachesOf(cacheRoot).resolve("p1"))
     Files.createSymbolicLink(workspaceCaches.resolve("ivy-home"), external)
-    Files.createSymbolicLink(RunOnHostPrereqs.runOnHostCachesOf(cacheRoot).resolve("p2"), root.resolve("elsewhere"))
-    Files.createDirectories(root.resolve("elsewhere"))
+    // Windows makes a file link when the target is missing, and a file link never leads into a directory.
+    val elsewhere = Files.createDirectories(root.resolve("elsewhere"))
+    Files.createSymbolicLink(RunOnHostPrereqs.runOnHostCachesOf(cacheRoot).resolve("p2"), elsewhere)
     val written = RunOnHostPrereqs.writtenCacheDirectories(cacheRoot).getOrElse(Vector.empty)
     assert(written.contains(external), written)
     assert(written.contains(root.resolve("elsewhere/sbt-global")), written)
@@ -132,23 +134,33 @@ class ClaudePluginsTest extends munit.FunSuite:
     val linked = plugin(root, "linked")
     Files.createSymbolicLink(linked.resolve("hooks/shared"), workspace)
     val refused = resolved(Vector(linked.toString), workspace).swap.getOrElse("accepted")
-    assert(refused.contains("symlink") && refused.contains("hooks/shared"), refused)
+    assert(refused.contains("symlink") && refused.contains(Path.of("hooks", "shared").toString), refused)
     // A file that the workspace also names is refused: a session write through the workspace's name would
     // change the module.
     val shared = plugin(root, "shared")
     Files.createLink(workspace.resolve("register-source.ts"), shared.resolve("hooks/register.ts"))
     val linkRefusal = resolved(Vector(shared.toString), workspace).swap.getOrElse("accepted")
-    assert(linkRefusal.contains("second name") && linkRefusal.contains("hooks/register.ts"), linkRefusal)
-    // A pipe stands in here for a Windows junction, which is neither a file nor a directory. Java reports
-    // a junction as a directory and as `isOther`, never as a symlink.
-    val piped = plugin(root, "piped")
-    val pipe = piped.resolve("hooks/pipe")
+    assert(
+      linkRefusal.contains("second name") && linkRefusal.contains(Path.of("hooks", "register.ts").toString),
+      linkRefusal,
+    )
+    // A directory junction on Windows, and a pipe elsewhere, is neither a file nor a directory. Java reports a
+    // junction as a directory and as `isOther`, never as a symlink. Java does not report what Git Bash's mkfifo
+    // makes as a pipe.
+    val other = plugin(root, "other")
+    val entry = other.resolve("hooks/entry")
+    val making =
+      if scala.util.Properties.isWin then Seq("cmd", "/c", "mklink", "/J", entry.toString, workspace.toString)
+      else Seq("mkfifo", entry.toString)
     val made =
-      try ProcessBuilder("mkfifo", pipe.toString).inheritIO().start().waitFor() == 0
+      try ProcessBuilder(making*).inheritIO().start().waitFor() == 0
       catch case _: java.io.IOException => false
-    assume(made, "mkfifo is not available")
-    val pipeRefusal = resolved(Vector(piped.toString), workspace).swap.getOrElse("accepted")
-    assert(pipeRefusal.contains("junction, device or pipe") && pipeRefusal.contains("hooks/pipe"), pipeRefusal)
+    assume(made, s"${making.head} is not available")
+    val otherRefusal = resolved(Vector(other.toString), workspace).swap.getOrElse("accepted")
+    assert(
+      otherRefusal.contains("junction, device or pipe") && otherRefusal.contains(Path.of("hooks", "entry").toString),
+      otherRefusal,
+    )
     val band = plugin(root, "status-band")
     val relabel = resolved(Vector(band.toString), workspace, readable = false).swap.getOrElse("accepted")
     assert(relabel.contains("chcon -R -t container_file_t -l s0"), relabel)
@@ -208,18 +220,19 @@ class ClaudePluginsTest extends munit.FunSuite:
     )
 
   test("the mounts: the generated root and drop-in relabeled on an enforcing host, the user's directories never"):
-    val plugins = Vector(Plugin("status-band", Path.of("/h/status-band")))
+    val (band, root, dropIn) =
+      (Path.of("/h/status-band"), Path.of("/run/claude-plugins"), Path.of("/run/50-host-plugins.json"))
+    val plugins = Vector(Plugin("status-band", band))
     assertEquals(
-      mountArgs(Path.of("/run/claude-plugins"), Path.of("/run/50-host-plugins.json"), plugins, selinuxEnforcing = true),
+      mountArgs(root, dropIn, plugins, selinuxEnforcing = true),
       Vector(
-        "--volume=/run/claude-plugins:/etc/claude-code/host-plugins:ro,Z",
-        "--volume=/h/status-band:/etc/claude-code/host-plugins/status-band:ro",
-        "--volume=/run/50-host-plugins.json:/etc/claude-code/managed-settings.d/50-host-plugins.json:ro,Z",
+        s"--volume=$root:/etc/claude-code/host-plugins:ro,Z",
+        s"--volume=$band:/etc/claude-code/host-plugins/status-band:ro",
+        s"--volume=$dropIn:/etc/claude-code/managed-settings.d/50-host-plugins.json:ro,Z",
       ),
     )
     assertEquals(
-      mountArgs(Path.of("/run/claude-plugins"), Path.of("/run/50-host-plugins.json"), plugins, selinuxEnforcing = false)
-        .map(_.split(':').last),
+      mountArgs(root, dropIn, plugins, selinuxEnforcing = false).map(_.split(':').last),
       Vector("ro", "ro", "ro"),
     )
     assertEquals(mountArgs(Path.of("/run/x"), Path.of("/run/y"), Vector.empty, selinuxEnforcing = true), Vector.empty)

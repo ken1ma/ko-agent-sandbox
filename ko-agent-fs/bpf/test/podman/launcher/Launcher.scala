@@ -776,7 +776,7 @@ object Launcher:
       def refusals(): Unit =
         step("the refusals beside a live session of the other backend or socket setting")
         // On Windows, `git worktree add` writes an absolute `C:/...` pointer, which the guard refuses to
-        // serve (doc/TODO.md, "Deferred — a linked worktree's absolute pointer on Windows"). Also, a
+        // serve (doc/TODO-win.md, "Deferred — a linked worktree's absolute pointer on Windows"). Also, a
         // directory the share serves to a live session cannot be renamed: the host answers with a sharing
         // violation.
         val worktrees = platform == Platform.Mac

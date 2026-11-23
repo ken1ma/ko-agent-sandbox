@@ -12,7 +12,9 @@ import scala.jdk.CollectionConverters.*
 import scala.util.chaining.*
 import RunOnHostPrereqs.Program
 
-class RunOnHostSandboxTest extends munit.FunSuite:
+class RunOnHostSandboxTest extends UnixHostSuite:
+
+  def unixHostClue = "--run-on-host runs on macOS alone, and the tests run POSIX shells and read Unix ids"
 
   /** An assembly for an environment test, with paths that nothing reads and no mill derivation. */
   private def assembledFor(prereqs: RunOnHostPrereqs.CommandPrereqs): Assembled =

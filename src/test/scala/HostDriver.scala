@@ -125,6 +125,30 @@ object HostDriver:
     if record then transcript.record(output.text)
     output
 
+  /** A host command's process builder, for a caller that starts the process itself. On Windows, the child finds
+    * Windows OpenSSH first on PATH, as under `run`. */
+  def hostProcess(command: Seq[String]): ProcessBuilder = preferringWindowsOpenSsh(ProcessBuilder(command*))
+
+  private def preferringWindowsOpenSsh(builder: ProcessBuilder): ProcessBuilder =
+    if scala.util.Properties.isWin then windowsOpenSsh.foreach(preferOnPath(builder.environment, _))
+    builder
+
+  /** Windows OpenSSH's directory, when it holds `ssh.exe`. A driver's `podman machine ssh` must find that `ssh` first:
+    * Git's MSYS `ssh` writes the host keys meant for `NUL` into a file `NUL` in the driver's working directory
+    * (doc/design-win.md, "Every process the launcher starts finds Windows OpenSSH first"). This file depends on the
+    * JDK alone, so it copies HostCommands.hostProcess rather than calling it. */
+  private lazy val windowsOpenSsh: Option[Path] =
+    Option(System.getenv("SystemRoot")).map(Path.of(_, "System32", "OpenSSH"))
+      .filter(directory => Files.isExecutable(directory / "ssh.exe"))
+
+  /** Puts `directory` first on the child's Windows PATH, under the name the PATH already has: the map compares names
+    * with case, so a put under another spelling would add a second PATH (HostCommands.preferOnPath). */
+  private def preferOnPath(environment: java.util.Map[String, String], directory: Path): Unit =
+    val names = environment.keySet.asScala.filter(_.equalsIgnoreCase("PATH")).toVector
+    val inherited = names.headOption.map(environment.get).filter(_.nonEmpty)
+    names.foreach(environment.remove)
+    environment.put(names.headOption.getOrElse("Path"), inherited.fold(directory.toString)(path => s"$directory;$path"))
+
   /** A command on the host, as `host` runs it, for a caller that keeps no transcript. With `discardStderr`, the
     * output is stdout alone: a JVM-based tool's warnings go to stderr. */
   def run(command: Seq[String], cwd: Path = workingDir, inheritStdin: Boolean = false,
@@ -134,6 +158,8 @@ object HostDriver:
     if discardStderr then builder.redirectError(Redirect.DISCARD) else builder.redirectErrorStream(true)
     if !inheritEnvironment then builder.environment.clear()
     environment.foreach(builder.environment.put(_, _))
+    // After the environment is set, so that a cleared or given PATH still gets OpenSSH first.
+    preferringWindowsOpenSsh(builder)
     if inheritStdin then builder.redirectInput(Redirect.INHERIT)
     // With a timeout, the output goes to a file: a pipe's reader would block past the deadline.
     val captured = timeoutSeconds.map(_ => Files.createTempFile("host-driver", ".out"))

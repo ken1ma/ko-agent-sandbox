@@ -500,7 +500,7 @@ class EgressRulesTest extends munit.FunSuite:
       Files.writeString(logDir.resolve("proxy-20261003-120000-cccccccc.log"), "old")
       run("run-elsewhere", "proxy.log")
       assertEquals(
-        retainedProxyLogs(logDir).map(file => logDir.relativize(file).toString),
+        retainedProxyLogs(logDir).map(file => logDir.relativize(file).toString.replace('\\', '/')),
         Vector(
           "run-20261004T120000Z-aaaaaaaa/proxy.log",
           "run-20261004T120000Z-aaaaaaaa/proxy-r1-2.log",

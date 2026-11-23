@@ -7,7 +7,9 @@ import AgentSandboxLauncher.Reader
 import RunOnHostProvisioning.*
 import RunOnHostPrereqs.Program
 
-class RunOnHostProvisioningTest extends munit.FunSuite:
+class RunOnHostProvisioningTest extends UnixHostSuite:
+
+  def unixHostClue = "--run-on-host runs on macOS alone, and the fixtures are POSIX files"
 
   private def executable(path: Path): Path =
     Files.createDirectories(path.getParent)
