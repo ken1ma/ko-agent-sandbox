@@ -156,8 +156,8 @@ device codes. README's "Sign-in" section describes the paste-back path.
     installs the lock's versions without resolving (SECURITY.md, "The supply chain").
   - The route is pi's own, the managed install of https://pi.dev/install.sh, less its bypass of
     the gate. The lock makes that bypass unnecessary.
-- Smoke-test `HOME=/tmp/pi-smoke pi --version`, with a throwaway HOME as for the other agents, on
-  both architectures the image builds for.
+- Smoke-test `HOME=$smoke_home pi --version`, in the throwaway HOME the other agents' smoke test
+  uses, on both architectures the image builds for.
   - The 1.3.0 lock names no platform-specific package. The 1.1.0 lock carries esbuild's platform
     binaries as optional packages, `linux-x64` and `linux-arm64` among them, and `npm ci` picks
     one by platform.
