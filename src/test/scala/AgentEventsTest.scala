@@ -245,6 +245,18 @@ class AgentEventsTest extends munit.FunSuite:
     assert(!copilotCalledGithubMcp(run("github-mcp-server", success = false)))
     assert(!copilotCalledGithubMcp(run("other", success = true)))
 
+  test("a copilot run's failed tool calls give their error messages once each, and a success gives none"):
+    // The message of github-mcp-server 1.12's refusal, as copilot 1.0.114 logged it.
+    val refusal = "MCP server 'github-mcp-server': McpError: MCP error -32020: header mismatch: missing " +
+      "Mcp-Param-owner header for parameter \"owner\""
+    val escaped = refusal.replace("\"", "\\\"")
+    def failed(id: String) = copilotEvent(
+      "tool.execution_complete", s""""toolCallId":"$id","success":false,"error":{"message":"$escaped"}""",
+    )
+    val events = parseLines(Vector(failed("m1"), failed("m2"), shellDone("c1")).mkString("\n"))
+    assertEquals(copilotToolErrors(events), Vector(refusal))
+    assertEquals(copilotToolErrors(parseLines(shellDone("c1"))), Vector.empty)
+
   private def opencodeTool(tool: String, state: String) =
     s"""{"type":"tool","tool":"$tool","callID":"call_1","state":$state}"""
 

@@ -230,7 +230,7 @@ object MeasureAgents:
     // (model_not_supported); a general-purpose agent takes the session's.
     val first = turn(work, "copilot", (prompt :+
       "Use the shell to run 'wc -l words.txt'. Then start one general-purpose subagent with your task tool, and " +
-        "have it list the notes directory with its own shell tool. Answer in one line with the line count and the " +
+        "have it run 'ls notes' with its own bash tool, not glob. Answer in one line with the line count and the " +
         "file names. Do not modify anything.")*)
     finishFirstTurn(work, "copilot", copilotSucceeded(first), "result")(lacked(copilotLacks(first)))
     start("copilot --resume -p")
@@ -240,11 +240,14 @@ object MeasureAgents:
       Vector("copilot", s"--resume=$id") ++ prompt.drop(1) :+
         "Now run 'cat words.txt' in the shell and answer with its last line. Do not modify anything."
     start("copilot -p with the GitHub MCP server")
+    // The read names no repository. github-mcp-server 1.12 refuses a call with an `owner` or `repo` that arrives
+    // without its Mcp-Param-* header, and copilot 1.0.114 sends none (github/github-mcp-server#3311).
     val mcp = turn(work, "mcp", (prompt :+
-      "Use your GitHub MCP tools, not the shell, to read the title of issue 1 in the repository github/copilot-cli. " +
-        "Answer with the title only. Do not modify anything.")*)
+      "Use your GitHub MCP tools, not the shell, to read the login of the signed-in GitHub user. Answer with the " +
+        "login only. Do not modify anything.")*)
     finish(Option.unless(copilotSucceeded(mcp) && copilotCalledGithubMcp(mcp))(
-      s"no successful turn with a GitHub MCP call; see ${tail(work.resolve("mcp.err"))}",
+      s"no successful turn with a GitHub MCP call; tool errors: ${copilotToolErrors(mcp).mkString("; ")}; see " +
+        tail(work.resolve("mcp.err")),
     ))
     // The generic host, which every plan's client can reach; the plan's own host varies by account.
     upload(work, "api.githubcopilot.com", "https://api.githubcopilot.com/responses",

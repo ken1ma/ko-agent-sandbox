@@ -48,11 +48,12 @@ class MicRelayTest extends munit.FunSuite:
     def statusLines: Vector[String] =
       if Files.exists(status) then Files.readAllLines(status).asScala.toVector else Vector.empty
     def logText: String = if Files.exists(log) then Files.readString(log) else ""
-    /** What a failure shows: the relay's stderr, its log and its status. */
+    /** What a failure shows: the relay's stderr, its request readers' stderr, its log and its status. Both relays
+      * discard a request reader's stderr, which would name why `req` is missing. */
     def diagnostics: String =
-      val err = status.resolveSibling("relay.err")
-      s"\nstderr:\n${if Files.exists(err) then Files.readString(err) else ""}\nlog:\n$logText\nstatus:\n" +
-        statusLines.mkString("\n")
+      def text(file: Path) = if Files.exists(file) then Files.readString(file) else ""
+      s"\nstderr:\n${text(status.resolveSibling("relay.err"))}\nrequest readers' stderr:\n" +
+        s"${text(host.resolve("reader.err"))}\nlog:\n$logText\nstatus:\n${statusLines.mkString("\n")}"
     def count(name: String): Int =
       val file = host.resolve(name)
       if Files.exists(file) then Files.readString(file).trim.toIntOption.getOrElse(0) else 0
@@ -68,16 +69,23 @@ class MicRelayTest extends munit.FunSuite:
       val file = host.resolve(s"exec-$exec.before-ready")
       Option.when(Files.exists(file))(Files.readString(file).trim.toLong)
 
+    /** A timeout shows the diagnostics. */
+    def await(what: => String, seconds: Int = 20)(condition: => Boolean): Unit =
+      val deadline = System.nanoTime() + seconds * 1_000_000_000L
+      while !condition do
+        assert(System.nanoTime() < deadline, s"timed out waiting for $what$diagnostics")
+        Thread.sleep(50)
+
     def awaitStatus(): Vector[String] =
-      awaitTrue(s"the probe's outcome$diagnostics")(MicRelay.probeOutcome(statusLines).nonEmpty)
+      await("the probe's outcome")(MicRelay.probeOutcome(statusLines).nonEmpty)
       statusLines
 
     /** Writes a `start` as the controller writes it: to a reader of `req`, which the relay's exec makes. */
     def request(line: String = "start"): Unit =
       val req = sandbox.resolve("req")
-      awaitTrue("the relay's request FIFO")(Files.exists(req))
+      await("the relay's request FIFO")(Files.exists(req))
       // The reader exec may be between two requests, so this method retries, as the controller does.
-      awaitTrue(s"a reader of req for `$line`"):
+      await(s"a reader of req for `$line`"):
         val writer = ProcessBuilder("sh", "-c", s"""printf '%s\\n' '$line' > "$req"""").start()
         writer.waitFor(2, java.util.concurrent.TimeUnit.SECONDS) && writer.exitValue() == 0 || {
           writer.destroyForcibly()
@@ -88,12 +96,6 @@ class MicRelayTest extends munit.FunSuite:
     def endWriter(): Unit =
       val pid = Files.readString(host.resolve("writer.pid")).trim
       ProcessBuilder("kill", "-KILL", pid).start().waitFor()
-
-  private def awaitTrue(what: => String, seconds: Int = 20)(condition: => Boolean): Unit =
-    val deadline = System.nanoTime() + seconds * 1_000_000_000L
-    while !condition do
-      assert(System.nanoTime() < deadline, s"timed out waiting for $what")
-      Thread.sleep(50)
 
   /** The period indices of a capture, which must be whole periods. */
   private def indices(capture: Array[Byte]): Vector[Int] =
@@ -134,7 +136,7 @@ class MicRelayTest extends munit.FunSuite:
     val sandbox = Files.createDirectory(root.resolve("sandbox"))
     val job = Files.createDirectory(root.resolve("job"))
     if !jobWritable then job.toFile.setWritable(false)
-    // The fake podman runs S here for "exec C sh -c S", against the test's sandbox directory. The
+    // The fake podman runs S here for "exec C sh -c S", against the test's sandbox directory, and keeps S's stderr. The
     // writer's command runs the stand-in below, and an exec -i that leaves the detach keys on fails.
     // The file `stopped` stands for the container stopping.
     executable(
@@ -151,7 +153,7 @@ class MicRelayTest extends munit.FunSuite:
          |fi
          |shift
          |[ "$$1" = ko-sandbox-mic ] && exec "$host/writer"
-         |exec "$$@"
+         |exec "$$@" 2>>"$host/reader.err"
          |""".stripMargin,
     )
     // The writer's stand-in reads its stdin from its start, as podman does whether or not the
@@ -311,7 +313,7 @@ class MicRelayTest extends munit.FunSuite:
     Files.writeString(harness.host.resolve("ready-delay"), "0.6")
     val requestedAt = harness.latestPeriod
     harness.request()
-    awaitTrue("forwarded audio")(harness.capture(1).length >= PeriodBytes * 60)
+    harness.await("forwarded audio")(harness.capture(1).length >= PeriodBytes * 60)
     assertEquals(harness.beforeReady(1), Some(0L), "audio reached the exec before its ready")
     val first = indices(harness.capture(1))
     assert(consecutive(first), s"a gap or repeat: ${first.take(80)}${harness.diagnostics}")
@@ -328,7 +330,7 @@ class MicRelayTest extends munit.FunSuite:
     Thread.sleep(1500)
     val secondAt = harness.latestPeriod
     harness.request()
-    awaitTrue("the second request's audio")(harness.capture(2).length >= PeriodBytes * 20)
+    harness.await("the second request's audio")(harness.capture(2).length >= PeriodBytes * 20)
     val second = indices(harness.capture(2))
     assert(consecutive(second), s"a gap or repeat: ${second.take(80)}${harness.diagnostics}")
     assert(
@@ -344,14 +346,14 @@ class MicRelayTest extends munit.FunSuite:
     harness.awaitStatus()
     Files.writeString(harness.host.resolve("stale"), "")
     harness.request()
-    awaitTrue("the stale exec")(harness.count("execs") == 1)
+    harness.await("the stale exec")(harness.count("execs") == 1)
     Thread.sleep(500)
     assertEquals(harness.capture(1).length, 0)
     harness.request("junk")
-    awaitTrue("the refusal in the log")(harness.logText.contains("refused a request other than start"))
+    harness.await("the refusal in the log")(harness.logText.contains("refused a request other than start"))
     Files.delete(harness.host.resolve("stale"))
     harness.request()
-    awaitTrue("the next request's audio")(harness.capture(2).length >= PeriodBytes * 10)
+    harness.await("the next request's audio")(harness.capture(2).length >= PeriodBytes * 10)
     assert(consecutive(indices(harness.capture(2))))
 
   bothRelays(
@@ -359,10 +361,10 @@ class MicRelayTest extends munit.FunSuite:
     "stalling",
   ): harness =>
     assertEquals(harness.awaitStatus().last, "recording stalling")
-    awaitTrue("the stall in the log", seconds = 15)(harness.logText.contains("delivered no audio for 5s"))
+    harness.await("the stall in the log", seconds = 15)(harness.logText.contains("delivered no audio for 5s"))
     harness.request()
-    awaitTrue("a second start")(harness.count("starts-stalling") == 2)
-    awaitTrue("the restarted recorder's audio")(harness.capture(1).length >= PeriodBytes * 10)
+    harness.await("a second start")(harness.count("starts-stalling") == 2)
+    harness.await("the restarted recorder's audio")(harness.capture(1).length >= PeriodBytes * 10)
 
   bothRelays(
     "the relay ends when the container stops, its log naming the recorder and the first sound",
@@ -370,11 +372,11 @@ class MicRelayTest extends munit.FunSuite:
   ): harness =>
     harness.awaitStatus()
     harness.request()
-    awaitTrue("forwarded audio")(harness.capture(1).length > 0)
+    harness.await("forwarded audio")(harness.capture(1).length > 0)
     // The forwarding ends with the container's exec, and the relay finds the container stopped.
     Files.writeString(harness.host.resolve("stopped"), "")
     harness.endWriter()
-    awaitTrue("the relay's end")(!harness.alive())
+    harness.await("the relay's end")(!harness.alive())
     assert(harness.logText.contains("recording with good"), harness.logText)
     // The indexed periods begin with a period of zeros.
     assert(harness.logText.contains(MicRelay.firstSoundLine(PeriodBytes)), harness.logText)
@@ -392,11 +394,11 @@ class MicRelayTest extends munit.FunSuite:
     val failure = harness.relay match
       case Relay.Posix   => "delivered no audio for 5s"
       case Relay.Windows => "the writer did not answer within 10s"
-    awaitTrue(s"`$failure` in the log", seconds = 20)(harness.logText.contains(failure))
+    harness.await(s"`$failure` in the log", seconds = 20)(harness.logText.contains(failure))
     assertEquals(harness.capture(1).length, 0, "audio reached a writer that never answered")
     Files.writeString(harness.host.resolve("ready-delay"), "0")
     harness.request()
-    awaitTrue("the next request's audio")(harness.capture(2).length >= PeriodBytes * 10)
+    harness.await("the next request's audio")(harness.capture(2).length >= PeriodBytes * 10)
     assert(consecutive(indices(harness.capture(2))))
 
   bothRelays(
@@ -405,15 +407,15 @@ class MicRelayTest extends munit.FunSuite:
   ): harness =>
     harness.awaitStatus()
     harness.request()
-    awaitTrue("forwarded audio")(harness.capture(1).length >= PeriodBytes * 10)
+    harness.await("forwarded audio")(harness.capture(1).length >= PeriodBytes * 10)
     val writer = Files.readString(harness.host.resolve("writer.pid")).trim
     ProcessBuilder("kill", "-STOP", writer).start().waitFor()
-    awaitTrue("the stall in the log", seconds = 20)(harness.logText.contains("delivered no audio for 5s"))
+    harness.await("the stall in the log", seconds = 20)(harness.logText.contains("delivered no audio for 5s"))
     // The writer reads again, and a TERM that the stopped writer holds pending ends it now.
     ProcessBuilder("kill", "-CONT", writer).start().waitFor()
     harness.request()
-    awaitTrue("a second start")(harness.count("starts-good") == 2)
-    awaitTrue("the next request's audio")(harness.capture(2).length >= PeriodBytes * 10)
+    harness.await("a second start")(harness.count("starts-good") == 2)
+    harness.await("the next request's audio")(harness.capture(2).length >= PeriodBytes * 10)
     assert(consecutive(indices(harness.capture(2))))
 
   bothRelays(
@@ -426,7 +428,7 @@ class MicRelayTest extends munit.FunSuite:
     )
     // The periods of zeros, then the indexed periods, whose first is zeros too.
     val firstSound = MicRelay.firstSoundLine((LateZeroPeriods + 1) * PeriodBytes)
-    awaitTrue("the first sound in the log")(harness.logText.contains(firstSound))
+    harness.await("the first sound in the log")(harness.logText.contains(firstSound))
 
   test("a relay directory the POSIX relay cannot write fails the probe, naming the directory"):
     run(Relay.Posix, Vector("good"), jobWritable = false): harness =>

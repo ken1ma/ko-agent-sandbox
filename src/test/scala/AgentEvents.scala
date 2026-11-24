@@ -30,6 +30,7 @@ object AgentEvents:
     def is(key: String, value: String): Boolean = text(key).contains(value)
 
   private val True = Json.Bool(true)
+  private val False = Json.Bool(false)
   private val Zero = Json.Num("0")
 
   /** What a first turn lacks of its three parts, each named with the agent's word for its shell tool. */
@@ -206,6 +207,11 @@ object AgentEvents:
 
   def copilotSession(run: Vector[Json]): Option[String] =
     run.find(_.is("type", "result")).flatMap(_.text("sessionId"))
+
+  /** The distinct error messages of the tool calls that failed, which say why a mode found no successful call. */
+  def copilotToolErrors(run: Vector[Json]): Vector[String] =
+    run.filter(_.is("type", "tool.execution_complete")).flatMap(_.at("data"))
+      .filter(_.at("success").contains(False)).flatMap(_.text("error", "message")).distinct
 
   /** Whether a call to the built-in GitHub MCP server succeeded. The server's name is on the call's start event
     * alone. */
