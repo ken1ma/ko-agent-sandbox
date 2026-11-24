@@ -2,6 +2,7 @@ package koreview
 
 import io.circe.Json
 import io.circe.syntax.*
+import java.nio.charset.StandardCharsets.ISO_8859_1
 import java.nio.file.{Files, Path}
 import scala.jdk.CollectionConverters.*
 import HelperFixture.*
@@ -218,24 +219,36 @@ abstract class ReviewCycleTests extends HelperFixture:
     assertNotEquals(git("rev-parse", "HEAD").trim, head)
     assertEquals(helper("check-approval", output.str("reviewId")).str("effectiveStatus"), "APPROVED")
 
+  // The helper starts the reviewer through JoinGroup, a JVM, and the timeout runs from that start. With the fake's own
+  // JVM out of the timeout (FAKE_REVIEWER_BEFORE_JVM), these cases pass at 3s with 4 CPUs twice oversubscribed
+  // (measured 2026-11-24).
+  private val timeoutPastJoinGroup = Seq("--timeout", "3")
+
   test("a thread named before an interrupted or truncated turn is kept"):
     val started = threadStartedLine("kept")
+    // The script prints the thread line before it starts the fake's JVM, which the timeout can kill before it prints.
+    // The timeout case resumes no thread: the retry would inherit the timeout, and start the fake's JVM within it.
+    val printedFirst = Map("FAKE_REVIEWER_BEFORE_JVM" -> s"printf '%s' '$started'")
     val cases = Seq(
-      ("timeout", step("result" -> Approved, "sleep" -> 5.asJson), Seq("--timeout", "1"), "TURN_INTERRUPTED"),
-      ("truncated", step("raw_stdout" -> (started + """{"type": "turn.sta""").asJson), Nil, "INVALID_RESULT"),
-      ("failed after start", step("raw_stdout" -> started.asJson, "exit" -> 1.asJson, "stderr" -> "boom".asJson), Nil,
-        "REVIEWER_FAILED"),
+      ("timeout", step("emit_thread_started" -> false.asJson, "sleep" -> 5.asJson), printedFirst,
+        timeoutPastJoinGroup, "TURN_INTERRUPTED"),
+      ("truncated", step("raw_stdout" -> (started + """{"type": "turn.sta""").asJson), Map.empty, Nil,
+        "INVALID_RESULT"),
+      ("failed after start", step("raw_stdout" -> started.asJson, "exit" -> 1.asJson, "stderr" -> "boom".asJson),
+        Map.empty, Nil, "REVIEWER_FAILED"),
     )
-    for (label, failing, options, code) <- cases do
+    for (label, failing, variables, options, code) <- cases do
       plan(failing, step("result" -> Approved))
+      environment = variables
       val failed = helperFails((Seq("start", reviewer) ++ options ++ Seq("--message-file", message()))*)
+      environment = Map.empty
       assertEquals(failed.obj("error").str("code"), code, s"$label: $failed")
       val review = helper("show", failed.str("reviewId"))
-      assertEquals(review.str("status"), "NEW")
-      assertEquals(review.str("threadId"), if label == "timeout" then "thread-1" else "kept", label)
-      val retried = helper("continue", review.str("reviewId"), "--message-file", message())
-      assertEquals(retried.str("status"), "APPROVED")
-      assertResumes(argv(calls().last), review.str("threadId"))
+      assertEquals((review.str("status"), review.str("threadId")), ("NEW", "kept"), label)
+      if label != "timeout" then
+        val retried = helper("continue", review.str("reviewId"), "--message-file", message())
+        assertEquals(retried.str("status"), "APPROVED")
+        assertResumes(argv(calls().last), review.str("threadId"))
       Files.writeString(log, "")
 
   // An approved exit and a failed exit each leave a background process behind. The process's marker file must still
@@ -267,21 +280,37 @@ abstract class ReviewCycleTests extends HelperFixture:
 
   test("an escaped process holding the reviewer's stdout ends with the turn"):
     assume(Posix.isLinux, "the helper adopts orphans through prctl, on Linux")
-    // The turn ends with the reviewer's exit, or with the timeout, not with the end of its output. The escaped holder
-    // is killed then, before its sleep ends, so it never writes its marker.
+    // The turn ends with the reviewer's exit, or with the timeout, not with the end of its output. The script starts
+    // the holder before it starts the fake's JVM, which the timeout can kill first. Every process that inherits
+    // HOLDER_ID, the holder's processes included, must be gone once the helper returns, before the holder's sleep ends.
     val cases = Seq(
       ("approved", step("result" -> Approved), Nil, 0, "APPROVED"),
-      ("timeout", step("result" -> Approved, "sleep" -> 5.asJson), Seq("--timeout", "1"), 1, "TURN_INTERRUPTED"),
+      ("timeout", step("result" -> Approved, "sleep" -> 5.asJson), timeoutPastJoinGroup, 1, "TURN_INTERRUPTED"),
     )
-    val markers = for (label, behavior, options, status, expected) <- cases yield
-      val marker = root.resolve(s"holding-stdout-$label")
-      plan(behavior.set("background" -> Json.obj("sleep" -> 3.asJson, "marker" -> marker.toString.asJson,
-        "escaped" -> true.asJson, "holds_stdout" -> true.asJson)))
+    for (label, behavior, options, status, expected) <- cases do
+      val started = root.resolve(s"holder-started-$label")
+      val holderId = java.util.UUID.randomUUID().toString
+      plan(behavior)
+      environment = Map(
+        "HOLDER_ID" -> holderId,
+        "HOLDER_STARTED" -> started.toString,
+        "FAKE_REVIEWER_BEFORE_JVM" ->
+          """setsid sh -c '(touch "$HOLDER_STARTED"; sleep 10; touch "$HOLDER_STARTED.ran") & wait' </dev/null &""",
+      )
       val output = helperIn(repo, status, (Seq("start", reviewer) ++ options ++ Seq("--message-file", message()))*)
       assertEquals(if status == 0 then output.str("status") else output.obj("error").str("code"), expected, label)
-      marker
-    Thread.sleep(4000)
-    assertEquals(markers.filter(Files.exists(_)).map(_.getFileName.toString), Nil)
+      assert(Files.exists(started), s"$label: the holder never started")
+      assert(!Files.exists(Path.of(s"$started.ran")), s"$label: the holder outlived the turn")
+      assertEquals(processesInheriting("HOLDER_ID", holderId), Nil, label)
+
+  /** The live processes whose environment holds `name=value`, for an ASCII value: the environment's bytes are read as
+    * ISO-8859-1, which garbles any other text. */
+  private def processesInheriting(name: String, value: String): Seq[Long] =
+    val variable = s"$name=$value"
+    ProcessHandle.allProcesses().iterator().asScala.map(_.pid).filter: pid =>
+      try Files.readString(Path.of(s"/proc/$pid/environ"), ISO_8859_1).split('\u0000').contains(variable)
+      catch case _: java.io.IOException => false // the process is gone, or not ours
+    .toSeq
 
   test("the model and the effort reach every reviewer command"):
     plan(step("result" -> Changes), step("result" -> Approved))

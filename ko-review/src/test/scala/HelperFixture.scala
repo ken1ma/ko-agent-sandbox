@@ -146,7 +146,8 @@ abstract class HelperFixture extends UnixHostSuite:
     else s"""{"type": "system", "subtype": "init", "session_id": "$threadId"}\n"""
 
   /** Installs `bin/codex` and `bin/claude`, which answer the version, sign-in and catalog commands themselves and run
-    * a turn as FakeReviewer. */
+    * a turn as FakeReviewer. A turn first evaluates the shell command in FAKE_REVIEWER_BEFORE_JVM, for output or a
+    * process that must exist before a timeout can kill the reviewer: the JVM can take seconds to start. */
   private def installFakeReviewer(bin: Path): Unit =
     val catalog = """{"models": [
       |  {"slug": "gpt-second", "visibility": "list", "priority": 3, "description": "Second model.",
@@ -179,6 +180,7 @@ abstract class HelperFixture extends UnixHostSuite:
          |JSON
          |    exit 0 ;;
          |esac
+         |[ -z "$$FAKE_REVIEWER_BEFORE_JVM" ] || eval "$$FAKE_REVIEWER_BEFORE_JVM"
          |exec $java koreview.FakeReviewer "$$name" "$$@"
          |""".stripMargin
     for name <- Seq("codex", "claude") do

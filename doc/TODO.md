@@ -681,11 +681,15 @@ unreachable from a session. If such a site is ever needed, this design keeps the
   elsewhere.
   - Any resolver keeps the all-answers-public check for origins: an internal mirror for a public
     name is a refusal naming the non-public answer, never a private address allowed.
-- [ ] Run `ProxyContainerTest`'s upstream case on native Linux and in the macOS and Windows
-  podman machines, and record whether each can route to a private endpoint.
+- [ ] Run `ProxyContainerTest`'s upstream case on native Linux and in the macOS podman machine,
+  and record whether each can route to a private endpoint.
+  - The Windows podman machine can (WSL2 6.18.58.1, podman 6.2.0; 2026-11-24). A container
+    resolves `host.containers.internal` to 172.20.96.1, and the upstream case passes through it,
+    with the firewall rule of `egress-proxy.md`, "Through an upstream proxy".
   - A platform that cannot must fail the launch, never bypass the upstream proxy.
-  - The same run checks whether an address the host has on its network reaches a loopback helper
-    such as cntlm under rootless podman.
+- [ ] On native Linux and in the macOS and Windows podman machines, check whether an address the
+  host has on its network reaches a loopback helper such as cntlm under rootless podman.
+  - `ProxyContainerTest`'s upstream proxy binds on every interface, so its pass leaves this open.
 
 ## Deferred — `--explain-request`, the ordered rules traced for one request
 

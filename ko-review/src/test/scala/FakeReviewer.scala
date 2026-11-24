@@ -14,7 +14,7 @@ import java.nio.file.{Files, Path, StandardOpenOption}
   * - `result`: the final message, an object or a string; `thread_id`: the thread to name;
   * - `touch`: a file to append to, `git`: git commands to run, as the user on the host would during the turn;
   * - `background`: a process left behind that writes `marker` after `sleep` seconds, in the reviewer's group or,
-  *   `escaped`, in a session of its own, holding the reviewer's stdout when `holds_stdout`;
+  *   `escaped`, in a session of its own;
   * - `raw_stdout`: printed instead of the events; `emit_thread_started`, `sleep`, `events`, `claude_result`, `stderr`
   *   and `exit` shape the run.
   */
@@ -69,10 +69,7 @@ object FakeReviewer:
       ProcessBuilder(command*)
         .redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null")))
         .redirectError(ProcessBuilder.Redirect.DISCARD)
-        .redirectOutput(
-          if background("holds_stdout").flatMap(_.asBoolean).contains(true) then ProcessBuilder.Redirect.INHERIT
-          else ProcessBuilder.Redirect.DISCARD,
-        )
+        .redirectOutput(ProcessBuilder.Redirect.DISCARD)
         .start()
     text("raw_stdout") match
       case Some(raw) =>
