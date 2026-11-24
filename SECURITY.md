@@ -333,12 +333,9 @@ says. The open cases:
 does not own. Unannounced changes to host configuration or metadata can invalidate the user's
 understanding of what the sandbox can access. These cases need a host change or an explicit notice:
 
-- the podman **machine's** `/etc/fuse.conf` gains `user_allow_other` only after you consent.
-  A launch under the FUSE backend first shows the change as a diff of the actual file, plus the
-  exact script.
-  - The launcher saves the original to `/etc/fuse.conf.ko-agent-sandbox.orig` first.
-  - If you decline, the launch is refused, and the launcher prints the script for you to run
-    yourself.
+- the podman **machine's** `/etc/fuse.conf` gains `user_allow_other` only after you consent to the
+  shown diff
+  ([architecture.md](ko-agent-fs/fuse/doc/architecture.md#user_allow_other-in-the-machines-etcfuseconf)).
 - a native Linux **host** is never even prompted for sudo. The launcher only hands you the command.
 - the **machine** is started when stopped, but never created, resized or upgraded: sizing and OS
   updates are yours.

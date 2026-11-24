@@ -278,8 +278,8 @@ The other two modes:
 
 `allow_other` from an unprivileged user also needs `user_allow_other` in `/etc/fuse.conf`, which
 stock images do not set. The launcher adds it only with the user's consent, never silently:
-`SECURITY.md`, "Silent changes to what you own", has the rule, and `enableUserAllowOther` runs it
-when a launch's checks find the line missing.
+`SECURITY.md`, "Silent changes to what you own", has the rule, and
+[a subsection below](#user_allow_other-in-the-machines-etcfuseconf) says when the launcher asks.
 
 
 ## Build and install
@@ -353,6 +353,31 @@ The daemon needs no privileges to mount:
 - This is also why the FUSE backend's daemon is installed beside podman, not run as a FUSE sidecar
   container. Under rootless podman, a mount made *inside* a container does not propagate up to where
   the sandbox's bind could see it.
+
+### `user_allow_other` in the machine's `/etc/fuse.conf`
+
+The mount needs this line ("Who may reach the mount"). On macOS and Windows, the launcher adds it
+to the podman machine's file only after you answer `y` or `yes`, upper- or lowercase:
+
+- A live FUSE launch (`--workspace=fuse`) and `--self-test` ask when their checks find the line
+  missing. Both show the change as a diff of the actual file, plus the exact script.
+  - `--workspace=read-only,fuse` mounts nothing through the FUSE backend and never asks.
+- Any other answer, an empty one included, refuses the launch or fails `--self-test`'s share check.
+  The refusal prints the script for you to run via `podman machine ssh`.
+- When the line is missing, the launch refuses without asking if there is no terminal or
+  `--session-start=immediate` is set.
+- `--build` never asks. It runs the installed `ko-agent-fs-fuse --self-test` once the line is
+  present, and otherwise skips it with a note.
+  `--update` does not install the FUSE backend.
+- To undo, remove the `user_allow_other` line. The script saves the original to
+  `/etc/fuse.conf.ko-agent-sandbox.orig` before the first addition only, so restoring that copy
+  also discards any later edits.
+- The line persists until the machine is recreated (`podman machine rm` and `init`), which asks
+  again.
+
+On native Linux the file is the host's own: when the line is missing, a live FUSE launch and
+`--self-test` refuse, and print the `sudo` command for you to run
+(`KoAgentFs.NativeLinuxUserAllowOtherRefusal`).
 
 
 ## What stays out of the audited core

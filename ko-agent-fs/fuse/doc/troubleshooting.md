@@ -102,6 +102,8 @@ is inside it. Read the logs on the host, then quit the session and launch again:
 - `not applied` after the `user_allow_other` diff — run the printed script via
   `podman machine ssh`, or launch again from a terminal and answer `y`. A recreated machine asks
   again. On native Linux, run the `sudo` command that the refusal names.
+  [architecture.md](architecture.md#user_allow_other-in-the-machines-etcfuseconf) says when the
+  launcher asks.
 - `ko-agent-fs-fuse self-test failed` — read the message that comes with it.
   - A setup failure can mean a missing `fusermount3`.
   - To reproduce: `podman machine ssh .local/share/ko-agent-sandbox/ko-agent-fs-fuse --self-test`.

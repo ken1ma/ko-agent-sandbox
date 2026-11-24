@@ -69,6 +69,9 @@ each answer with the expected one (`../../src/main/scala/BpfSelfTest.scala`):
 Once the suites pass, it also checks whether host writes reach the session through the real share:
 
 - The check creates a scratch directory in the workspace (`SelfTestShare.scala`).
+- The check mounts that directory through the FUSE backend, so it may ask to add
+  `user_allow_other`
+  ([architecture.md](../fuse/doc/architecture.md#user_allow_other-in-the-machines-etcfuseconf)).
 - It removes the directory on success, and reports the kept path on failure.
 - The container-only suites cannot test that direction.
 
