@@ -27,6 +27,26 @@ Two routes give the container's git the repository:
   - The route opens when the image's git is 2.48 or later, and that check goes with the upgrade.
     Until then only a hand-written relative pointer works, and `git worktree repair` rewrites such
     a pointer absolute.
+  - [ ] Option, to open the route before a Debian base whose git is 2.48 or later: build forky's
+    git source package on trixie in a build stage, and install the resulting `git` and `git-man`
+    packages.
+    - The stage adds forky as a `deb-src` entry only, so apt can install no forky binary.
+      `apt-get source git/forky` checks the source against the archive's signed index, so the
+      Containerfile names no version and no checksum.
+    - A version in forky was uploaded to unstable by a Debian developer and waited there some
+      days. A release-critical bug that forky's version lacks holds a version back, unless the
+      release team forces it (Debian Developer's Reference, "Updates from unstable").
+    - The source of git `1:2.53.0-1`, forky's version on 2026-11-25, declares no build dependency
+      newer than trixie's `Packages` index has that day:
+      https://deb.debian.org/debian/pool/main/g/git/git_2.53.0-1.dsc
+    - Not yet run: the build itself.
+    - Each image rebuild takes the version forky has that day. A security release needs no edit
+      but arrives only after it migrates, and a new minor version arrives unannounced.
+    - Upstream git plans to make Rust mandatory in 3.0, and trixie's rustc is 1.85
+      (`Documentation/BreakingChanges.adoc` in git 2.53.0). A forky source that build-depends on
+      a package newer than trixie's stops this build.
+    - Installing forky's binary by apt pinning is excluded: forky's git declares
+      `libc6 (>= 2.42)` and trixie has 2.41, so apt would replace the image's C library.
   - A hand-written pointer gives the session read-only git (`TODO.md`, "The workspace root mounted
     at its own path", Recorded Windows results).
 - [ ] For an absolute pointer, bind a launcher-written pointer file naming the `/mnt/<drive>`
