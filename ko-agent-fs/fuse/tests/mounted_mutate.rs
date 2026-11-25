@@ -1395,7 +1395,7 @@ fn a_gitdir_keeps_the_listed_names_it_holds() {
     );
     // A later `apps/web -> hooks/../objects/x` would reach the gitdir's state through it.
     denied(
-        "link to a protected Git directory",
+        "link to a protected gitdir",
         symlink("../.git/hooks", mount.at("apps/hooks")),
     );
     denied(

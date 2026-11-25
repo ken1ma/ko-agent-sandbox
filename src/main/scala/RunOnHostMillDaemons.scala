@@ -304,9 +304,9 @@ object RunOnHostMillDaemons:
 
   /** A file read and a file deletion under the profile: what a build could do to the file, and no more.
     *
-    *   - A link may be planted under `out/` after rendezvousIsOwn, by the bootstrap script or by build code in one of
-    *     the user's daemons that the start waited on. Neither operation then reaches past the build's own writable
-    *     roots.
+    *   - A link may be planted under `out/` after millDaemonDirIsOwn, by the bootstrap script or by build code in one
+    *     of the user's daemons that the start waited on. Neither operation then reaches past the build's own
+    *     writable roots.
     *   - The read gives the file's text when the path names a file, and None otherwise. */
   case class Confined(read: Path => Option[String], delete: Path => Boolean)
 
@@ -344,7 +344,7 @@ object RunOnHostMillDaemons:
           else s"could not discard $named, which names $foreign, outside $coursierV1"
 
   /**
-   * Checks that the command's rendezvous directory belongs to the command's own build directory: `out`,
+   * Checks that the command's `out/mill-daemon` belongs to the command's own build directory: `out`,
    * `out/mill-daemon` and every entry directly in it are neither links nor files with a second name.
    *
    *   - Mill's launcher acts on that directory as it finds it. The launcher removes a `processId` whose fingerprint
@@ -354,7 +354,7 @@ object RunOnHostMillDaemons:
    *   - A second name for another directory's `processId` would do the same through one inode.
    *   - The check runs before every mill command, under the build lock.
    */
-  def rendezvousIsOwn(buildDirectory: Path): Either[String, Unit] =
+  def millDaemonDirIsOwn(buildDirectory: Path): Either[String, Unit] =
     val out = buildDirectory.resolve("out")
     val daemonDir = out.resolve("mill-daemon")
     val entries =

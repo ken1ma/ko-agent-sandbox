@@ -309,16 +309,16 @@ object HTTPHelper:
       case _ => headers
 
   /** The headers that this hop reads for itself: the framing pair, and the Host that must match the authorized
-    * CONNECT host. A Connection header's nomination leaves such a header in the forwarded head (endToEnd) where
+    * CONNECT host. A Connection header that lists such a header leaves it in the forwarded head (endToEnd) where
     * this hop forwards the message by it: on a request, all three; on a response, the one that frames its body.
     *
     * - This hop forwards the body in the framing that it read, to the Host that the ruleset checked. The header that
     *   it read therefore describes the next hop's message too, so the forwarded head carries the same header.
     * - Removing it would forward the body without its framing, where the body could read to the origin as a second
     *   request, or the request without the Host that the ruleset checked.
-    * - Elsewhere the nomination removes the header, as RFC 9110 §7.6.1 has it: a response's Host, and a framing
+    * - Elsewhere this hop removes the listed header, as RFC 9110 §7.6.1 has it: a response's Host, and a framing
     *   header on a response without a body (HttpResponseHead.bodyFraming).
-    * - The nomination itself goes no further: endToEnd drops the Connection header, and this hop sends its own. */
+    * - The Connection header itself goes no further: endToEnd drops it, and this hop sends its own. */
   val ConnectionProtectedHeaders: Set[String] = Set("content-length", "transfer-encoding", "host")
 
   object HttpRequestHead:

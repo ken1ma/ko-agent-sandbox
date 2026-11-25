@@ -81,7 +81,7 @@ object SandboxWorkspace:
    *   and the FUSE backend tested on it.
    *
    * A POSIX path with a `:` refuses the launch too. podman reads `:` in a `--volume` value as the
-   * field separator, and the launcher binds the workspace root and its Git directory with that
+   * field separator, and the launcher binds the workspace root and its gitdir with that
    * option. A Windows path has only the drive's `:`, which podman's own client translates.
    */
   def mountPathOf(os: Os, workspaceRoot: Path): Either[String, String] =
@@ -372,7 +372,7 @@ object SandboxWorkspace:
    * launched from is part of a repository.
    *
    * The container has the workspace and nothing above or beside it. Git works there only when the
-   * repository's Git directory is inside the workspace: a `.git` directory, or a pointer file whose
+   * repository's gitdir is inside the workspace: a `.git` directory, or a pointer file whose
    * relative target stays within the workspace. Every other form leaves the workspace root's `.git`
    * naming a path the container does not have. Every git command then fails with `not a git
    * repository`, which an agent reads as breakage. Those forms are:
@@ -392,15 +392,15 @@ object SandboxWorkspace:
    *
    * One resolution (repositoryAt) answers two questions:
    * - whether the host has a repository rooted at a directory. A nested worktree or submodule is
-   *   one, with its Git directory elsewhere;
-   * - whether the container can follow `.git` to that Git directory from a given base.
+   *   one, with its gitdir elsewhere;
+   * - whether the container can follow `.git` to that gitdir from a given base.
    *
    * A `launchFrom` is the nearest directory holding the workspace from which the repository git
    * uses there is reachable. The warning's "that whole tree is then the workspace" is therefore
    * true of the `launchFrom`:
    * - the superproject over a submodule;
    * - the repository root over a subdirectory;
-   * - a directory holding both the workspace and the Git directory that an absolute pointer names,
+   * - a directory holding both the workspace and the gitdir that an absolute pointer names,
    *   as for a linked worktree or a separate gitdir.
    *
    * A form has no `launchFrom` when no directory the launcher accepts as a workspace root lets the
@@ -433,7 +433,7 @@ object SandboxWorkspace:
 
   /**
    * The repository rooted at a directory, as the host has it, and whether the container would
-   * reach its Git directory with `base` as the workspace root it mounts.
+   * reach its gitdir with `base` as the workspace root it mounts.
    *
    * The test checks form and deliberately differs from git's own discovery: the gitdir must exist
    * and hold a `HEAD`, the one entry every gitdir form has. git's `is_git_directory` reads `HEAD`,
@@ -698,7 +698,7 @@ object SandboxWorkspace:
 
   /** The ancestors that host git's search from this directory reaches. A `.git` file that git
     * rejects is a failure there, not a step passed over, so the search and every answer drawn from it
-    * end at that directory (`setup_git_directory_gently_1`). A repository whose Git directory the
+    * end at that directory (`setup_git_directory_gently_1`). A repository whose gitdir the
     * container cannot reach does not stop the search: git works there, and a launch above that
     * repository still holds the workspace. */
   private def searched(workspaceRoot: Path, os: Os): Iterator[Path] =
@@ -739,7 +739,7 @@ object SandboxWorkspace:
        |the work as uncommitted changes and tell the user, whose git runs on the host.""".stripMargin
 
   /**
-   * The main worktree's Git directory, which a launch from a linked worktree binds read-only into
+   * The main worktree's gitdir, which a launch from a linked worktree binds read-only into
    * the container at the path the container resolves the worktree's `.git` pointer to. git there
    * reads the repository: `status`, `log` and `diff` work, and every write to the directory fails on
    * the lock file git cannot create.
@@ -791,15 +791,15 @@ object SandboxWorkspace:
     if step.isAbsolute then mountPathOf(os, from).contains(from.toString)
     else step.getRoot == null && step.normalize.iterator.asScala.takeWhile(_.toString == "..").size <= from.getNameCount
 
-  /** The launch's warning where the main worktree's Git directory is mounted read-only. */
+  /** The launch's warning where the main worktree's gitdir is mounted read-only. */
   def readOnlyGitWarning(bind: GitdirBind, os: Os = currentOs): String =
-    s"git is read-only in this session: the main worktree's Git directory ${pathInline(bind.source, os)} is " +
+    s"git is read-only in this session: the main worktree's gitdir ${pathInline(bind.source, os)} is " +
       "mounted read-only. status, log and diff work; add, commit and switch stay on the host."
 
   /** The same fact in the container's words, for the agent's instructions. */
   def readOnlyGitInstruction(bind: GitdirBind, mountPath: String): String =
     s"""Git is read-only in this session: `$mountPath/.git` names a gitdir under `${bind.target}`, the
-       |main worktree's Git directory, which is mounted read-only. `status`, `log`, `diff` and `blame`
+       |main worktree's gitdir, which is mounted read-only. `status`, `log`, `diff` and `blame`
        |work; `add`, `commit`, `switch` and every other write to that directory fail, while `clean`
        |and a plain `apply`, which write only the working tree, run where the workspace is writable.
        |Do not `git init` or clone in place; leave the work as uncommitted changes and tell the

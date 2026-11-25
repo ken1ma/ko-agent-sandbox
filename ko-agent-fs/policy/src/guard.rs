@@ -1086,7 +1086,7 @@ impl Workspace {
         }
         Err(Refusal {
             reason: format!(
-                "{:?} is itself laid out as a git directory (a bare repository): it holds a \
+                "{:?} is itself laid out as a gitdir (a bare repository): it holds a \
                  valid HEAD, objects/ and refs/",
                 self.root
             ),

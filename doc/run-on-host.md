@@ -418,7 +418,7 @@ operability, since the caller is not interactive. A quoted section name in this 
   - Before Mill 1.1.0, an unset `mill-jvm-version` is refused.
 - **The supervisor ignores a request's `MILL_VERSION`, `DEFAULT_MILL_VERSION`, `MILL_OUTPUT_DIR`
   and `MILL_BSP_OUTPUT_DIR` — confinement.** The supervisor's `MILL_VERSION` names the granted
-  launcher, and the supervisor looks for the daemon's rendezvous under `out/` ("The command's
+  launcher, and the supervisor looks for the daemon's files under `out/mill-daemon` ("The command's
   lifetime and environment").
 - **A redirected `out/mill-daemon` is refused — confinement.** Mill's launcher would act on another
   build directory's daemon through it ("`mill`").

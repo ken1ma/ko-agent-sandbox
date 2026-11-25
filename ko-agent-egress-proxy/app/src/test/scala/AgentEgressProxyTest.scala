@@ -1251,28 +1251,28 @@ class AgentEgressProxyTest extends munit.FunSuite:
     assert(!relayed.contains("X-Server-Hint"), relayed)
     assert(relayed.contains("Vary: A\r\n"), relayed)
 
-  test("a Connection nomination leaves a header this hop reads only where this hop forwards the message by it"):
+  test("a header that Connection lists stays where this hop reads it and forwards the message by it"):
     // Removing the header would forward the body without the framing that the proxy forwards it in, or the request
     // without the Host that the ruleset checked. Without its framing header, the body could read to the origin as a
-    // second request. Elsewhere the nomination removes the header (RFC 9110 §7.6.1).
+    // second request. Elsewhere this hop removes the listed header (RFC 9110 §7.6.1).
     // Each direction lists every protected name, and the spelling is the peer's, so one name is mixed-case.
-    // (nominated name, the request's framing line, the line that the forwarded head keeps)
+    // (listed name, the request's framing line, the line that the forwarded head keeps)
     val requestCases = Vector(
       ("Host", "Content-Length: 4", "Host: github.com"),
       ("content-length", "Content-Length: 4", "Content-Length: 4"),
       ("transfer-encoding", "Transfer-Encoding: chunked", "Transfer-Encoding: chunked"),
     )
     assertEquals(requestCases.map(_._1.toLowerCase).toSet, ConnectionProtectedHeaders)
-    requestCases.foreach: (nominated, framingLine, keptLine) =>
+    requestCases.foreach: (listed, framingLine, keptLine) =>
       val request = head(
-        s"POST /x HTTP/1.1\r\nHost: github.com\r\n$framingLine\r\nConnection: keep-alive, $nominated\r\n\r\n",
+        s"POST /x HTTP/1.1\r\nHost: github.com\r\n$framingLine\r\nConnection: keep-alive, $listed\r\n\r\n",
       )
       authorizeInspectedRequest("github.com", request, whole("POST"))
       val sent = String(request.toOriginBytes, StandardCharsets.ISO_8859_1)
       assert(sent.contains(s"\r\n$keptLine\r\n"), sent)
       assert(!sent.contains("Connection: keep-alive"), sent)
 
-    // (request method, status, nominated name, the nominated field line, whether the client receives it)
+    // (request method, status, listed name, the listed field line, whether the client receives it)
     val responseCases = Vector(
       ("GET", "200 OK", "content-length", "Content-Length: 4", true),
       ("GET", "200 OK", "transfer-encoding", "Transfer-Encoding: chunked", true),
@@ -1282,16 +1282,16 @@ class AgentEgressProxyTest extends munit.FunSuite:
       ("GET", "103 Early Hints", "content-length", "Content-Length: 4", false),
     )
     assertEquals(responseCases.map(_._3.toLowerCase).toSet, ConnectionProtectedHeaders)
-    responseCases.foreach: (method, status, nominated, fieldLine, received) =>
+    responseCases.foreach: (method, status, listed, fieldLine, received) =>
       val response = HttpResponseHead.parse(
-        ascii(s"HTTP/1.1 $status\r\n$fieldLine\r\nConnection: $nominated\r\n\r\n"),
+        ascii(s"HTTP/1.1 $status\r\n$fieldLine\r\nConnection: $listed\r\n\r\n"),
       )
       val relayed = String(response.toClientBytes(response.bodyFraming(method)), StandardCharsets.ISO_8859_1)
       assertEquals(relayed.contains(s"\r\n$fieldLine\r\n"), received, relayed)
-      assert(!relayed.contains(s"Connection: $nominated"), relayed)
+      assert(!relayed.contains(s"Connection: $listed"), relayed)
 
-  test("relayInspected relays a chunked response whose Connection nominates Transfer-Encoding, framed as received"):
-    // On the wire: bugs.openjdk.org and openjdk.org nominate Transfer-Encoding in the Connection header of their
+  test("relayInspected relays a chunked response whose Connection lists Transfer-Encoding, framed as received"):
+    // On the wire: bugs.openjdk.org and openjdk.org list Transfer-Encoding in the Connection header of their
     // chunked responses. Without its Transfer-Encoding, the client would read the chunk markers as payload.
     val (client, clientPeer) = socketPair()
     val (origin, originPeer) = socketPair()
@@ -3229,7 +3229,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
 
   test("an equal count repeated in Content-Length reaches the next hop once, in either form and either direction"):
     // undici 6's fetch sends `36, 36`, and servers repeat the line. At the next hop, llhttp refuses a second line and
-    // undici refuses `36, 36`. The last forms are nominated by Connection, and spelled with a leading zero.
+    // undici refuses `36, 36`. The fourth form is also listed in Connection, and the fifth is spelled with a leading
+    // zero.
     // (the head's Content-Length lines, the one line forwarded)
     val forms = Vector(
       ("Content-Length: 4, 4\r\n", "Content-Length: 4"),
@@ -3248,8 +3249,8 @@ class AgentEgressProxyTest extends munit.FunSuite:
         s"POST /x HTTP/1.1\r\nHost: github.com\r\n$forwarded\r\nConnection: close\r\n\r\n",
       )
 
-      // A HEAD or 304 response's Content-Length frames no body, and a strict client still parses it. There, a
-      // nomination removes it.
+      // A HEAD or 304 response's Content-Length frames no body, and a strict client still parses it. There, this hop
+      // removes it when Connection lists it.
       Vector(("GET", "200 OK", BodyFraming.Length(4)), ("HEAD", "200 OK", BodyFraming.Empty),
         ("GET", "304 Not Modified", BodyFraming.Empty)).foreach: (method, status, framing) =>
         val response = HttpResponseHead.parse(ascii(s"HTTP/1.1 $status\r\n$lines\r\n"))

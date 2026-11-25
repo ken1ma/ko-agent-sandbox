@@ -23,7 +23,7 @@ This file lists remaining work on ko-review, the review plugin that `design.md` 
   - Codex's default mode offers the tool as a stable feature;
   - the tool allows more than three options per question.
 
-  Until both hold, the skill keeps the prose question.
+  Until both hold, the skill keeps writing its questions at the end of its reply.
   - `default_mode_request_user_input` is under development (`design.md` has the measurement).
     Once the feature is stable but still off, the image's Codex defaults enable it.
   - The tool's schema asks for "2-3 mutually exclusive choices" (openai/codex `main`, 2026-10-18).

@@ -282,7 +282,7 @@ credentials another cloud's login produced, and what forwarding costs.
 1. From a Git linked worktree:
 
     1. The launch asks whether to share the main worktree's agent state.
-    1. The session also mounts the main worktree's Git directory, read-only, so that `git` works
+    1. The session also mounts the main worktree's gitdir, read-only, so that `git` works
        there ([SECURITY.md](SECURITY.md#defended), "The host's git executing what the sandbox
        wrote"). The session does so where the container can follow the worktree's `.git` pointer:
        a relative pointer anywhere, and an absolute one on macOS and Linux.

@@ -1282,8 +1282,8 @@ object RunOnHostSandbox:
     *   - The version overrides: the supervisor resolved the version from the build directory alone and granted that
     *     launcher (RunOnHostPrereqs.millVersion, millLauncherVersion). Either override would make the bootstrap select
     *     another launcher. `MILL_VERSION` is the supervisor's own setting for a mill command, and names that launcher.
-    *   - The output-directory overrides (`OutFiles.java`): the daemon's rendezvous, its port candidate and the foreign
-    *     daemons are all looked for under `out/`. A Mill sent elsewhere would be checked nowhere. */
+    *   - The output-directory overrides (`OutFiles.java`): the daemon's `out/mill-daemon`, its port candidate and the
+    *     foreign daemons are all looked for under `out/`. A Mill sent elsewhere would be checked nowhere. */
   val MillOverrides = Set("MILL_VERSION", "DEFAULT_MILL_VERSION", "MILL_OUTPUT_DIR", "MILL_BSP_OUTPUT_DIR")
 
   // sbt's getPreloaded also splits JVM environment options without unquoting them. getPreloaded's first lookup is argv,
@@ -1344,8 +1344,8 @@ object RunOnHostSandbox:
       // ipcsocket extracts its native socket library to sbt.ipcsocket.tmpdir, else $XDG_RUNTIME_DIR, else
       // java.io.tmpdir (org.scalasbt.ipcsocket.NativeLoader). An sbt client's XDG_RUNTIME_DIR is the runner's tmp/,
       // where the client's profile grants no write or exec, so the load fails there. This property points the
-      // library at the command's own tmp/, which is always read-write-exec. The rendezvous sockets still go under
-      // XDG_RUNTIME_DIR.
+      // library at the command's own tmp/, which is always read-write-exec. The sockets through which the client
+      // reaches the server still go under XDG_RUNTIME_DIR.
       jvmProperty("sbt.ipcsocket.tmpdir", sessionTmp.toString),
       jvmProperty("sbt.global.base", sbtGlobal.toString),
       jvmProperty("sbt.ivy.home", ivyHome.toString),

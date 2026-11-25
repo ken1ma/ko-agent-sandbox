@@ -315,7 +315,7 @@ class SandboxWorkspaceTest extends munit.FunSuite:
     assertEquals(noGit(below), Some(NoGit.Above(superproject, Some(superproject))))
     assert(noGitWarning(noGit(below).get).contains(displayPath(superproject)))
     // Below a submodule, and below a linked worktree, host git discovers a repository whose
-    // Git directory is elsewhere, which the launch predicate would never call a repository. The
+    // gitdir is elsewhere, which the launch predicate would never call a repository. The
     // launch offered is the nearest tree that holds the workspace and has git of its own.
     assertEquals(
       noGit(Files.createDirectories(submodule.resolve("src"))),
@@ -622,7 +622,7 @@ class SandboxWorkspaceTest extends munit.FunSuite:
       Files.writeString(gitdir.resolve("commondir"), commondir)
       gitdir
 
-  test("a linked worktree's main Git directory is bound read-only where the container can follow the pointer"):
+  test("a linked worktree's main gitdir is bound read-only where the container can follow the pointer"):
     assume(!isWindows, "the Linux and macOS cases need a temporary directory without a drive, whose ':' a mount " +
       "refuses")
     val worktrees = Worktrees("gitdir-bind")

@@ -375,7 +375,7 @@ class GroupRows(run: CheckRun, emitted: Map[String, Emitted], ch: Channel):
   private val tag = ch.tag
   private val fixtureSleep = ch.fixtureSleep
   private val sbtDirectories = Seq(root, worktree.sbtFixture, worktree.denyFixture, worktree.ivyFixture)
-  /** The mill target whose Mill keeps a daemon, for the planted rendezvous. */
+  /** The mill target whose Mill keeps a daemon, for the planted `out/mill-daemon`. */
   private val daemonMill = millTargets.find(target => !millWithoutDaemon(millVersion(target)))
 
   def millRows(target: Emitted): Unit =
@@ -913,7 +913,8 @@ class GroupRows(run: CheckRun, emitted: Map[String, Emitted], ch: Channel):
         ch.record("daemon-mill", workspace))
 
     // A link at out/mill-daemon would point Mill's launcher at another build directory's daemon, past the ownership
-    // and idleness checks (RunOnHostMillDaemons.rendezvousIsOwn). The runner refuses the link before any of that runs.
+    // and idleness checks (RunOnHostMillDaemons.millDaemonDirIsOwn). The runner refuses the link before any of that
+    // runs.
     // The row shuts the runner's daemon down first, because the daemon reads its processId by path and would exit
     // while the directory is aside.
     mill("shutdown0", 300, "shutdown")
@@ -1217,21 +1218,21 @@ class GroupRows(run: CheckRun, emitted: Map[String, Emitted], ch: Channel):
     ch.killExecs()
     removeTree(ch.directory)
 
-  // --- Planted rendezvous -----------------------------------------------------------------------------------------
+  // --- Planted portfile and out/mill-daemon -----------------------------------------------------------------------
 
   /**
-   * A new launch adopts nothing that a portfile or a mill rendezvous file nominates.
+   * A new launch adopts nothing that a portfile or a file in out/mill-daemon names.
    *
    *   - fixtures/deny's portfile names a live socket that is not sbt's derivation for the directory, so the runner
    *     refuses the request. The listener hears the liveness probe's connect and no byte: nothing speaks the shutdown
    *     protocol to it.
-   *   - The mill rendezvous files name this check's TCP listener's port and its sleep's pid. The new runner connects
+   *   - The files in out/mill-daemon name this check's TCP listener's port and its sleep's pid. The new runner connects
    *     to nothing that they name and signals nothing, and the client reaches the runner's own daemon.
    *   - The listeners are the check's and record what reaches them.
    */
   def plantedRows(): Unit =
-    transcript.step("planted rendezvous")
-    val plantedRow = "channel: a planted portfile nominates nothing: refused, no shutdown spoken"
+    transcript.step("planted portfile and out/mill-daemon")
+    val plantedRow = "channel: a launch adopts nothing that a planted portfile names: refused, no shutdown spoken"
     val plantedMillRow = "channel: a new launch adopts nothing planted in out/mill-daemon"
     // A socket path must fit macOS's 104 bytes, so it lies under /tmp rather than the run's directory.
     val socketDir = Files.createTempDirectory(Path.of("/tmp"), "run-on-host-planted")
@@ -1253,7 +1254,7 @@ class GroupRows(run: CheckRun, emitted: Map[String, Emitted], ch: Channel):
     tcpAcceptor.start()
     val sleeper = ProcessBuilder("/bin/sleep", "3600").start()
     val activeJson = worktree.denyFixture / "project" / "target" / "active.json"
-    run.cleanup.add("remove the planted rendezvous"):
+    run.cleanup.add("remove the planted portfile, and stop the fixture's listeners and sleep"):
       Files.deleteIfExists(activeJson)
       listener.close()
       tcp.close()
@@ -1262,11 +1263,11 @@ class GroupRows(run: CheckRun, emitted: Map[String, Emitted], ch: Channel):
     Files.createDirectories(activeJson.getParent)
     Files.writeString(activeJson, s"""{"uri":"local://$socket"}""")
     daemonMill.foreach: target =>
-      val rendezvous = Files.createDirectories(target.target.workspace / "out" / "mill-daemon")
-      val savedPort = readTrimmed(rendezvous / "socketPort")
-      run.cleanup.add(s"restore ${rendezvous / "socketPort"}")(Files.writeString(rendezvous / "socketPort", savedPort))
-      Files.writeString(rendezvous / "socketPort", tcp.getLocalPort.toString)
-      Files.writeString(rendezvous / "processId", sleeper.pid.toString)
+      val daemonDir = Files.createDirectories(target.target.workspace / "out" / "mill-daemon")
+      val savedPort = readTrimmed(daemonDir / "socketPort")
+      run.cleanup.add(s"restore ${daemonDir / "socketPort"}")(Files.writeString(daemonDir / "socketPort", savedPort))
+      Files.writeString(daemonDir / "socketPort", tcp.getLocalPort.toString)
+      Files.writeString(daemonDir / "processId", sleeper.pid.toString)
     if !ch.start() then run.fail(plantedRow, "the runner made no FIFOs")
     else
       val refused = ch.run("planted", worktree.denyFixture, Seq("sbt", "about"), 300)

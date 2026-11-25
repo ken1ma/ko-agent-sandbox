@@ -515,7 +515,7 @@ below, and reads only the port candidate and that file.
     exit, which the TERM skips.
   - A client's launcher finds that pid dead and replaces the lock.
 - A command is refused while `out`, `out/mill-daemon` or an entry directly in it is a symlink or a
-  file with a second name (`RunOnHostMillDaemons.rendezvousIsOwn`).
+  file with a second name (`RunOnHostMillDaemons.millDaemonDirIsOwn`).
   - The launcher acts on that directory as it finds it. The launcher removes a `processId` whose
     fingerprint differs, which ends the daemon the `processId` names.
   - A link would point the launcher at another build directory's daemon, past the ownership and
@@ -541,7 +541,7 @@ below, and reads only the port candidate and that file.
   - With the file deleted, Mill's launcher resolves the classpath afresh through the proxy into the
     granted cache.
   - The read and the delete run under the daemon profile. So a link planted under `out/` after the
-    rendezvous check cannot send the read or the delete beyond what the build could write.
+    `out/mill-daemon` check cannot send the read or the delete beyond what the build could write.
 
 A daemon of yours for the build directory, from a terminal outside any launch, is ended before the
 runner's daemon starts, as your sbt server is shut down. The channel log says so.
@@ -984,7 +984,7 @@ The reasons for the rows:
   the launcher of the version that the build directory pins, and `MILL_VERSION` names that
   launcher.
 - `MILL_OUTPUT_DIR` and `MILL_BSP_OUTPUT_DIR` are not forwarded either, because the supervisor looks
-  for the daemon's rendezvous under `out/` ("`mill`").
+  for the daemon's files under `out/mill-daemon` ("`mill`").
 - Without explicit forwarding, these are absent: `TERM`, `SBT_OPTS`, `JAVA_OPTS`,
   `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS`, the other `COURSIER_*` variables, `SBT_CREDENTIALS`,
   `ALL_PROXY`, `FTP_PROXY` and exported secrets.
@@ -1101,11 +1101,11 @@ first command.
 - Your own `./mill` attached to the daemon taken over dies with the daemon, as it does when the
   owner replaces the daemon.
 
-Ending the other launch's server is the only resolution available, because the portfile is not
-merely a rendezvous:
+Ending the other launch's server is the only resolution available, because the portfile does more
+than tell a client where the server listens:
 
 - The portfile's one-server-per-build-directory exclusivity is also the lock over `target/`.
-- A second rendezvous on the same tree, such as a shadow base directory or a relocated portfile,
+- A second server on the same tree, reached through a shadow base directory or a relocated portfile,
   would put two unsynchronized compilers in one content-addressed store. That is why container and
   host commands coexist on the source and never on the outputs.
 - An invocation cannot opt out either. sbt's build directory is always its working directory, and

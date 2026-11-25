@@ -315,7 +315,7 @@ Submodules and Git commands:
 - Test writable handles, open directories and shared mmap across sealing.
 - Inject an interruption after every durable apply boundary. Test partial apply, retry, operation
   dropping, third-state conflicts, and concurrent seal, apply and discard.
-- Test nested repositories, initialized and absent submodules, split Git directories, relocated
+- Test nested repositories, initialized and absent submodules, split gitdirs, relocated
   hooks and includes, folded reserved names, and every mutation route to a bare layout.
   - Also test the accepted fixture false positive, the absence of sibling checks on unrelated
     operations, and the launch-time walk cost on a build-output-heavy workspace.

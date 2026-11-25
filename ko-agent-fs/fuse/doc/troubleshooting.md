@@ -46,7 +46,7 @@ Find the matching `DENY` line in `daemon.log`. It names the operation, the targe
 - `reason=protected-git-control` on a file a normally allowed Git command needs — report the
   command and the DENY line. The workspace policy may lack an operational path in its allowlist
   (`../../policy/doc/git-metadata.md`, P2).
-- `reason=pinned-git-component` — Git directories' `objects` and `objects/info` are only created by
+- `reason=pinned-git-component` — gitdirs' `objects` and `objects/info` are only created by
   `mkdir`, never renamed or unlinked (`../../policy/doc/git-metadata.md`, "The immutable set"). If a
   normally allowed Git command needs otherwise, report the command and the DENY line.
 - `reason=protected-git-entry` on a name that is not `.git` — the conservative name rule

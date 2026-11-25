@@ -101,7 +101,7 @@ The client then exits 0. Nothing was compiled, nothing more is printed, no serve
 same environment either completes the command or fails with output. Success with no work is the
 one behavior that automation cannot detect.
 
-### No one-shot mode: every invocation is a server rendezvous
+### No one-shot mode: sbt 2 runs every build through a server
 
 **Title:** Feature: a one-shot mode that runs the build in-process and touches no server
 
@@ -112,7 +112,7 @@ build a project whose portfile a developer's live server holds.
 
 - The thin client attaches to whatever server `project/target/active.json` names. The build then
   runs with *that* server's environment, outside the wrapper's confinement.
-- The rendezvous cannot be relocated:
+- The portfile cannot be relocated:
   - the build directory is always the working directory;
   - `project/target/active.json` is fixed (`NetworkClient.scala`, `CommandExchange.scala`);
   - `--no-server` still requires a server to connect to.

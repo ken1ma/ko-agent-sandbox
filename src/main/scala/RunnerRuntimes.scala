@@ -116,11 +116,11 @@ final class RunnerRuntimes(
         else
           val hash = RunOnHostSession.buildHash(buildDirectory)
           val key = (program, hash)
-          // Checked before a mill client or starter runs. Mill's launcher acts on the rendezvous directory as it finds
+          // Checked before a mill client or starter runs. Mill's launcher acts on `out/mill-daemon` as it finds
           // it, so a redirected directory is refused here, never handed to the launcher.
-          val rendezvous =
-            if program == Program.Mill then RunOnHostMillDaemons.rendezvousIsOwn(buildDirectory) else Right(())
-          rendezvous.flatMap(_ => prepared(program, buildDirectory, hash, key, arguments))
+          val ownDaemonDir =
+            if program == Program.Mill then RunOnHostMillDaemons.millDaemonDirIsOwn(buildDirectory) else Right(())
+          ownDaemonDir.flatMap(_ => prepared(program, buildDirectory, hash, key, arguments))
 
   /** Records the launch's Gradle daemons after a dispatched command ended, however it ended, and before the session's
     * end, so that the session's end takes them (RunOnHostGradleDaemons.record). The registry is the launch's, one for
@@ -130,7 +130,7 @@ final class RunnerRuntimes(
       if program == Program.Gradle then
         RunOnHostGradleDaemons.record(session.records, gradleDaemons(session.tmp), processes).foreach(log)
 
-  /** prepare, past the mill rendezvous check: reuses the runtime, replaces its server or daemon, or creates the
+  /** prepare, past the `out/mill-daemon` check: reuses the runtime, replaces its server or daemon, or creates the
     * runtime. */
   private def prepared(
     program: Program, buildDirectory: Path, hash: String, key: (Program, String), arguments: Seq[String],

@@ -608,7 +608,7 @@ class CodexReviewTest extends ReviewCycleTests:
     assertEquals(helper("list").arr("reviews").map(_.asObject.get.str("reviewId")).sorted,
       Vector(started.str("reviewId"), again.str("reviewId")).sorted)
 
-  test("a linked worktree whose main Git directory is read-only goes through a review"):
+  test("a linked worktree whose main gitdir is read-only goes through a review"):
     val worktree = root.resolve("linked")
     git("worktree", "add", "-q", worktree.toString)
     Files.writeString(worktree.resolve("work.py"), "linked work\n")

@@ -339,28 +339,28 @@ class RunOnHostSandboxTest extends UnixHostSuite:
     assertEquals(temporaryDirectories(Program.Mvn, own, runners), (own, own))
 
   test("a redirected out/mill-daemon, or an entry of it with a second name, is refused; a plain one admitted"):
-    val root = Files.createTempDirectory("rendezvous")
+    val root = Files.createTempDirectory("mill-daemon-dir")
     val build = Files.createDirectory(root.resolve("build"))
     val other = Files.createDirectories(root.resolve("other/out/mill-daemon"))
-    assertEquals(RunOnHostMillDaemons.rendezvousIsOwn(build), Right(()), "no out/ at all")
+    assertEquals(RunOnHostMillDaemons.millDaemonDirIsOwn(build), Right(()), "no out/ at all")
     val daemonDir = Files.createDirectories(build.resolve("out/mill-daemon"))
     Files.writeString(daemonDir.resolve("processId"), "1")
-    assertEquals(RunOnHostMillDaemons.rendezvousIsOwn(build), Right(()), "a plain directory")
+    assertEquals(RunOnHostMillDaemons.millDaemonDirIsOwn(build), Right(()), "a plain directory")
     // The checks cover an entry linked elsewhere, then the directory, then out/ itself.
     Files.createSymbolicLink(daemonDir.resolve("daemonLock"), other.resolve("daemonLock"))
-    assert(RunOnHostMillDaemons.rendezvousIsOwn(build).swap.exists(_.contains("daemonLock is a symlink")))
+    assert(RunOnHostMillDaemons.millDaemonDirIsOwn(build).swap.exists(_.contains("daemonLock is a symlink")))
     Files.delete(daemonDir.resolve("daemonLock"))
     Files.createLink(daemonDir.resolve("stdout"), other.resolve("stdout").pipe(Files.writeString(_, "")))
-    assert(RunOnHostMillDaemons.rendezvousIsOwn(build).swap.exists(_.contains("more than one name")))
+    assert(RunOnHostMillDaemons.millDaemonDirIsOwn(build).swap.exists(_.contains("more than one name")))
     Files.delete(daemonDir.resolve("stdout"))
-    assertEquals(RunOnHostMillDaemons.rendezvousIsOwn(build), Right(()))
+    assertEquals(RunOnHostMillDaemons.millDaemonDirIsOwn(build), Right(()))
     Files.move(daemonDir, root.resolve("aside"))
     Files.createSymbolicLink(daemonDir, other)
-    assert(RunOnHostMillDaemons.rendezvousIsOwn(build).swap.exists(_.contains("mill-daemon is a symlink")))
+    assert(RunOnHostMillDaemons.millDaemonDirIsOwn(build).swap.exists(_.contains("mill-daemon is a symlink")))
     Files.delete(daemonDir)
     Files.move(build.resolve("out"), root.resolve("out-aside"))
     Files.createSymbolicLink(build.resolve("out"), root.resolve("other/out"))
-    assert(RunOnHostMillDaemons.rendezvousIsOwn(build).swap.exists(_.contains("out is a symlink")))
+    assert(RunOnHostMillDaemons.millDaemonDirIsOwn(build).swap.exists(_.contains("out is a symlink")))
 
   test("the starter to end is the daemon's parent in the group, other than the leader; any other topology is none"):
     import RunOnHostMillDaemons.{Member, starterOf}
@@ -548,7 +548,7 @@ class RunOnHostSandboxTest extends UnixHostSuite:
     val said = RunOnHostMillDaemons.discardForeignClasspath(build, cache, direct)
     assert(said.exists(_.contains("/Users/me/Library/Caches/Coursier/v1/https/repo1.maven.org/b.jar, outside")), said)
     assert(!Files.exists(classpathFile))
-    // A file that is a link is not the build's own file. rendezvousIsOwn refuses the command first, and
+    // A file that is a link is not the build's own file. millDaemonDirIsOwn refuses the command first, and
     // discardForeignClasspath deletes nothing through the link.
     Files.createSymbolicLink(classpathFile, build.resolve("elsewhere"))
     assertEquals(RunOnHostMillDaemons.discardForeignClasspath(build, cache, direct), None)
@@ -1041,7 +1041,7 @@ class RunOnHostSandboxTest extends UnixHostSuite:
       assert(Files.exists(recordOf(dirA, "mill")) && Files.exists(serverOf(dirA)) && Files.exists(buildOf(dirA)))
       assertEquals(runtimes.prepare(Program.Mill, dirA, Seq("test")), millA, "reused while the daemon lives")
       assertEquals(daemonStarts.size, 1)
-      // prepare refuses a link that redirects the rendezvous before reuse, and the warm daemon stays untouched.
+      // prepare refuses a link that redirects out/mill-daemon before reuse, and the warm daemon stays untouched.
       val daemonDirA = Files.createDirectories(dirA.resolve("out")).resolve("mill-daemon")
       Files.createSymbolicLink(daemonDirA, Files.createDirectories(dirB.resolve("out/mill-daemon")))
       val redirected = runtimes.prepare(Program.Mill, dirA, Seq("test"))

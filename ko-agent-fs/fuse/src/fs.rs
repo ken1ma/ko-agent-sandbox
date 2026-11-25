@@ -666,7 +666,7 @@ impl KoAgentFs {
                     return Err(deny(
                         "symlink",
                         &format!("{link_name:?}"),
-                        "file-rule-region: refusing a symlink into a Git directory from the workspace",
+                        "file-rule-region: refusing a symlink into a gitdir from the workspace",
                     ));
                 }
                 continue;

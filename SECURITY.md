@@ -194,11 +194,11 @@ it.
 Every path through which host git reaches these entries must also be protected. The mount-time guard
 checks the repository that host git discovers from the workspace root. The guard refuses:
 
-- a repository at the workspace root that keeps its Git directory, or part of it such as `config`,
+- a repository at the workspace root that keeps its gitdir, or part of it such as `config`,
   at an ordinary path in the workspace, as `git init --separate-git-dir` can. The FUSE backend
   protects Git entries under a `.git` name, so the session could write that path;
 - a bare layout at the workspace root;
-- in a Git directory inside the workspace, a symlink at `objects`, `objects/info` or either
+- in a gitdir inside the workspace, a symlink at `objects`, `objects/info` or either
   alternates file below it that leads back into the workspace. Through that link the session would
   write `alternates` under another name;
 - a `core.hooksPath` that names the workspace root itself. No read-only directory short of the
@@ -214,7 +214,7 @@ These entries are served read-only instead of refused:
   symlinked `.git/hooks`. The components that the hooks' chain passes through are pinned against
   rename ("A host program executing a workspace file on an event", below);
 - the workspace entry that a symlink at `objects`, `objects/info` or an alternates file leads to
-  from a Git directory outside the workspace. Such a link that leads out of the workspace, to
+  from a gitdir outside the workspace. Such a link that leads out of the workspace, to
   objects kept on another disk, is served as it is.
 
 A workspace file that a command in `.git/config` names or runs stays writable:
@@ -231,12 +231,12 @@ A workspace file that a command in `.git/config` names or runs stays writable:
 A directory laid out as a gitdir *without* a `.git` name, elsewhere in the tree, is a gap that "The
 workspace" describes.
 
-A repository whose Git directory is outside the workspace can pass the guard if its configuration
+A repository whose gitdir is outside the workspace can pass the guard if its configuration
 and hooks are also unreachable through writable workspace paths:
 
 - submodules;
 - linked worktrees;
-- separate Git directories;
+- separate gitdirs;
 - `.git` files naming an external directory by its absolute path;
 - launches from a subdirectory of a repository.
 
@@ -247,7 +247,7 @@ hooks.
 
 A launch from a linked worktree is the exception:
 
-- The launch mounts the main worktree's Git directory read-only, at the path that the worktree's
+- The launch mounts the main worktree's gitdir read-only, at the path that the worktree's
   `.git` names. The launch does so when the container resolves that path as the host does: a
   relative pointer anywhere, an absolute pointer on macOS and Linux.
 - Git there reads the repository (`status`, `log`, `diff`), and every write to that directory fails.
@@ -289,11 +289,11 @@ A session cannot change those files. `doc/file-rules.md` has the list and the ru
     directory itself;
   - a hard link of a symlink out of the writable directory;
   - a symlink into the writable directory from outside.
-- The FUSE backend refuses the same moves out of a Git directory's operational state, where no line
+- The FUSE backend refuses the same moves out of a gitdir's operational state, where no line
   applies. The FUSE backend also refuses any new symlink whose target names a `.git` entry or spells
   an NTFS 8.3 short name such as `GIT~1`, whatever that name holds when the link is made.
   - The check reads the target's names when the link is made. So a symlink that the session did not
-    make, into a Git directory or through a short name, still lets a later link reach that
+    make, into a gitdir or through a short name, still lets a later link reach that
     directory. Such a symlink is the host's, or was made before the session.
 - The mount-time guard adds what a name cannot express. The guard reads the tree as the tree is at
   the mount, a snapshot like the Git check above:

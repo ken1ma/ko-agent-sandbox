@@ -2427,7 +2427,7 @@ object AgentSandboxLauncher:
     import images.imageId
     import rules.rulesetCacheDir
     val noGit = SandboxWorkspace.noGit(workspaceRoot, homeProtection, os)
-    // A linked worktree's main Git directory, bound read-only where the container can follow the pointer there
+    // A linked worktree's main gitdir, bound read-only where the container can follow the pointer there
     // (SandboxWorkspace.linkedGitdirBind) and can read the directory once bound:
     // - the image must have nothing at the target, which the workspace root's probe, asked again of this path, checks;
     // - on an SELinux-enforcing host, the directory must carry a container-readable label, which the launcher never
@@ -2749,13 +2749,13 @@ object AgentSandboxLauncher:
     //   instead (HostCommands.weakened).
     val options = settings.options
     // The git warning qualifies the workspace line's mode: the mount is sound, and git either is not there, or
-    // reads the main worktree's Git directory and writes nothing. The warning applies to every mode, since what git
+    // reads the main worktree's gitdir and writes nothing. The warning applies to every mode, since what git
     // needs is absent from the container under each mode.
     mountedGitdir match
       case Some(bind) => warn(readOnlyGitWarning(bind, os))
       case None       => noGit.foreach(cause => warn(noGitWarning(cause, os)))
     gitdirBindRefusal.foreach: reason =>
-      System.err.println(s"note: the main worktree's Git directory is not mounted; $reason")
+      System.err.println(s"note: the main worktree's gitdir is not mounted; $reason")
     oldGitBisectWarning(parsed.workspaceMode, hostGitVersionLine()).foreach(warn)
     joinedRules match
       case Some(running) =>

@@ -43,6 +43,8 @@ a process, or, in group 4, into opening a path. The vectors fall into four group
 The hook directory is `$GIT_DIR/hooks` by default. No configuration is needed for a hook to run:
 an executable with the right name is enough.
 
+This document calls the directory that `$GIT_DIR` names the gitdir.
+
 **Vector:** write or replace any file under a gitdir's `hooks/`.
 
 Hooks are not the only files whose *content* git executes. The rebase and cherry-pick **todo**
@@ -102,8 +104,9 @@ files.
 
 ### 3. Indirection — moves the gitdir itself
 
-A worktree's `.git` need not be a directory. A **file** `.git` containing `gitdir: <path>` points
-`git` at the real gitdir elsewhere. Related redirections change where `git` looks for `config` and
+A worktree's `.git` need not be a directory. A **file** `.git` containing `gitdir: <path>`, which
+this document calls a pointer file and git calls a "gitfile" (gitrepository-layout), points `git`
+at the real gitdir elsewhere. Related redirections change where `git` looks for `config` and
 `hooks`: `.git/commondir`, the `gitdir` file inside `.git/worktrees/<name>/`, and
 `$GIT_COMMON_DIR`.
 
@@ -654,7 +657,7 @@ fail against it.
 **Operational writability (classifier):**
 
 - The happy-path Git integration suite must pass: `status/add/commit/checkout/switch/fetch/merge`
-  on a host repo through the mount. This shows the writable set is complete enough. With the
+  on a host repository through the mount. This shows the writable set is complete enough. With the
   allowlist, a missing operational path fails here.
 - Separately, `git rebase`, `am` and a ranged `cherry-pick` must **fail**, since their todo state is
   frozen. Assert the block, so that a later widening of the allowlist that reopened them would be

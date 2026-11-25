@@ -456,7 +456,7 @@ built.
     and consult them.
   - The FUSE backend resolves those entries at its mount, after the create, and keeps the gap.
 
-## One term for the file rules' pinned names, in prose and identifiers
+## One term for the file rules' pinned names, in documents, comments and identifiers
 
 The workspace policy calls a name pinned when a listed name passes through it, as `.claude` for
 `.claude/settings.json` does, when the guard traversed it, or when it is a gitdir's `objects` or
@@ -481,7 +481,7 @@ it undefined:
     the session cannot modify the entry at all. A pinned directory stays writable inside.
   - Candidates so far: "fixed name", "held name", or plain wording such as "a name that a listed
     name passes through".
-- [ ] Rename the prose and the identifiers in one change. The identifiers include:
+- [ ] Rename the term in documents, comments and identifiers in one change. The identifiers include:
   - the resolved rules' `pinned-path` word;
   - `RuleWord::Pinned`, `RuleContext::pinned` and `is_pinned_within_gitdir`;
   - the refusal reasons `pinned-file-rule-component` and `pinned-git-component`;
@@ -498,8 +498,8 @@ it undefined:
     requirement pins `notify`": fixes through a managed setting.
 
   Version pins stay, by the decision recorded in commit 1c1639b.
-- [ ] Consider an AGENTS.md rule that an identifier and the prose that names it always change
-  together, so that an agent renames both without asking. Record the rule's reason in
+- [ ] Consider an AGENTS.md rule that an identifier and the documents and comments that name it
+  always change together, so that an agent renames both without asking. Record the rule's reason in
   `../agents-prompt-rationale.md`.
 
 ## Japanese names in file rules
@@ -616,7 +616,7 @@ Do not blindly allow the batch `POST` endpoint merely because downloads use it.
 
 ## Deferred — writable git from a linked worktree
 
-A launch from a linked worktree binds the main worktree's Git directory read-only (`SECURITY.md`,
+A launch from a linked worktree binds the main worktree's gitdir read-only (`SECURITY.md`,
 "The host's git executing what the sandbox wrote"). The writable form binds the `.git` of the main
 worktree's FUSE mount at the same target, so the FUSE backend governs that `.git`.
 `worktrees/<name>` is a nested gitdir there. That gitdir's `config`, `hooks/`, `commondir` and
@@ -860,7 +860,7 @@ worktree whose `.git` holds the hand-written pointer `gitdir: ../<main>/.git/wor
 
 - The launch prints `git is read-only in this session`.
 - `git status` in the session works, and `git add` fails: git cannot create `index.lock` in the
-  main worktree's Git directory, a read-only file system there.
+  main worktree's gitdir, a read-only file system there.
 
 ## Claude Code plugins (`--claude-plugin-dir`)
 

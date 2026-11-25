@@ -508,7 +508,7 @@ A turn's files:
 - The patches, not Git refs, hold each turn's start. With refs:
   - refs and objects in the user's `.git` would be the helper's only writes to the user's
     repository;
-  - a linked worktree, whose Git directory is read-only, could hold none;
+  - a linked worktree, whose gitdir is read-only, could hold none;
   - `delete` would have to remove the refs, and objects would stay until a garbage collection;
   - `--mirror` would copy the refs;
   - the review's storage would depend on Git, which another version control system lacks.
@@ -674,7 +674,9 @@ Further rules of the review:
 ### Codex as it is called
 
 - Codex runs with the repository root as its working directory. `codex exec resume` has no `-C`,
-  and both `exec` forms refuse a working directory outside a trusted Git directory.
+  and with the arguments the helper passes, both `exec` forms require a working directory inside a
+  Git repository. Codex's message for this refusal reads "Not inside a trusted directory and
+  --skip-git-repo-check was not specified".
 - Codex is not sandboxed a second time.
   - Codex's Linux sandbox cannot set up under podman's masked `/proc` (the Containerfile has the
     measurement). So the image sets `danger-full-access`, and the reviewer prompt tells Codex not
@@ -759,7 +761,7 @@ beside another command, starts the helper as a process of its own.
 - The tests cover thread continuity and mismatch, every failure class, the digest over each kind
   of change, the base range, the coverage of an earlier approval and the changed paths each turn
   names, the transcript, the lock, the limit of answered turns, escalation, state namespacing,
-  the deletion of old reviews at `start`, a linked worktree whose main Git directory is read-only,
+  the deletion of old reviews at `start`, a linked worktree whose main gitdir is read-only,
   and the coordinator that each turn records.
 - `PatchesTest` rebuilds turns: line-ending conversion, the user's Git configuration, a binary
   file that changes, symlinks, executable bits and deletions.
