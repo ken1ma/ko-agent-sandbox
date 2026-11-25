@@ -591,7 +591,7 @@ final class Commands(ctx: CommandContext):
       .getOrElse(throw ReviewError("BASE_UNKNOWN", s"$ref is not a commit in this repository"))
 
   /** Refuses a review of nothing: a reviewer turn on an empty scope yields an approval that looks like an approval of
-    * the session's committed work, which only `--base` brings into scope. A dirty checkout whose edits restore the
+    * the session's committed work, which only `--base` brings into scope. A dirty worktree whose edits restore the
     * base's content has an empty scope too. */
   private def checkScope(root: Path, base: Option[Base]): Unit =
     if git.untrackedPaths(root).isEmpty then
@@ -660,7 +660,7 @@ final class Commands(ctx: CommandContext):
   private def trimNewlines(text: String): String = text.reverse.dropWhile(_ == '\n').reverse
 
   /** Deletes every review under the state root whose latest record is RetentionDays old or more, whichever worktree
-    * it belongs to, so that the reviews of a removed linked worktree or a deleted checkout expire too. Returns the
+    * it belongs to, so that the reviews of a removed linked worktree or a deleted main worktree expire too. Returns the
     * deleted ids, and for each review that it could not delete, the id and the error. A review that another command
     * holds stays, silently. */
   private def expire(): (Vector[String], Vector[Json]) =

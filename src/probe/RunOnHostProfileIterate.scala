@@ -108,7 +108,7 @@ object RunOnHostProfileIterate:
 
     // --- Running under a profile ------------------------------------------------------------------------------
 
-    /** Renders the sbt command profile for this checkout from the system-paths file given, or says why it failed. */
+    /** Renders the sbt command profile for this worktree from the system-paths file given, or says why it failed. */
     def emit(paths: Path): Option[Emitted] =
       Files.deleteIfExists(work / "command.env")
       val output = HostDriver.run(Seq("sbt", "-batch",
@@ -580,7 +580,7 @@ object RunOnHostProfileIterate:
       // reason.
       endSbtServer()
       val bound = sys.env.get("MACH_BOUND").flatMap(_.toIntOption).getOrElse(600)
-      // The probe builds a project of its own inside the workspace that the profile grants. This checkout's target/
+      // The probe builds a project of its own inside the workspace that the profile grants. This worktree's target/
       // links into the store of the unconfined sbt that emit ran, and the profile denies that store
       // (run-on-host-internals.md, "sbt", the paragraph on the server's state). Sweeping those links is the runner's
       // job, not this probe's.

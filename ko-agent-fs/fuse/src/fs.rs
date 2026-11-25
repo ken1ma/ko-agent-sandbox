@@ -2067,7 +2067,7 @@ impl Filesystem for KoAgentFs {
 
     /// Actually sync. Replying `ok()` without the syscall would be a false guarantee to the caller
     /// that most depends on it: git fsyncs a loose object and a ref before it treats the write as
-    /// committed, so a machine that lost power here would leave the user's own checkout corrupt
+    /// committed, so a machine that lost power here would leave the user's own repository corrupt
     /// while every call had reported success.
     fn fsync(
         &self,

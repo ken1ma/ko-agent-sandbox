@@ -128,7 +128,7 @@ Where the parts are:
    - The helper refuses an empty scope with `NOTHING_TO_REVIEW` before a review exists. The scope
      is empty when the working tree equals the base commit, or HEAD without `--base`, and no file
      is untracked.
-     - A dirty checkout whose edits restore the base's content counts as empty.
+     - A dirty worktree whose edits restore the base's content counts as empty.
      - A reviewer turn on nothing would yield an approval that looks like an approval of the
        session's committed work.
    - `--instructions-file FILE` adds the user's own instructions, from the skill's argument, to
@@ -423,7 +423,7 @@ A turn's files:
 - `start` deletes every review under the state root whose latest record is 30 days old or more,
   whichever worktree it belongs to, and names them in its output's `expiredReviews`.
   - The sweep covers every worktree, so that the reviews of a removed linked worktree or a deleted
-    checkout expire too. A worktree's directory goes once it holds no review.
+    main worktree expire too. A worktree's directory goes once it holds no review.
   - A review that `start` cannot delete is in `expiryFailures` with the error. The new review
     starts regardless.
   - A review that another command holds stays, silently.
@@ -595,7 +595,7 @@ For Codex:
   when the user configuration trusts the project, then the user's, then the image's system layer.
   - The catalog comes from `codex debug models`.
   - The layer not on disk is the cloud-managed one.
-  - A linked worktree without its own trust entry takes its main checkout's, as Codex does. The
+  - A linked worktree without its own trust entry takes its main worktree's, as Codex does. The
     exception is Git metadata that Codex refuses: a copy that the registration does not name, a
     symlink, or a metadata file over 64 KiB. Git itself follows all three.
 - The catalog holds the models that Codex's `/model` picker offers, those that

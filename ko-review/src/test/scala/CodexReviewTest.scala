@@ -154,7 +154,7 @@ class CodexReviewTest extends ReviewCycleTests:
     found = helper("defaults", "codex")
     assertEquals((found.str("model"), found.str("effort")), ("gpt-project", "high"))
     assertEquals(found.obj("source").str("model"), repo.resolve(".codex/config.toml").toString)
-    // a linked worktree without its own entry takes its main checkout's trust, as Codex does
+    // a linked worktree without its own entry takes its main worktree's trust, as Codex does
     val worktree = root.resolve("worktree")
     git("worktree", "add", "-q", worktree.toString)
     Files.createDirectories(worktree.resolve(".codex"))
@@ -504,7 +504,7 @@ class CodexReviewTest extends ReviewCycleTests:
     helper("continue", id, "--message-file", message())
     assert(!Files.readString(turnDir(id, 2).resolve("start.patch")).contains("lib.py"))
 
-  test("each turn's start is rebuilt from its patches without touching the checkout"):
+  test("each turn's start is rebuilt from its patches without touching the worktree"):
     write("ignored/tracked", "tracked though ignored\n")
     write("ignored/removed", "removed from the index\n")
     git("add", "-f", "ignored/tracked", "ignored/removed")

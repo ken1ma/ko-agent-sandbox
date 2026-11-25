@@ -17,7 +17,7 @@
 // - The driver refuses to run while a sandbox container, session pins or a session record exist that
 //   it did not make, since the refusal rows and the memory row would measure them too. It checks
 //   again before those rows and at the end.
-// - It refuses a jar whose bundled build context differs from the checkout's, or whose copy of a source that
+// - It refuses a jar whose bundled build context differs from the worktree's, or whose copy of a source that
 //   sources.txt lists differs in code (staleSource).
 // - It prints every line and appends it to OUTDIR/transcript.log (default: out-macos/ or out-wsl/
 //   beside this script, ignored by git), with each launch's output beside it.
@@ -30,7 +30,7 @@
 //   disjoint; two launches racing; a set of an earlier build discarded; an orphan of a launch that
 //   died after the take, removed by the reconcile; and a launch that finds no set;
 // - `podman exec` of a `unix-socket` session, and its launcher ending it at a `podman restart`;
-// - a linked worktree's socket symlink under the main checkout's `.git/objects`;
+// - a linked worktree's socket symlink under the main worktree's `.git/objects`;
 // - on macOS, a FIFO the host made;
 // - the refusals beside a live session of the other backend or socket setting, in each pairing and
 //   both orders;
@@ -301,7 +301,7 @@ object Launcher:
         _ <- transcript.refuse(Files.isRegularFile(jar), s"no jar at $jar; run `sbt dist` and the jar's --build first")
         stale = staleEntry(jar, repoDir)
         _ <- transcript.refuse(stale.isEmpty,
-          s"$jar bundles ${stale.getOrElse("")}, which differs from the checkout's; run `sbt dist`")
+          s"$jar bundles ${stale.getOrElse("")}, which differs from the worktree's; run `sbt dist`")
         staleCode = staleSource(jar, repoDir, suiteDir)
         _ <- transcript.refuse(staleCode.isEmpty,
           s"${staleCode.getOrElse("")}; run `sbt dist` and the jar's --build")
@@ -694,7 +694,7 @@ object Launcher:
       def worktreeSocketSymlink(): Unit =
         step("a linked worktree's main gitdir: a symlink under .git/objects to a socket outside")
         if platform == Platform.Windows then
-          info("skipped: the WSL share answers a socket bind ENOTSUP, so no socket lies in the main checkout's tree")
+          info("skipped: the WSL share answers a socket bind ENOTSUP, so no socket lies in the main worktree")
         else worktreeRow()
 
       private def worktreeRow(): Unit =
@@ -708,7 +708,7 @@ object Launcher:
           catch case ex: java.io.IOException => { info(s"skipped: the host made no symlink: ${ex.getMessage}"); false }
         if made then
           val mainLaunch = launch(main, "live,bpf,unix-socket")
-          check(s"the main checkout's session ran: ${mainLaunch.describe}", mainLaunch.started.nonEmpty)
+          check(s"the main worktree's session ran: ${mainLaunch.describe}", mainLaunch.started.nonEmpty)
           mainLaunch.started.foreach: mainSession =>
             val bind = copyIn(mainSession, "bind.py", BindPy)
             val connect = copyIn(mainSession, "connect.py", ConnectPy)
@@ -800,7 +800,7 @@ object Launcher:
           if worktrees then
             val main = fresh("shared")
             val linked = worktree(main, s"shared-linked-$round")
-            refusedBeside("a main checkout and its linked worktree sharing its volume", (main, first, Seq.empty),
+            refusedBeside("a main worktree and its linked worktree sharing its volume", (main, first, Seq.empty),
               (linked, second, Seq.empty))
           val outer = fresh("outer")
           val inner = Files.createDirectories(outer / "inner")
@@ -808,7 +808,7 @@ object Launcher:
           if worktrees then
             val own = fresh("own")
             val ownLinked = worktree(own, s"own-linked-$round")
-            refusedBeside("a linked worktree with its own volume beside its main checkout", (own, first, Seq.empty),
+            refusedBeside("a linked worktree with its own volume beside its main worktree", (own, first, Seq.empty),
               (ownLinked, second, volume("wt")))
           if renames then
             val before = fresh("renamed")

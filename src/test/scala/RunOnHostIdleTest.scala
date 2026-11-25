@@ -7,7 +7,7 @@ class RunOnHostIdleTest extends UnixHostSuite:
   def unixHostClue = "the run-on-host checks run on macOS alone, and the fixtures are POSIX paths"
 
   // The lock file stands in for the open descriptors that lsof observes: it holds the pids that hold it. So these
-  // cases need neither macOS nor a live runner in the developer's checkout.
+  // cases need neither macOS nor a live runner in the developer's worktree.
   private def holdersInFile(lock: Path): Vector[Long] =
     Files.readString(lock).linesIterator.flatMap(_.trim.toLongOption).toVector
 

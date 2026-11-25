@@ -8,7 +8,8 @@ The programs in this sandbox, by default
     1. the model provider of the agent you launch
     1. a customizable selection of sites, read-only
 1. reach no host files outside the workspace
-    1. except from a Git linked worktree
+    1. except the main worktree's `.git` directory, read-only, when the workspace is a linked
+       worktree
 1. cannot change Git files that can hold arbitrary commands, such as hooks and rebase
    instructions, so `git rebase` fails in the workspace
 
@@ -99,22 +100,22 @@ other.
 
 ### Build from source
 
-Coursier installation is planned. Until it is available, build the jar from a checkout using the
-[build instructions](#development).
+Coursier installation is planned. Until it is available, clone this repository and build the
+jar using the [build instructions](#development).
 
 
 ## Usage
 
 ### Getting started
 
-Build the container images once, and again after upgrading the jar. `<checkout>` is the directory
+Build the container images once, and again after upgrading the jar. `<worktree>` is the directory
 where you ran `sbt dist` ([Build the launcher and images](#build-the-launcher-and-images)):
 
-    java -jar "<checkout>/dist/ko-agent-sandbox.jar" --build
+    java -jar "<worktree>/dist/ko-agent-sandbox.jar" --build
 
 Start an agent from a trusted directory, such as `~/my-project`, which becomes the workspace:
 
-    java -jar "<checkout>/dist/ko-agent-sandbox.jar" claude
+    java -jar "<worktree>/dist/ko-agent-sandbox.jar" claude
 
 Insert these launcher options before the agent command (`claude` above):
 
@@ -124,7 +125,7 @@ Insert these launcher options before the agent command (`claude` above):
    the option.
    For example, to run `claude` and review with `codex` through `/ko-review`:
 
-       java -jar "<checkout>/dist/ko-agent-sandbox.jar" --egress-preset=openai claude
+       java -jar "<worktree>/dist/ko-agent-sandbox.jar" --egress-preset=openai claude
 
 1. Use `--egress=deny-unless-selected` to limit network access to the selected presets, dropping
    the read-only sites.
@@ -142,7 +143,7 @@ credentials in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#
 1. To change a session option such as `--egress=`, quit, then relaunch with the new options and
    the agent's resume arguments:
 
-        java -jar "<checkout>/dist/ko-agent-sandbox.jar" --egress=deny-unless-selected claude --continue
+        java -jar "<worktree>/dist/ko-agent-sandbox.jar" --egress=deny-unless-selected claude --continue
 
     1. The resume arguments are `claude --continue`, `codex resume --last`, `agy --continue`,
        `kiro-cli chat --resume`, `copilot --continue` or `opencode --continue`.
@@ -570,7 +571,7 @@ restore permission prompts and set the Claude Code status line.
 
 ### `--build`
 
-1. Builds the sandbox and egress-proxy images from the jar; no checkout is needed.
+1. Builds the sandbox and egress-proxy images from the jar; no worktree is needed.
 1. On macOS and Windows, compiles the BPF backend from bundled source against the machine's
    kernel, and installs it inside the podman machine.
 
@@ -696,7 +697,7 @@ them on.
 
 1. Remove every workspace's state and logs:
 
-       java -jar "<checkout>/dist/ko-agent-sandbox.jar" --reset-all
+       java -jar "<worktree>/dist/ko-agent-sandbox.jar" --reset-all
 
     1. Volumes you named with `--persistent-volume` are not removed.
 

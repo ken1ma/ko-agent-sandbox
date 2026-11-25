@@ -442,7 +442,7 @@ object SeatbeltProfile:
    *
    *   - Each line becomes a regex anchored after the workspace root's own path, with `*` as any run within one
    *     component. A `read-only` line becomes a deny, and a `writable` line an allow. The anchor keeps a directory
-   *     above the workspace root that bears a listed name, such as a checkout named `mise`, from matching.
+   *     above the workspace root that bears a listed name, such as a directory named `mise`, from matching.
    *   - Before the line, each interior component of the line becomes a deny on the entry alone. A later line that
    *     matches the entry or an ancestor overrides that deny, as the workspace policy's pruning does.
    *     - The deny covers `file-write-create`, `file-write-unlink` and `file-link`. Seatbelt checks a rename's two

@@ -69,7 +69,7 @@ object MillPinnedJvm:
     def safePath(what: String, path: Path): Unit =
       orExit(Either.cond(!path.toString.exists("'\"\\".contains(_)), (),
         s"$what contains a quote or backslash and cannot be interpolated safely: $path"))
-    safePath("the checkout path", workspace)
+    safePath("the worktree's path", workspace)
     safePath("JAVA_HOME", jdkHome)
     val uid = com.sun.security.auth.module.UnixSystem().getUid.toInt
     RunOnHostIdle.requireIdle(RunOnHostIdle.supervisorRoot(uid), Seq(workspace)).left.foreach: refusal =>

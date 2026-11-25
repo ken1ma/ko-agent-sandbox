@@ -38,7 +38,7 @@ The sections below describe the limits and costs of each.
 **Credential theft.**
 
 - The launcher does not automatically mount host forge-token stores, cloud credential files, SSH
-  private keys or the SSH agent's socket. The sandbox supports work on private repository checkouts
+  private keys or the SSH agent's socket. The sandbox supports work on private repositories
   without forwarding host Git credentials.
 - Agents' own provider logins are kept in the persistent volume. Some of those logins grant
   authority beyond model access, including repository or cloud access. "The web reached through the
@@ -234,7 +234,7 @@ workspace" describes.
 A repository whose Git directory is outside the workspace can pass the guard if its configuration
 and hooks are also unreachable through writable workspace paths:
 
-- submodule checkouts;
+- submodules;
 - linked worktrees;
 - separate Git directories;
 - `.git` files naming an external directory by its absolute path;
@@ -818,10 +818,10 @@ lifecycle, benchmark and launcher suites binds its figures to the digest of its 
     options file names the volume. So `--reset` does not remove credentials or suspect state stored
     there.
 - A launch from a Git linked worktree may share the main worktree's volume, if you agree at the
-  launch's prompt. The worktree's own `.git` metadata names that checkout, and the launch shows the
-  checkout before asking.
-  - State that a session in either checkout writes is input to every later session of both
-    checkouts. That state includes provider credentials, history, configuration and MCP definitions.
+  launch's prompt. The linked worktree's own `.git` metadata names the main worktree, and the
+  launch shows the main worktree before asking.
+  - State that a session in either worktree writes is input to every later session of both
+    worktrees. That state includes provider credentials, history, configuration and MCP definitions.
   - `--reset` in the linked worktree removes only that worktree's own volume, and names the volume
     it left.
   - `--reset` in the main worktree removes the shared volume and signs every worktree out. While a

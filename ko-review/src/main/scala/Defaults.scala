@@ -67,7 +67,7 @@ object CodexDefaults:
         )
 
   /** The configuration files that Codex reads for this repository, highest precedence first: the project's
-    * `.codex/config.toml` when the user configuration trusts the project or its main checkout, the user
+    * `.codex/config.toml` when the user configuration trusts the project or its main worktree, the user
     * configuration, and the image's system layer. Codex's cloud-managed layer is not on disk. */
   private def configLayers(ctx: CommandContext, root: Path): Seq[Path] =
     val home = ctx.env.get("CODEX_HOME").map(Path.of(_))
@@ -80,8 +80,8 @@ object CodexDefaults:
       val projects = parseToml(user).get("projects") match
         case Some(table: Map[?, ?]) => table.asInstanceOf[Map[String, Any]]
         case _ => Map.empty[String, Any]
-      val main = mainCheckout(root)
-      // Codex looks a checkout up by its canonical path, then by the path as found.
+      val main = mainWorktree(root)
+      // Codex looks the main worktree up by its canonical path, then by the path as found.
       val keys = Seq(root.toString) ++ main.toSeq.flatMap(path => Seq(path.toRealPath().toString, path.toString))
       val trust = keys.iterator.flatMap(key => projects.get(key)).collectFirst:
         case table: Map[?, ?] if table.asInstanceOf[Map[String, Any]].contains("trust_level") =>
@@ -119,11 +119,11 @@ object CodexDefaults:
     gitMetadata(dotGit).filter(_.startsWith("gitdir:")).map(_.stripPrefix("gitdir:").trim).filter(_.nonEmpty)
       .map(dotGit.getParent.resolve)
 
-  /** The main checkout of the linked worktree `root`, or None. Codex applies the main checkout's trust entry to the
+  /** The main worktree of the linked worktree `root`, or None. Codex applies the main worktree's trust entry to the
     * worktree when the worktree has none of its own. The checks are Codex's own, in
     * `resolve_root_git_project_for_trust` (codex-rs/git-utils/src/trust.rs): Git follows symlinks and registrations
     * that Codex refuses, and a trust that Git's view granted here would offer project settings that Codex skips. */
-  private def mainCheckout(root: Path): Option[Path] =
+  private def mainWorktree(root: Path): Option[Path] =
     for
       gitDir <- gitdirPointer(root.resolve(".git"))
       if !Files.isSymbolicLink(gitDir) && Files.isDirectory(gitDir)

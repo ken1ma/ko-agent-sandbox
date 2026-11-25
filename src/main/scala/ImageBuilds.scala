@@ -32,7 +32,7 @@ object ImageBuilds:
         if !consented(reader.readLine()) then fail("error: build not started")
 
   /**
-   * The build context is bundled into the jar (build.sbt), so --build works with no checkout present.
+   * The build context is bundled into the jar (build.sbt), so --build works with no worktree present.
    * This method unpacks the context to a temp directory, which runBuilds removes on success.
    *
    * The directory is new every time, and Files.write carries no mtime over from the jar entry, so every
@@ -288,7 +288,7 @@ object ImageBuilds:
    * them at once (sandboxStageTagCommands).
    *
    * The bundle id travels twice, and the duplication is deliberate:
-   * - as BUNDLE_ID for the Containerfile's LABEL, which a hand-run `podman build` from a checkout uses;
+   * - as BUNDLE_ID for the Containerfile's LABEL, which a hand-run `podman build` from a worktree uses;
    * - as `--label` on the command line, which wins. podman's layer cache does not key ARG-derived
    *   config instructions on the arg's value (buildah #5501, #5095), so a cached LABEL step can commit
    *   a stale digest. A command-line --label is applied at commit, outside that cache.

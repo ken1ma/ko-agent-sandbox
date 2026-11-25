@@ -20,7 +20,7 @@
 // - A block comment stands as one space, as in C, so `a/**/b` stays two tokens.
 // - A line left blank by removing comments is dropped, and so are the blanks before a comment that ends
 //   its line.
-// - Line endings count as `\n`, so a checkout with CRLF digests as one with LF.
+// - Line endings count as `\n`, so a worktree with CRLF digests as one with LF.
 
 package agentsandbox.launcher
 

@@ -145,7 +145,7 @@ object PodmanTestHelper:
   /** One shell command of several statements, for `Vm`. */
   def sh(statements: String*): String = statements.mkString("; ")
 
-  /** A path as one word of a machine command, whatever it holds; the checkout's path is the user's. */
+  /** A path as one word of a machine command, whatever it holds; the worktree's path is the user's. */
   def quoted(path: String): String = "'" + path.replace("'", "'\\''") + "'"
 
   /** A command in the podman machine, as the machine's user, over `podman machine ssh`. */
@@ -188,9 +188,10 @@ object PodmanTestHelper:
   /** Where the INDEX lists the assembled ko-review plugin (build.sbt, `pluginFiles`). */
   val AssembledKoReviewPlugin = "ko-agent-sandbox/claude-code/plugins/ko-review/"
 
-  /** The checkout file that an INDEX entry of the assembled ko-review plugin copies, and how to undo the change that
+  /** The worktree's file that an INDEX entry of the assembled ko-review plugin copies, and how to undo the change that
     * ko-review/build.sbt's `pluginAssembly` makes to the copy: the task renames `claude-plugin/` to `.claude-plugin/`
-    * and adds a version line to the manifest. None for `lib/`, which the task generates and no checkout file holds. */
+    * and adds a version line to the manifest. None for `lib/`, which the task generates and no file in the worktree
+    * holds. */
   def assembledPluginSource(repoDir: Path, listed: String): Option[(Path, Array[Byte] => Array[Byte])] =
     val relative = listed.stripPrefix(AssembledKoReviewPlugin)
     Option.unless(relative.startsWith("lib/")):
@@ -202,17 +203,17 @@ object PodmanTestHelper:
             .getBytes(java.nio.charset.StandardCharsets.UTF_8)
       (source, unversioned)
 
-  /** Where a bundled build context's entry lies in the checkout: build.sbt stores each relative to its
+  /** Where a bundled build context's entry lies in the worktree: build.sbt stores each relative to its
     * context's parent, the root for ko-agent-fs/ and ko-agent-egress-proxy/ and container/ for the images. The
     * context's directory at the root decides, so that moving a context needs no change here. */
-  def checkoutFile(repoDir: Path, bundled: String): Path =
+  def worktreeFile(repoDir: Path, bundled: String): Path =
     val context = bundled.takeWhile(_ != '/')
     if Files.isDirectory(repoDir / context) then repoDir / bundled
     else repoDir / "container" / bundled
 
-  /** Compares the jar's bundled build context with the checkout. Returns the first file in the bundle's
+  /** Compares the jar's bundled build context with the worktree. Returns the first file in the bundle's
     * INDEX (the launcher's own listing, LauncherImages.bundleIndex) whose entry differs from the
-    * checkout's file or is missing, or None. The jar can hold more under `sandbox-build/`: sbt 2 leaves
+    * worktree's file or is missing, or None. The jar can hold more under `sandbox-build/`: sbt 2 leaves
     * files an earlier bundle copied into its classes directory, and the launcher reads none of them.
     *
     * The INDEX also lists the assembled ko-review plugin. Its copied files are compared with their sources
@@ -228,7 +229,7 @@ object PodmanTestHelper:
             .find: listed =>
               val bundled = read(s"sandbox-build/$listed")
               val source: Option[(Path, Array[Byte] => Array[Byte])] =
-                if !listed.startsWith(AssembledKoReviewPlugin) then Some((checkoutFile(repoDir, listed), identity))
+                if !listed.startsWith(AssembledKoReviewPlugin) then Some((worktreeFile(repoDir, listed), identity))
                 else assembledPluginSource(repoDir, listed)
               source match
                 case None => bundled.isEmpty
@@ -258,9 +259,9 @@ object PodmanTestHelper:
             Some(s"$repoPath: the jar has no $entryName$unlisted")
           case Some(entry) =>
             val copy = Using.resource(opened.getInputStream(entry))(_.readAllBytes())
-            val checkout = Files.readAllBytes(repoDir.resolve(repoPath))
+            val inWorktree = Files.readAllBytes(repoDir.resolve(repoPath))
             Option.when(!java.util.Arrays.equals(SourceDigest.content(name, copy), SourceDigest.content(name,
-              checkout)))(s"$repoPath: its code differs from the jar's $entryName")
+              inWorktree)))(s"$repoPath: its code differs from the jar's $entryName")
       .collectFirst { case Some(reason) => reason }
 
   // --- The environment and the build -----------------------------------------------------------------------

@@ -60,12 +60,12 @@ object SeatbeltCheck:
     val programs = options.programs
     val hostPaths = orExit(HostPaths.of(sys.env.get))
     orExit(Either.cond(scala.util.Properties.isMac, (), "Run this on macOS."))
-    val checkout = Checkout(root)
+    val worktree = Worktree(root)
     val out = checkOut(root, "seatbelt")
     val transcript = Transcript(out / "transcript.log", timestamps = true)
-    val checkRun = CheckRun(transcript, checkout, out, programs, hostPaths)
+    val checkRun = CheckRun(transcript, worktree, out, programs, hostPaths)
     runMeasured(transcript, checkRun.cleanup):
-      val targets = targetsOf(checkout, programs)
+      val targets = targetsOf(worktree, programs)
       val measured =
         for
           _ <- checkRun.preflight(Seq(root) ++ targets.map(_.workspace))
@@ -82,7 +82,7 @@ object SeatbeltRows:
 /** The rows, under each emitted profile and then under the proxy's own. */
 class SeatbeltRows(run: CheckRun, folding: Boolean, jobs: Option[Int] = None):
   private val transcript = run.transcript
-  private val root = run.checkout.root
+  private val root = run.worktree.root
   private val hostPaths = run.host
   private val out = run.out
   private val marker = s"run-on-host-marker.${ProcessHandle.current.pid}"

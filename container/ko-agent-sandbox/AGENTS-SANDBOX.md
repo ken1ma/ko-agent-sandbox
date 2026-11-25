@@ -123,7 +123,7 @@ missing, ask the user; never invent one. Leave changes uncommitted meanwhile.
 If a task needs a private remote or any credential, report the operation to the user. Do not ask
 to mount or copy credentials in, or look for another route.
 
-Clone and build under `~`, not `/tmp`: `/tmp` is RAM, and a large checkout or build there can
+Clone and build under `~`, not `/tmp`: `/tmp` is RAM, and a large clone or build there can
 take the whole podman machine down.
 
 When every command turns slow, check `/proc/pressure/memory`: `some avg60` above 10 means the

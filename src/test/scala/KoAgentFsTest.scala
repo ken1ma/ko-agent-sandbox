@@ -705,7 +705,7 @@ class KoAgentFsTest extends munit.FunSuite:
   test("everything that compiles ko-agent-fs derives its toolchain instead of repeating it"):
     // probe/rig.sh reads the pin out of the Containerfile, and the self-test image takes the pin as
     // an ARG with no default (pinnedRustVersion gives the reason). The test reads rig.sh from the
-    // checkout, because rig.sh is not bundled into the jar; the SECURITY.md test does the same, for
+    // worktree, because rig.sh is not bundled into the jar; the SECURITY.md test does the same, for
     // the same reason.
     val pinned = """(?m)^ARG RUST_VERSION=(\S+)$""".r
       .findFirstMatchIn(Files.readString(Paths.get("ko-agent-fs/Containerfile")))

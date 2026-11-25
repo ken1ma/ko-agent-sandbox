@@ -346,7 +346,7 @@ Hooks the policy does not need, and the fact that excuses each:
       `inode_mknod`, not by `inode_rename` of one bound elsewhere (each way for an exchange), and
       not by `inode_link`. Each hook judges the inode it holds (`S_ISSOCK` of `old_dentry` for
       the last two).
-      - Why: a worktree session under the FUSE backend reaches the main checkout's gitdir bind
+      - Why: a worktree session under the FUSE backend reaches the main worktree's gitdir bind
         with no policy, and the FUSE backend admits a socket under `objects`, since it judges only
         the name and the destination (`fs.rs`, `allow_create`).
       - A symlink adds no reach: `connect` follows it (`unix_find_bsd`, `LOOKUP_FOLLOW`) in the
@@ -357,7 +357,7 @@ Hooks the policy does not need, and the fact that excuses each:
         root's allowlist (`policy.rs`, `OPERATIONAL_FILES`) that the FUSE backend refuses already.
       - The hooks see only the moved inode: a directory holding a bound socket, renamed into
         `objects`, carries the socket in. The launch refusal below is what the pairing of a main
-        checkout and a worktree under the FUSE backend rests on; this rule only narrows the
+        worktree and a linked worktree under the FUSE backend rests on; this rule only narrows the
         direct routes.
     - A second sandbox of the workspace under this backend judges its use of the descriptor by the
       same policy. A sandbox of another workspace allows nothing on the share outside its own
@@ -380,13 +380,13 @@ Hooks the policy does not need, and the fact that excuses each:
     has no policy over the share, and a session without the option has no `file_receive`.
     - The raw mounts are the volume, the workspace tree and a linked worktree's main gitdir
       (`SandboxWorkspace.linkedGitdirBind`). Sessions share them in several ways:
-      - a linked worktree may mount its main checkout's own volume
+      - a linked worktree may mount its main worktree's own volume
         (`LauncherState.mainWorktreeVolume`);
       - `--persistent-volume` names one for any workspace, and two sessions of one workspace may
         name two;
       - a workspace root above or below another's binds the same directories;
-      - the gitdir bind lies under the main checkout's root, so a worktree session under the other
-        backend or setting is refused beside the main checkout's session, whatever its volume.
+      - the gitdir bind lies under the main worktree's root, so a worktree session under the other
+        backend or setting is refused beside the main worktree's session, whatever its volume.
     - Each sandbox container carries labels naming its backend, its option, its volume and, for
       each raw mount, the host path and the `(superblock, inode)` identity the controller's `stat`
       in the VM gave before the container was created ("The policy"). A path alone goes stale: a

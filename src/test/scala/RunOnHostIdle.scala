@@ -46,7 +46,7 @@ object RunOnHostIdle:
    *   - A runner keeps its claims on build directories after its sbt server ends. So ending sbt alone does not free
    *     a claim, and the check reads the claims, not the servers.
    *   - A runner is live while a process holds its session lock open. The check runs before a driver starts an
-   *     unconfined sbt in the checkout.
+   *     unconfined sbt in the worktree.
    *   - A claim is the session's workspace file or one of its published build files. A claim covers every workspace
    *     at or below its directory.
    */

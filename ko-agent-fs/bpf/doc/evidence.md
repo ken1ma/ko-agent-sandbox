@@ -386,16 +386,16 @@ commit 654586d (`bpf/probe/phase1/`, `bpf/probe/phase2/`).
     container's first process and from a `podman exec` process ("The hooks", `file_receive`);
   - a launch under the other backend, or under the other setting of `unix-socket`, while a session
     that shares its volume or a raw mount is live: it is refused, in either order. The cases:
-    - a main checkout and a linked worktree sharing its volume;
+    - a main worktree and a linked worktree sharing its volume;
     - two sessions of one workspace naming two volumes;
     - a workspace below another's root;
-    - a linked worktree with its own volume beside its main checkout;
+    - a linked worktree with its own volume beside its main worktree;
     - a host rename of the workspace between the two launches, which then name two volumes;
     - beside a live container of an earlier launcher without the labels;
     - two such launches racing, one of them refused;
   - a linked git worktree, whose main gitdir the launcher binds read-only
     (`../../../doc/TODO.md`, "Deferred — writable git from a linked worktree"), and a symlink
-    under its main checkout's `.git/objects` to a socket outside. The worktree's container cannot
+    under its main worktree's `.git/objects` to a socket outside. The worktree's container cannot
     connect through the symlink;
   - the preloaded set ("Lifecycle"):
     - a launch takes it by rename and fills its maps through the pinned programs' ids. It passes
@@ -1326,16 +1326,16 @@ and its `--build`.
 |                          | `.git/config` is refused; at `podman restart` the launcher's cleanup  |
 |                          | removes the container and then the pins, within 30s. The lifecycle    |
 |                          | suite measures a restarted session's first process and `podman exec`  |
-| the linked worktree      | the main checkout's session binds a socket in its tree, and a         |
+| the linked worktree      | the main worktree's session binds a socket in its tree, and a         |
 |                          | host-made `.git/objects/s` links to it as `../../sock`: the main      |
 |                          | session connects through the link; the linked worktree's session,     |
 |                          | beside it under the same settings, answers `ENOENT`, the main tree    |
 |                          | not being mounted there                                               |
 | a FIFO the host made     | the session's `lstat` of it answers `EACCES`: the share refuses it    |
 |                          | before any hook, the policy having none on `lookup` or `getattr`      |
-| the refusals             | one workspace with two volumes, a main checkout and its linked        |
+| the refusals             | one workspace with two volumes, a main worktree and its linked        |
 |                          | worktree sharing its volume, a workspace below another's root, a      |
-|                          | linked worktree with its own volume beside its main checkout, and a   |
+|                          | linked worktree with its own volume beside its main worktree, and a   |
 |                          | host rename of the workspace between the launches: each refused       |
 |                          | beside a live session of the other backend and of the other           |
 |                          | `unix-socket` setting, in both orders, 20 refusals; beside an         |
@@ -1381,7 +1381,7 @@ launcher's jar from `sbt dist` and its `--build`.
 |                          | its placement step, which `KoAgentBpfTest` runs with those failures   |
 |                          | stubbed                                                               |
 | the linked worktree      | not measured: the share answers a socket bind `ENOTSUP`, so no socket |
-|                          | lies in the main checkout's tree                                      |
+|                          | lies in the main worktree                                             |
 | a FIFO the host made     | not measured: NTFS makes none                                         |
 | the refusals             | the cases without a linked worktree or a host rename, 8 refusals, as  |
 |                          | on macOS. A linked worktree's launch is refused by the guard for the  |

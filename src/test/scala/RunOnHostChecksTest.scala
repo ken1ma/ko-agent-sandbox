@@ -13,7 +13,7 @@ class RunOnHostChecksTest extends UnixHostSuite:
   private def checkRun(): CheckRun =
     val out = Files.createTempDirectory("checks")
     val host = HostPaths(out, out, out, out, out, out, out, out)
-    CheckRun(HostDriver.Transcript(out.resolve("transcript.log")), Checkout(out), out, Program.values.toSet, host)
+    CheckRun(HostDriver.Transcript(out.resolve("transcript.log")), Worktree(out), out, Program.values.toSet, host)
 
   test("inParallel returns only once every group has ended, and a failing group reports a FAIL of its own"):
     val run = checkRun()

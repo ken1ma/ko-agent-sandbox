@@ -92,7 +92,7 @@ object SandboxWorkspace:
           Left(
             s"error: cannot mount $text\n" +
               "podman reads a `:` in a --volume value as the field separator, so a workspace root's path may not " +
-              "contain one. Work from a checkout whose path has no `:`.",
+              "contain one. Launch from a directory whose path has no `:`.",
           )
         else Right(text)
       case Os.Windows =>
@@ -103,7 +103,7 @@ object SandboxWorkspace:
           Left(
             s"error: cannot map $text into the podman machine\n" +
               "The sandbox mounts the workspace root at the path the machine has it at, /mnt/<drive>/..., " +
-              "which only drive-letter paths (C:\\...) have. Work from a checkout on a fixed drive.",
+              "which only drive-letter paths (C:\\...) have. Launch from a directory on a fixed drive.",
           )
 
   /** The container user's home. The anonymous home volume, the persistent volume and the agents'
@@ -376,7 +376,7 @@ object SandboxWorkspace:
    * relative target stays within the workspace. Every other form leaves the workspace root's `.git`
    * naming a path the container does not have. Every git command then fails with `not a git
    * repository`, which an agent reads as breakage. Those forms are:
-   * - a submodule checkout (`gitdir: ../.git/modules/<name>`);
+   * - a submodule (`gitdir: ../.git/modules/<name>`);
    * - a linked worktree;
    * - a `--separate-git-dir` repository;
    * - an absolute pointer, or a symlink wherever it leads;
@@ -397,10 +397,15 @@ object SandboxWorkspace:
    *
    * A `launchFrom` is the nearest directory holding the workspace from which the repository git
    * uses there is reachable. The warning's "that whole tree is then the workspace" is therefore
-   * true of the `launchFrom`: the superproject over a submodule, or the repository root over a
-   * subdirectory. These forms have no `launchFrom`:
-   * - a separate gitdir, and any parent of one, under which the pointer stays absolute;
-   * - a linked worktree, whose main worktree is a different checkout, not this worktree's tree.
+   * true of the `launchFrom`:
+   * - the superproject over a submodule;
+   * - the repository root over a subdirectory;
+   * - a directory holding both the workspace and the Git directory that an absolute pointer names,
+   *   as for a linked worktree or a separate gitdir.
+   *
+   * A form has no `launchFrom` when no directory the launcher accepts as a workspace root lets the
+   * container follow the `.git` pointer. An absolute pointer on Windows is one: the container spells
+   * drives under /mnt.
    *
    * Nothing is said where host git fails too:
    * - a `.git` naming a gitdir that git rejects ends git's search where it ends this one;
@@ -520,7 +525,7 @@ object SandboxWorkspace:
    * The main worktree whose agent-state volume a launch from this linked worktree may share, or
    * None. The answer comes from the worktree's own Git metadata, never from a remote URL, as git's
    * `get_main_worktree` names the main worktree (worktree.c). The metadata of a linked worktree of a
-   * main checkout meets four conditions:
+   * main worktree meets four conditions:
    *
    *   - The gitdir that the worktree's `.git` names holds a `commondir`, whose trimmed content
    *     resolves against the gitdir. `git worktree add` writes `../..`, and the workspace policy's guard reads
@@ -539,7 +544,7 @@ object SandboxWorkspace:
    *
    * A bare common gitdir, a main worktree with `--separate-git-dir`, and a missing, unreadable or
    * malformed `commondir` name no main worktree: the linked worktree's metadata does not say
-   * where the main checkout is.
+   * where the main worktree is.
    *
    * The result is spelled as resolveWorkspaceRoot spells a launch from it, so that workspaceIdOf
    * names the volume that launch uses. Any other spelling hashes to a different id and silently

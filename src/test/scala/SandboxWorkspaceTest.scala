@@ -264,7 +264,7 @@ class SandboxWorkspaceTest extends munit.FunSuite:
       Files.writeString(path.resolve("HEAD"), "ref: refs/heads/feature\n")
       path
 
-    // A submodule checkout: the superproject's .git/modules holds the gitdir.
+    // A submodule: the superproject's .git/modules holds the gitdir.
     val superproject = Files.createDirectories(root.resolve("super"))
     gitdirAt(superproject.resolve(".git"))
     val moduleGitdir = gitdirAt(superproject.resolve(".git/modules/lib"))
@@ -275,7 +275,7 @@ class SandboxWorkspaceTest extends munit.FunSuite:
       Some(NoGit.Gitdir("../.git/modules/lib", moduleGitdir, Some(superproject))),
     )
     // A linked worktree names its gitdir absolutely, under the main worktree's .git. The container
-    // spells the workspace root as the host does, so the tree that holds both checkouts is a launch
+    // spells the workspace root as the host does, so the tree that holds both worktrees is a launch
     // with git. On Windows, where the container spells drives under /mnt, an absolute pointer leads
     // nowhere, and there is no launch to offer.
     val main = Files.createDirectories(root.resolve("main"))
@@ -314,7 +314,7 @@ class SandboxWorkspaceTest extends munit.FunSuite:
     val below = Files.createDirectories(superproject.resolve("src/main"))
     assertEquals(noGit(below), Some(NoGit.Above(superproject, Some(superproject))))
     assert(noGitWarning(noGit(below).get).contains(displayPath(superproject)))
-    // Below a submodule checkout, and below a linked worktree, host git discovers a repository whose
+    // Below a submodule, and below a linked worktree, host git discovers a repository whose
     // Git directory is elsewhere, which the launch predicate would never call a repository. The
     // launch offered is the nearest tree that holds the workspace and has git of its own.
     assertEquals(
@@ -536,7 +536,7 @@ class SandboxWorkspaceTest extends munit.FunSuite:
       None,
     )
     // A bare repository's worktrees, and the worktrees of a main worktree with a separate gitdir: the
-    // common gitdir is not a `.git` directory, so the common gitdir names no main checkout.
+    // common gitdir is not a `.git` directory, so the common gitdir names no main worktree.
     val bare = gitdirAt(root.resolve("bare.git"))
     assertEquals(
       mainWorktreeOf(linkedAt("of-bare", bare.resolve("worktrees/of-bare"), Some("../..\n")), homes, Os.Linux),
@@ -604,7 +604,7 @@ class SandboxWorkspaceTest extends munit.FunSuite:
       None,
     )
   /** A main worktree in a new temporary directory, `root`: `worktreeAt` adds a linked worktree's gitdir under the main
-    * worktree's `.git`, and `linkedAt` a checkout whose `.git` holds a pointer. */
+    * worktree's `.git`, and `linkedAt` a linked worktree whose `.git` holds a pointer. */
   private final class Worktrees(prefix: String):
     val root: Path = Files.createTempDirectory(prefix).toRealPath()
     def gitdirAt(path: Path): Path =

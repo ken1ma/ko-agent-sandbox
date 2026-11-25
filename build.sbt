@@ -88,7 +88,7 @@ lazy val root = project.in(file(".")).dependsOn(egressProxy).settings(
   }.taskValue,
 
   // The BPF backend's launcher suite (ko-agent-fs/bpf/test/podman/launcher/Launcher.scala) refuses a jar whose code
-  // differs from the checkout's. A compiled source leaves only classes in the jar, so the jar carries a copy of each
+  // differs from the worktree's. A compiled source leaves only classes in the jar, so the jar carries a copy of each
   // one that the suite's sources.txt lists. The copies sit outside sandbox-build/, so they leave the bundle's source id
   // as it is.
   Compile / resourceGenerators += Def.task {
@@ -99,7 +99,7 @@ lazy val root = project.in(file(".")).dependsOn(egressProxy).settings(
       target
   }.taskValue,
 
-  // Bundle the build contexts into the jar, so --build works with no checkout present (ImageBuilds.unpackBuildContext).
+  // Bundle the build contexts into the jar, so --build works with no worktree present (ImageBuilds.unpackBuildContext).
   // INDEX lists every bundled path, because a jar's resource tree cannot be enumerated at runtime.
   // Native-image's resource discovery misses required files. The native-image command in doc/TODO.md must therefore
   // include sandbox-build/ (build contexts), defaults/ (proxy rules) and agentsandbox/ (--help and Seatbelt system
@@ -128,7 +128,7 @@ lazy val root = project.in(file(".")).dependsOn(egressProxy).settings(
       baseDirectory.value -> Seq("ko-agent-fs", "ko-agent-egress-proxy"),
     )
 
-    // The task excludes the build output and editor caches that accumulate in a worked-in checkout. Keep this set in
+    // The task excludes the build output and editor caches that accumulate in a worktree. Keep this set in
     // step with the .dockerignore files, which exclude the same set from the podman build context. Two known
     // divergences exist, and neither is reachable:
     // - "project/project" is a substring test here but segment-anchored (**/) there, so only this task would drop a
@@ -136,13 +136,13 @@ lazy val root = project.in(file(".")).dependsOn(egressProxy).settings(
     // - ko-agent-fs/.dockerignore lists only target and the directories of the next paragraph, because no sbt or editor
     //   program creates the other directories inside a Rust workspace. A stray .DS_Store there would reach a hand-run
     //   `podman build`, although this task drops the file. The stray file costs a cache miss and nothing else, because
-    //   the source digest is computed from the bundle, never from a checkout.
+    //   the source digest is computed from the bundle, never from a worktree.
     //
     // The task excludes the directories in `unbundled` for a different reason: none of them is a build input or part
     // of the distribution. Leaving them out also keeps them out of the source ids and the bundle ids
     // (KoAgentFs.koAgentFsSourceId, KoAgentBpf.sourceId, LauncherImages.contextSourceId), so editing a document, a
     // probe, a benchmark or a test does not invalidate every installed binary and image. Each context's .dockerignore
-    // drops the same paths, so a direct `podman build` from a checkout sees what a jar-built one does.
+    // drops the same paths, so a direct `podman build` from a worktree sees what a jar-built one does.
     // - ko-agent-fs's doc/ directories; its probes, the platform-verification probes that a developer runs by hand;
     //   and bench/, the benchmarks that the BPF backend's benchmark suite reruns. Cargo builds none of them.
     // - ko-agent-fs's examples: `cargo test --no-run` in the self-test image compiles them and nothing runs them. The
@@ -150,9 +150,9 @@ lazy val root = project.in(file(".")).dependsOn(egressProxy).settings(
     // - bpf/test, the suites that measure the BPF backend; the self-test image's id digests the whole bpf/ directory.
     //   bpf/test/host and the policy suite's exerciser stay, because the self-test image compiles them.
     // - The egress proxy's tests: the proxy's Containerfile runs `sbt dist`, which packages the main sources alone,
-    //   and no image runs the suites. They run from a checkout (doc/development.md, "egress-proxy").
+    //   and no image runs the suites. They run from a worktree (doc/development.md, "egress-proxy").
     // - The egress proxy's doc/, the measurement evidence behind its defaults, which MeasurementReport reads from a
-    //   checkout.
+    //   worktree.
     //
     // IO.relativize answers in the platform's separator, and everything downstream reads `/`: the exclusion tests here,
     // the jar's own entry names, and the INDEX that the launcher resolves them by. Without the normalization, a Windows

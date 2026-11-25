@@ -49,13 +49,13 @@ object CommandLifecycleCheck:
     orExit(Either.cond(args.isEmpty, (), usage))
     val hostPaths = orExit(HostPaths.of(sys.env.get))
     orExit(Either.cond(scala.util.Properties.isMac, (), "Run this on macOS."))
-    val checkout = Checkout(root)
+    val worktree = Worktree(root)
     val out = checkOut(root, "command-lifecycle")
     val transcript = Transcript(out / "transcript.log", timestamps = true)
     val programs = Set(Program.Sbt, Program.Mill)
-    val checkRun = CheckRun(transcript, checkout, out, programs, hostPaths)
+    val checkRun = CheckRun(transcript, worktree, out, programs, hostPaths)
     runMeasured(transcript, checkRun.cleanup):
-      val targets = Vector(Target("sbt", Program.Sbt, root), Target("mill", Program.Mill, checkout.millFixture))
+      val targets = Vector(Target("sbt", Program.Sbt, root), Target("mill", Program.Mill, worktree.millFixture))
       val measured =
         for
           _ <- checkRun.preflight(targets.map(_.workspace))
@@ -66,18 +66,18 @@ object CommandLifecycleCheck:
 
 class CommandLifecycleRows(run: CheckRun):
   private val transcript = run.transcript
-  private val checkout = run.checkout
-  private val root = checkout.root
+  private val worktree = run.worktree
+  private val root = worktree.root
 
   def measure(): Int =
     run.cleanup.add("end what the rows started")(run.endUnclaimed(
-      run.leftovers(Seq(root), Seq(checkout.millFixture)).flatMap(_._2)))
+      run.leftovers(Seq(root), Seq(worktree.millFixture)).flatMap(_._2)))
     concurrent()
     sigterm()
     sigkillMidCommand()
     sigkillLeaderless()
     transcript.step("after every row")
-    run.checkNothingSurvives(Seq(root), Seq(checkout.millFixture))
+    run.checkNothingSurvives(Seq(root), Seq(worktree.millFixture))
     if transcript.failed == 0 then 0 else 1
 
   /** One sbt and one mill command overlap, each with its own directory and proxy. */
@@ -85,7 +85,7 @@ class CommandLifecycleRows(run: CheckRun):
     transcript.step("two concurrent commands")
     given ExecutionContext = ExecutionContext.global
     val sbt = Future(run.supervisor("concurrent-sbt", Program.Sbt, root, Seq("compile")))
-    val mill = Future(run.supervisor("concurrent-mill", Program.Mill, checkout.millFixture, Seq("__.compile")))
+    val mill = Future(run.supervisor("concurrent-mill", Program.Mill, worktree.millFixture, Seq("__.compile")))
     var peak = 0
     within(600, intervalMillis = 500):
       peak = peak.max(run.commandsNow)

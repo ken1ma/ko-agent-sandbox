@@ -4,7 +4,7 @@
 //
 // It holds:
 //
-// - the options, the checkout's fixtures and the copies on older releases;
+// - the options, the worktree's fixtures and the copies on older releases;
 // - the machine block, the preflight and the setup that emits the profiles (EmitRunOnHostProfile's checks form);
 // - the command's environment, and running a command under a profile;
 // - finding the servers and daemons that the rows start, and ending them;
@@ -63,9 +63,9 @@ object RunOnHostChecks:
       case _ => Left(usage)
     loop(args, Options(Program.values.toSet, None))
 
-  /** The checkout's fixtures, and the copies on older releases at fixed paths: the run-on-host cache is kept per
+  /** The worktree's fixtures, and the copies on older releases at fixed paths: the run-on-host cache is kept per
     * workspace path, so a new path in each run would leave a cache behind each time. */
-  case class Checkout(root: Path):
+  case class Worktree(root: Path):
     val fixtures: Path = root / ChecksPath / "fixtures"
     val sbtFixture: Path = fixtures / "sbt"
     val millFixture: Path = fixtures / "mill"
@@ -88,14 +88,14 @@ object RunOnHostChecks:
   /** The targets of the selected programs: the sbt rows build this repository, and each other program builds its
     * fixture, then the copy on the older release. A mill, Gradle or Maven build of this repository would be a second
     * build definition rather than a measurement. */
-  def targetsOf(checkout: Checkout, programs: Set[Program]): Vector[Target] =
+  def targetsOf(worktree: Worktree, programs: Set[Program]): Vector[Target] =
     Vector(
-      Option.when(programs(Program.Sbt))(Target("sbt", Program.Sbt, checkout.root)),
-      Option.when(programs(Program.Mill))(Target("mill", Program.Mill, checkout.millFixture)),
-      Option.when(programs(Program.Mill))(Target(s"mill-$DaemonMill", Program.Mill, checkout.millCopy)),
-      Option.when(programs(Program.Gradle))(Target("gradle", Program.Gradle, checkout.gradleFixture)),
-      Option.when(programs(Program.Gradle))(Target(s"gradle-$OlderGradle", Program.Gradle, checkout.gradleCopy)),
-      Option.when(programs(Program.Mvn))(Target("mvn", Program.Mvn, checkout.mvnFixture)),
+      Option.when(programs(Program.Sbt))(Target("sbt", Program.Sbt, worktree.root)),
+      Option.when(programs(Program.Mill))(Target("mill", Program.Mill, worktree.millFixture)),
+      Option.when(programs(Program.Mill))(Target(s"mill-$DaemonMill", Program.Mill, worktree.millCopy)),
+      Option.when(programs(Program.Gradle))(Target("gradle", Program.Gradle, worktree.gradleFixture)),
+      Option.when(programs(Program.Gradle))(Target(s"gradle-$OlderGradle", Program.Gradle, worktree.gradleCopy)),
+      Option.when(programs(Program.Mvn))(Target("mvn", Program.Mvn, worktree.mvnFixture)),
     ).flatten
 
   /** An emitted profile, with the values of EmitRunOnHostProfile's checks form. */
@@ -296,13 +296,13 @@ object RunOnHostChecks:
    *     directory (RunOnHostIdle.endUnclaimed).
    *   - A row reports PASS, FAIL or SKIP with what it observed. INFO is a measurement with no expected answer.
    */
-  class CheckRun(val transcript: Transcript, val checkout: Checkout, val out: Path, val programs: Set[Program],
+  class CheckRun(val transcript: Transcript, val worktree: Worktree, val out: Path, val programs: Set[Program],
       val host: HostPaths, val cleanup: Cleanups):
-    def this(transcript: Transcript, checkout: Checkout, out: Path, programs: Set[Program], host: HostPaths) =
-      this(transcript, checkout, out, programs, host, Cleanups(transcript))
+    def this(transcript: Transcript, worktree: Worktree, out: Path, programs: Set[Program], host: HostPaths) =
+      this(transcript, worktree, out, programs, host, Cleanups(transcript))
 
     /** This run, with its rows reported to `part` (Transcript.part), for rows measured on a thread of their own. */
-    def reportingTo(part: Transcript): CheckRun = CheckRun(part, checkout, out, programs, host, cleanup)
+    def reportingTo(part: Transcript): CheckRun = CheckRun(part, worktree, out, programs, host, cleanup)
 
     /**
      * Runs each group's rows on a thread of its own, at most `jobs` at once, each group reporting to `<name>.log`
@@ -354,20 +354,20 @@ object RunOnHostChecks:
       line(s"macOS ${command("sw_vers", "-productVersion").trim}, ${command("uname", "-m").trim}")
       line(s"${command((host.javaHome / "bin" / "java").toString, "-version").linesIterator.nextOption()
           .getOrElse("")} (${host.javaHome})")
-      val sbtVersion = "(?m)^sbt.version=(.*)$".r.findFirstMatchIn(Files.readString(checkout.root / "project" /
+      val sbtVersion = "(?m)^sbt.version=(.*)$".r.findFirstMatchIn(Files.readString(worktree.root / "project" /
         "build.properties")).map(_.group(1)).getOrElse("unread")
       line(s"sbt $sbtVersion")
       if want(Program.Mill) then
-        for workspace <- Seq(checkout.millFixture, checkout.millCopy) if Files.exists(workspace / "mill") do
+        for workspace <- Seq(worktree.millFixture, worktree.millCopy) if Files.exists(workspace / "mill") do
           val version = millVersionOf(workspace).getOrElse("unread")
           line(s"mill $version${if millWithoutDaemon(version) then ", without a daemon" else ""}")
       if want(Program.Gradle) then
-        for workspace <- Seq(checkout.gradleFixture, checkout.gradleCopy)
+        for workspace <- Seq(worktree.gradleFixture, worktree.gradleCopy)
             if Files.exists(workspace / "gradle" / "wrapper" / "gradle-wrapper.properties") do
           line(s"gradle ${wrapperRelease(workspace / "gradle" / "wrapper" / "gradle-wrapper.properties", "gradle")
               .getOrElse("unread")}")
       if want(Program.Mvn) then
-        line(s"maven ${wrapperRelease(checkout.mvnFixture / ".mvn" / "wrapper" / "maven-wrapper.properties",
+        line(s"maven ${wrapperRelease(worktree.mvnFixture / ".mvn" / "wrapper" / "maven-wrapper.properties",
             "apache-maven").getOrElse("unread")}")
       val podman = command("podman", "--version").trim
       if podman.isEmpty then line("podman: absent")
@@ -386,7 +386,7 @@ object RunOnHostChecks:
       catch case _: java.io.IOException => ""
 
     /** Refuses a run that a live runner, a server or a daemon of these workspaces would disturb. The emitter starts an
-      * unconfined sbt in this checkout, and one sbt server runs per build directory (SECURITY.md, "Run on host"). */
+      * unconfined sbt in this worktree, and one sbt server runs per build directory (SECURITY.md, "Run on host"). */
     def preflight(workspaces: Seq[Path]): Either[Int, Unit] =
       val claimed = RunOnHostIdle.requireIdle(commandRoot, workspaces)
       val servers = workspaces.flatMap(sbtServers)
@@ -412,21 +412,21 @@ object RunOnHostChecks:
       * the next launch's provisioning would meet a build directory left under the workspace. */
     def makeOlderCopies(): Either[Int, Unit] =
       if want(Program.Mill) then
-        cleanup.add("remove the mill copy")(removeTree(checkout.millCopy))
-        copyFixture(checkout.millFixture, checkout.millCopy, Seq("mill", "build.mill.yaml", "src", "test"))
-        Files.writeString(checkout.millCopy / ".mill-version", DaemonMill + "\n")
+        cleanup.add("remove the mill copy")(removeTree(worktree.millCopy))
+        copyFixture(worktree.millFixture, worktree.millCopy, Seq("mill", "build.mill.yaml", "src", "test"))
+        Files.writeString(worktree.millCopy / ".mill-version", DaemonMill + "\n")
       if !want(Program.Gradle) then Right(())
       else
-        cleanup.add("remove the gradle copy")(removeTree(checkout.gradleCopy))
-        copyFixture(checkout.gradleFixture, checkout.gradleCopy,
+        cleanup.add("remove the gradle copy")(removeTree(worktree.gradleCopy))
+        copyFixture(worktree.gradleFixture, worktree.gradleCopy,
           Seq("gradlew", "build.gradle", "settings.gradle", "gradle", "src"))
-        val properties = checkout.gradleCopy / "gradle" / "wrapper" / "gradle-wrapper.properties"
+        val properties = worktree.gradleCopy / "gradle" / "wrapper" / "gradle-wrapper.properties"
         Files.writeString(properties,
           Files.readString(properties).replaceAll("(?m)/gradle-[^/]*-bin\\.zip$", s"/gradle-$OlderGradle-bin.zip"))
-        val provisioned = HostDriver.host(transcript, Seq("./gradlew", "--version"), cwd = checkout.gradleCopy,
+        val provisioned = HostDriver.host(transcript, Seq("./gradlew", "--version"), cwd = worktree.gradleCopy,
           record = false, timeoutSeconds = Some(900))
         transcript.refuse(provisioned.ok,
-          s"./gradlew --version failed in ${checkout.gradleCopy}:\n${provisioned.text.linesIterator.toSeq
+          s"./gradlew --version failed in ${worktree.gradleCopy}:\n${provisioned.text.linesIterator.toSeq
               .takeRight(20).mkString("\n")}")
 
     private def copyFixture(from: Path, to: Path, entries: Seq[String]): Unit =
@@ -453,7 +453,7 @@ object RunOnHostChecks:
      */
     def setup(targets: Vector[Target]): Either[Int, Map[String, Emitted]] =
       val emitted = out / "emitted"
-      val paths = (emitted +: checkout.root +: targets.map(_.workspace)).map(_.toString)
+      val paths = (emitted +: worktree.root +: targets.map(_.workspace)).map(_.toString)
       val specs = targets.map(target => s"${target.id},${target.program.name},${target.workspace}")
       val runMain = (Seq("Test/runMain agentsandbox.launcher.EmitRunOnHostProfile --checks", s"\"$emitted\"",
         SystemPathsFile) ++ specs.map(spec => s"\"$spec\"")).mkString(" ")
@@ -475,8 +475,8 @@ object RunOnHostChecks:
         _ <- transcript.refuse(result.ok,
           s"the emitter failed:\n${result.text.linesIterator.toSeq.takeRight(20).mkString("\n")}")
         _ = endSbtServer()
-        _ = within(60)(sbtServers(checkout.root).isEmpty)
-        _ <- preflight(Seq(checkout.root) ++ targets.map(_.workspace))
+        _ = within(60)(sbtServers(worktree.root).isEmpty)
+        _ <- preflight(Seq(worktree.root) ++ targets.map(_.workspace))
       yield targets.flatMap(target => emittedOf(emitted, target).map(target.id -> _)).toMap
 
     private def emittedOf(dir: Path, target: Target): Option[Emitted] =
@@ -548,7 +548,7 @@ object RunOnHostChecks:
 
     /** A /bin/sh command under the profile, as a build's script would run it: whether it succeeded, whether it timed
       * out, and the first line it wrote on stderr, which names a denial. Its stdout is discarded. */
-    def underProfile(profile: Path, shell: String, cwd: Path = checkout.root): ProfileOutcome =
+    def underProfile(profile: Path, shell: String, cwd: Path = worktree.root): ProfileOutcome =
       val err = Files.createTempFile(out, "row", ".err")
       val process = ProcessBuilder("/usr/bin/sandbox-exec", "-f", profile.toString, "/bin/sh", "-c", shell)
         .directory(cwd.toFile).redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(err.toFile).start()
@@ -559,10 +559,10 @@ object RunOnHostChecks:
       Files.delete(err)
       ProfileOutcome(finished && process.exitValue == 0, !finished, firstError)
 
-    def expectDenied(profile: Path, label: String, shell: String, cwd: Path = checkout.root): Unit =
+    def expectDenied(profile: Path, label: String, shell: String, cwd: Path = worktree.root): Unit =
       reportDenied(label, underProfile(profile, shell, cwd))
 
-    def expectAllowed(profile: Path, label: String, shell: String, cwd: Path = checkout.root): Unit =
+    def expectAllowed(profile: Path, label: String, shell: String, cwd: Path = worktree.root): Unit =
       reportAllowed(label, underProfile(profile, shell, cwd))
 
     /** A timeout fails the row: a command that the profile wrongly allows can hang, and a hang proves no denial. */
@@ -583,7 +583,7 @@ object RunOnHostChecks:
       present
 
     /** A command started in the background with its output in a file under the run's directory. */
-    def start(name: String, command: Seq[String], cwd: Path = checkout.root,
+    def start(name: String, command: Seq[String], cwd: Path = worktree.root,
         environment: Map[String, String] = Map.empty): Started =
       val log = out / s"$name.log"
       val builder = ProcessBuilder(command*).directory(cwd.toFile).redirectErrorStream(true)
@@ -630,7 +630,7 @@ object RunOnHostChecks:
     def supervisorCommand(program: Program, workspace: Path, arguments: Seq[String]): Seq[String] =
       Seq("/usr/bin/perl", "-e", lockScript, buildLock(program, workspace), "0", javaCommand) ++ CertificateExports ++
         Seq("-cp", classpath, "agentsandbox.launcher.RunOnHost", program.name, workspace.toString,
-          checkout.systemPaths.toString, "--") ++ arguments
+          worktree.systemPaths.toString, "--") ++ arguments
 
     /**
      * Runs the command through the supervisor (RunOnHost): it scavenges, publishes a command directory, starts the

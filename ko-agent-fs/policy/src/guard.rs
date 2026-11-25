@@ -2057,7 +2057,7 @@ mod tests {
         // Most hooks run from the worktree root, but the receive-side hooks run from $GIT_DIR:
         // `../hooksx` read from the worktree leaves this workspace, while the same value read from
         // `.git` is `hooksx` at the root — the directory `pre-receive` executes from on a
-        // host-side push into this checkout, and so read-only.
+        // host-side push into this repository, and so read-only.
         let root = scratch("hookspath-gitdir-base");
         fs::create_dir_all(root.join(".git")).unwrap();
         fs::create_dir_all(root.join("hooksx")).unwrap();

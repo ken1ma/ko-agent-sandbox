@@ -434,7 +434,7 @@ class KoAgentBpfTest extends munit.FunSuite:
     // The launch is refused too when the socket setting alone differs.
     assert(refusal("live,bpf", "vol-app", Vector(tree), socketLive).isDefined)
     assert(refusal("read-only,bpf,unix-socket", "vol-app", Vector(tree), bpfLive).isDefined)
-    // A linked worktree's main gitdir is a raw mount under the main checkout's root.
+    // A linked worktree's main gitdir is a raw mount under the main worktree's root.
     val worktree = Vector(RawMount("/Users/me/wt", "36:5"), gitdir)
     val mainLive =
       LiveSession("s-main", Some(settings("live,fuse")), "vol-main", Vector(RawMount("/Users/me/main", "36:9")), None)

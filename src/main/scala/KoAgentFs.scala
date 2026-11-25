@@ -159,8 +159,8 @@ object KoAgentFs:
          |
          |${KoAgentFsFuseConfEnable.linesIterator.map(line => s"  $line").mkString("\n")}
          |
-         |It persists until the machine is recreated (podman machine rm + init); to undo, restore
-         |the saved original.""".stripMargin,
+         |It persists until the machine is recreated (podman machine rm + init); to undo, remove the
+         |user_allow_other line.""".stripMargin,
     )
     val yourself = "run the script above via `podman machine ssh` yourself, then launch again"
     val reader = ask.getOrElse(

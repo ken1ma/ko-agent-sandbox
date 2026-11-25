@@ -33,7 +33,7 @@ the set, which the CLI would otherwise refresh:
 The login and the launch:
 
     aws sso login --profile my-profile        # or: aws login --profile my-profile
-    java -jar "<checkout>/dist/ko-agent-sandbox.jar" --env-aws-cred=my-profile claude
+    java -jar "<worktree>/dist/ko-agent-sandbox.jar" --env-aws-cred=my-profile claude
 
 The launch prints the three names and the time left. What `--env-aws-cred` does and refuses:
 

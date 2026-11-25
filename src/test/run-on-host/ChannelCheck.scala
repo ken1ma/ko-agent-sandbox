@@ -71,13 +71,13 @@ object ChannelCheck:
     val programs = options.programs - Program.Mvn + Program.Sbt
     val hostPaths = orExit(HostPaths.of(sys.env.get))
     orExit(Either.cond(scala.util.Properties.isMac, (), "Run this on macOS."))
-    val checkout = Checkout(root)
+    val worktree = Worktree(root)
     val out = checkOut(root, "channel")
     val transcript = Transcript(out / "transcript.log", timestamps = true)
-    val checkRun = CheckRun(transcript, checkout, out, programs, hostPaths)
+    val checkRun = CheckRun(transcript, worktree, out, programs, hostPaths)
     runMeasured(transcript, checkRun.cleanup):
-      val targets = targetsOf(checkout, programs)
-      val workspaces = Seq(root, checkout.sbtFixture, checkout.denyFixture, checkout.ivyFixture) ++
+      val targets = targetsOf(worktree, programs)
+      val workspaces = Seq(root, worktree.sbtFixture, worktree.denyFixture, worktree.ivyFixture) ++
         targets.map(_.workspace)
       val measured =
         for
@@ -97,12 +97,12 @@ case class Shimmed(status: Int, out: String, err: String):
 
 /** The groups of rows, in parallel, each with its runner and channel of its own; then the channel's ends, alone. */
 class ChannelGroups(run: CheckRun, emitted: Map[String, Emitted]):
-  private val checkout = run.checkout
-  private val root = checkout.root
+  private val worktree = run.worktree
+  private val root = worktree.root
   private val millTargets = emitted.values.filter(_.target.program == Program.Mill).toVector.sortBy(_.target.id)
   private val gradleTargets = emitted.values.filter(_.target.program == Program.Gradle).toVector.sortBy(_.target.id)
   private val millWorkspaces = millTargets.map(_.target.workspace)
-  private val sbtDirectories = Seq(root, checkout.sbtFixture, checkout.denyFixture, checkout.ivyFixture)
+  private val sbtDirectories = Seq(root, worktree.sbtFixture, worktree.denyFixture, worktree.ivyFixture)
 
   def measure(): Int =
     run.cleanup.add("end what the rows started")(run.endUnclaimed(
@@ -159,10 +159,10 @@ class Channel(run: CheckRun, val name: String, val directory: Path, sbtDirectori
   val tag: String = s"run-on-host-${ProcessHandle.current.pid}-$name"
   val fixtureSleep: String = s"fixture[.]Main sleep $tag([[:space:]]|$$)"
   val shim: Path =
-    if directory == Channel.Directory then Channel.shimFile(run.checkout.root)
+    if directory == Channel.Directory then Channel.shimFile(run.worktree.root)
     else
       val rewritten = stubs / "shim"
-      Channel.executable(rewritten, Files.readString(Channel.shimFile(run.checkout.root))
+      Channel.executable(rewritten, Files.readString(Channel.shimFile(run.worktree.root))
         .replace(s"\ndir=${Channel.Directory}\n", s"\ndir=$directory\n"))
       rewritten
   private var runner: Option[Process] = None
@@ -203,8 +203,8 @@ class Channel(run: CheckRun, val name: String, val directory: Path, sbtDirectori
     removeTree(directory)
     val command = Seq((run.host.javaHome / "bin" / "java").toString) ++ run.CertificateExports ++ Seq("-cp",
       run.classpath, "agentsandbox.launcher.AgentSandboxLauncher", "--serve-run-on-host", podman.toString,
-      s"C-$name", run.checkout.root.toString, "sbt,mill,gradle", log.toString) ++ extra ++
-      Seq(run.checkout.root.toString)
+      s"C-$name", run.worktree.root.toString, "sbt,mill,gradle", log.toString) ++ extra ++
+      Seq(run.worktree.root.toString)
     val builder = ProcessBuilder(command*)
       .redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD)
     environment.foreach(builder.environment.put(_, _))
@@ -342,7 +342,7 @@ object Channel:
   def shimFile(root: Path): Path = root / "container" / "ko-agent-sandbox" / "ko-sandbox-run-on-host"
 
   /** A channel's directory of this run's own under /tmp, with a name that is safe for the rewrites and for the shim's
-    * unquoted uses; the checkout's path may carry a space or a sed delimiter. */
+    * unquoted uses; the worktree's path may carry a space or a sed delimiter. */
   def privateDirectory(): Path = Files.createTempDirectory(Path.of("/tmp"), "ko-agent-run-on-host-channel")
 
   def executable(file: Path, text: String): Unit =
@@ -365,8 +365,8 @@ object Channel:
 /** One group's rows, through its channel. */
 class GroupRows(run: CheckRun, emitted: Map[String, Emitted], ch: Channel):
   private val transcript = run.transcript
-  private val checkout = run.checkout
-  private val root = checkout.root
+  private val worktree = run.worktree
+  private val root = worktree.root
   private val out = run.out
   private val javaBinary = (run.host.javaHome / "bin" / "java").toString
   private val millTargets = emitted.values.filter(_.target.program == Program.Mill).toVector.sortBy(_.target.id)
@@ -374,7 +374,7 @@ class GroupRows(run: CheckRun, emitted: Map[String, Emitted], ch: Channel):
   private val millWorkspaces = millTargets.map(_.target.workspace)
   private val tag = ch.tag
   private val fixtureSleep = ch.fixtureSleep
-  private val sbtDirectories = Seq(root, checkout.sbtFixture, checkout.denyFixture, checkout.ivyFixture)
+  private val sbtDirectories = Seq(root, worktree.sbtFixture, worktree.denyFixture, worktree.ivyFixture)
   /** The mill target whose Mill keeps a daemon, for the planted rendezvous. */
   private val daemonMill = millTargets.find(target => !millWithoutDaemon(millVersion(target)))
 
@@ -428,9 +428,9 @@ class GroupRows(run: CheckRun, emitted: Map[String, Emitted], ch: Channel):
     // The exit criterion's row: an `sbt test` that the agent invokes returns the command's own exit code, the passing
     // test's 0 and the failing test's 1. The tests are fixtures/sbt's, since this repository's own bind TCP listeners,
     // which the profile refuses.
-    val passing = ch.run("test", checkout.sbtFixture, Seq("sbt", "testFull"), 1800)
+    val passing = ch.run("test", worktree.sbtFixture, Seq("sbt", "testFull"), 1800)
     ch.settled()
-    val failing = ch.run("test-failing", checkout.sbtFixture, Seq("sbt", "failing/testFull"), 900)
+    val failing = ch.run("test-failing", worktree.sbtFixture, Seq("sbt", "failing/testFull"), 900)
     ch.settled()
     run.check("channel: sbt test returns the command's own exit code",
       passing.ok && passing.out.linesIterator.exists(_.startsWith("[success]")) && failing.status == 1 &&
@@ -522,9 +522,9 @@ class GroupRows(run: CheckRun, emitted: Map[String, Emitted], ch: Channel):
     * re-requests the resolver and reports its own denial. The second command's report holds only its own request, not
     * the first's carried over, so its count never exceeds the first's. */
   private def deniedHostPerCommand(): Unit =
-    val first = ch.run("deny1", checkout.denyFixture, Seq("sbt", "update"), 600)
+    val first = ch.run("deny1", worktree.denyFixture, Seq("sbt", "update"), 600)
     ch.settled()
-    val second = ch.run("deny2", checkout.denyFixture, Seq("sbt", "about"), 300)
+    val second = ch.run("deny2", worktree.denyFixture, Seq("sbt", "about"), 300)
     ch.settled()
     def reports(result: Shimmed) = result.err.linesIterator.count(_.contains("Command requested network access"))
     val (firstCount, secondCount) = (reports(first), reports(second))
@@ -536,15 +536,15 @@ class GroupRows(run: CheckRun, emitted: Map[String, Emitted], ch: Channel):
   /** Both directories are warm: this repository has a runtime, and fixtures/deny has one. Visiting each again reuses
     * its own runtime; neither retires the other. */
   private def secondBuildDirectory(): Unit =
-    val denyRecord = ch.record("proxy-sbt", checkout.denyFixture)
+    val denyRecord = ch.record("proxy-sbt", worktree.denyFixture)
     val rootRecord = ch.record("proxy-sbt", root)
     ch.run("root", root, Seq("sbt", "about"), 600)
     ch.settled()
     val rootSame = ch.record("proxy-sbt", root) == rootRecord
-    val denyAfterRoot = ch.record("proxy-sbt", checkout.denyFixture) == denyRecord && alive(denyRecord)
-    ch.run("deny3", checkout.denyFixture, Seq("sbt", "update"), 600)
+    val denyAfterRoot = ch.record("proxy-sbt", worktree.denyFixture) == denyRecord && alive(denyRecord)
+    ch.run("deny3", worktree.denyFixture, Seq("sbt", "update"), 600)
     ch.settled()
-    val denyReused = ch.record("proxy-sbt", checkout.denyFixture) == denyRecord
+    val denyReused = ch.record("proxy-sbt", worktree.denyFixture) == denyRecord
     run.check("channel: a second build directory stays warm beside the first, each reused",
       rootRecord.nonEmpty && rootSame && denyAfterRoot && denyReused && alive(rootRecord),
       s"root reused: $rootSame (${aliveWord(rootRecord)}), deny alive after root: $denyAfterRoot, deny reused: " +
@@ -553,15 +553,15 @@ class GroupRows(run: CheckRun, emitted: Map[String, Emitted], ch: Channel):
   /** After `shutdown`, the next command's server is assembled from the build directory afresh. The row edits
     * fixtures/ivy's pin under a live server, and the cleanup restores the pin. */
   private def editedSbtVersion(): Unit =
-    val pinFile = checkout.ivyFixture / "project" / "build.properties"
+    val pinFile = worktree.ivyFixture / "project" / "build.properties"
     val saved = Files.readString(pinFile)
     run.cleanup.add("restore fixtures/ivy's sbt.version")(Files.writeString(pinFile, saved))
-    val before = ch.run("pin1", checkout.ivyFixture, Seq("sbt", "about"), 900)
+    val before = ch.run("pin1", worktree.ivyFixture, Seq("sbt", "about"), 900)
     ch.settled()
     Files.writeString(pinFile, "sbt.version=1.12.13\n")
-    ch.run("pin3", checkout.ivyFixture, Seq("sbt", "shutdown"), 300)
+    ch.run("pin3", worktree.ivyFixture, Seq("sbt", "shutdown"), 300)
     ch.settled()
-    val after = ch.run("pin4", checkout.ivyFixture, Seq("sbt", "about"), 900)
+    val after = ch.run("pin4", worktree.ivyFixture, Seq("sbt", "about"), 900)
     ch.settled()
     Files.writeString(pinFile, saved)
     val (beforeEdit, afterShutdown) = (thisIsSbt(before), thisIsSbt(after))
@@ -1252,7 +1252,7 @@ class GroupRows(run: CheckRun, emitted: Map[String, Emitted], ch: Channel):
     tcpAcceptor.setDaemon(true)
     tcpAcceptor.start()
     val sleeper = ProcessBuilder("/bin/sleep", "3600").start()
-    val activeJson = checkout.denyFixture / "project" / "target" / "active.json"
+    val activeJson = worktree.denyFixture / "project" / "target" / "active.json"
     run.cleanup.add("remove the planted rendezvous"):
       Files.deleteIfExists(activeJson)
       listener.close()
@@ -1269,7 +1269,7 @@ class GroupRows(run: CheckRun, emitted: Map[String, Emitted], ch: Channel):
       Files.writeString(rendezvous / "processId", sleeper.pid.toString)
     if !ch.start() then run.fail(plantedRow, "the runner made no FIFOs")
     else
-      val refused = ch.run("planted", checkout.denyFixture, Seq("sbt", "about"), 300)
+      val refused = ch.run("planted", worktree.denyFixture, Seq("sbt", "about"), 300)
       ch.settled()
       val complete = listener.observed(1)
       run.check(plantedRow, controlCounted && complete && listener.failure.isEmpty && refused.status == 2 &&

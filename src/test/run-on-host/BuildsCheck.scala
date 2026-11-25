@@ -56,13 +56,13 @@ object BuildsCheck:
     val options = orExit(parseOptions(args, usage))
     val hostPaths = orExit(HostPaths.of(sys.env.get))
     orExit(Either.cond(scala.util.Properties.isMac, (), "Run this on macOS."))
-    val checkout = Checkout(root)
+    val worktree = Worktree(root)
     val out = checkOut(root, "builds")
     val transcript = Transcript(out / "transcript.log", timestamps = true)
-    val checkRun = CheckRun(transcript, checkout, out, options.programs, hostPaths)
+    val checkRun = CheckRun(transcript, worktree, out, options.programs, hostPaths)
     runMeasured(transcript, checkRun.cleanup):
-      val targets = targetsOf(checkout, options.programs)
-      val workspaces = Seq(root, checkout.sbtFixture, checkout.denyFixture, checkout.ivyFixture) ++
+      val targets = targetsOf(worktree, options.programs)
+      val workspaces = Seq(root, worktree.sbtFixture, worktree.denyFixture, worktree.ivyFixture) ++
         targets.map(_.workspace)
       val measured =
         for
@@ -75,8 +75,8 @@ object BuildsCheck:
 
 /** The groups of rows, each on a thread of its own and reporting to a transcript of its own. */
 class BuildsRows(run: CheckRun, emitted: Map[String, Emitted]):
-  private val checkout = run.checkout
-  private val root = checkout.root
+  private val worktree = run.worktree
+  private val root = worktree.root
   private val hostPaths = run.host
 
   def measure(jobs: Option[Int]): Int =
@@ -97,9 +97,9 @@ class BuildsRows(run: CheckRun, emitted: Map[String, Emitted]):
     run.checkNothingSurvives(sbtDirectories, millWorkspaces)
     if run.transcript.failed == 0 then 0 else 1
 
-  private val sbtDirectories = Seq(root, checkout.sbtFixture, checkout.denyFixture, checkout.ivyFixture)
-  private val millWorkspaces = Seq(checkout.millFixture, checkout.millCopy, checkout.pinnedMill("mill"),
-    checkout.pinnedMill(s"mill-$DaemonMill"))
+  private val sbtDirectories = Seq(root, worktree.sbtFixture, worktree.denyFixture, worktree.ivyFixture)
+  private val millWorkspaces = Seq(worktree.millFixture, worktree.millCopy, worktree.pinnedMill("mill"),
+    worktree.pinnedMill(s"mill-$DaemonMill"))
 
   /** The first line that matches, or else the output's last line, cut for the row. */
   private def excerpt(output: Output, pattern: String): String =
@@ -205,20 +205,20 @@ class BuildsRows(run: CheckRun, emitted: Map[String, Emitted]):
   /** The rows in sbt fixtures, each a build directory of its own. */
   def sbtFixtureRows(run: CheckRun): Unit =
     run.transcript.step("sbt fixtures through the supervisor")
-    val test = run.supervisor("sbt-test", Program.Sbt, checkout.sbtFixture, Seq("testFull"))
+    val test = run.supervisor("sbt-test", Program.Sbt, worktree.sbtFixture, Seq("testFull"))
     run.check("sbt testFull in fixtures/sbt (supervisor)", test.ok, excerpt(test, if test.ok then "^\\[info\\] Passed"
       else "^\\[error\\]|^refused|Exception"))
     // A build with a dependency between projects: Ivy must take its lock file in the redirected home, or the build
     // dies while canonicalizing ~/.ivy2 (RunOnHostPrereqs.ivyHomeOf).
     val ivyVersion = "(?m)^sbt.version=(.*)$".r
-      .findFirstMatchIn(Files.readString(checkout.ivyFixture / "project" / "build.properties")).map(_.group(1))
+      .findFirstMatchIn(Files.readString(worktree.ivyFixture / "project" / "build.properties")).map(_.group(1))
       .getOrElse("unread")
-    val ivy = run.supervisor("sbt-ivy", Program.Sbt, checkout.ivyFixture, Seq("app/packageBin"))
+    val ivy = run.supervisor("sbt-ivy", Program.Sbt, worktree.ivyFixture, Seq("app/packageBin"))
     run.check(s"sbt $ivyVersion packageBin across dependsOn", ivy.ok, excerpt(ivy, if ivy.ok then "^\\[success\\]"
       else "^\\[error\\]|^refused|Exception"))
     // fixtures/deny's resolution reaches a refused host. The command must fail, and the supervisor's denied-host
     // report must say which host.
-    val deny = run.supervisor("sbt-deny", Program.Sbt, checkout.denyFixture, Seq("update"))
+    val deny = run.supervisor("sbt-deny", Program.Sbt, worktree.denyFixture, Seq("update"))
     if deny.ok then run.fail("fetch unlisted host via proxy", "the command succeeded")
     else run.check("fetch unlisted host via proxy",
       deny.has("Command requested network access") && deny.has("denied.example.com"),
@@ -312,7 +312,7 @@ class BuildsRows(run: CheckRun, emitted: Map[String, Emitted]):
    */
   private def pinnedRows(run: CheckRun, id: String, workspace: Path, version: String, runner: String): Unit =
     run.transcript.step(s"mill $version's pinned and unset mill-jvm-version")
-    val pinned = checkout.pinnedMill(id)
+    val pinned = worktree.pinnedMill(id)
     run.cleanup.add(s"remove $pinned")(removeTree(pinned))
     removeTree(pinned)
     Files.createDirectories(pinned)

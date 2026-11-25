@@ -48,14 +48,14 @@ measurement.
     resolver's (`SeatbeltProfile.MachServices`), and `pgrep` fails under the profile with
     "sysmond service not found".
 
-## The profile probe's confined sbt on this checkout
+## The profile probe's confined sbt in this worktree
 
 - [ ] `RunOnHostProfileIterate.scala`'s `runCommand` fails under the rendered profile after
-  `emit`, which runs an unconfined sbt in the same checkout. The cause is not found.
+  `emit`, which runs an unconfined sbt in the same worktree. The cause is not found.
   - `sbt about` stops at `Compile / previousCompile` with `Operation not permitted` on
     `target/out/jvm/scala-3.8.4/ko-agent-sandbox-build/zinc/inc_compile_3.zip`, then prints
     "failed to connect to server" (2026-10-03).
-  - `narrow` runs the same function in this checkout; `mach` runs it in its fixture.
+  - `narrow` runs the same function in this worktree; `mach` runs it in its fixture.
 
 ## A terminal's sbt in a launch's server
 

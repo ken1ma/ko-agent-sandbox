@@ -50,7 +50,7 @@ fn fails(what: &str, output: Output) {
 }
 
 /// A host repository with two commits and a side branch, built directly in the backing tree — the
-/// host's own `git`, not through the mount, exactly as a user's checkout arrives.
+/// host's own `git`, not through the mount, exactly as a user's repository arrives.
 fn host_repository(backing: &Path) {
     succeeds(
         "host git init",
