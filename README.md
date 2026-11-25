@@ -107,13 +107,14 @@ Coursier installation is planned. Until it is available, build the jar from a ch
 
 ### Getting started
 
-Build the container images once, and again after upgrading the jar:
+Build the container images once, and again after upgrading the jar. `<checkout>` is the directory
+where you ran `sbt dist` ([Build the launcher and images](#build-the-launcher-and-images)):
 
-    java -jar "<path-to-jar>/ko-agent-sandbox.jar" --build
+    java -jar "<checkout>/dist/ko-agent-sandbox.jar" --build
 
 Start an agent from a trusted directory, such as `~/my-project`, which becomes the workspace:
 
-    java -jar "<path-to-jar>/ko-agent-sandbox.jar" claude
+    java -jar "<checkout>/dist/ko-agent-sandbox.jar" claude
 
 Insert these launcher options before the agent command (`claude` above):
 
@@ -123,7 +124,7 @@ Insert these launcher options before the agent command (`claude` above):
    the option.
    For example, to run `claude` and review with `codex` through `/ko-review`:
 
-       java -jar "<path-to-jar>/ko-agent-sandbox.jar" --egress-preset=openai claude
+       java -jar "<checkout>/dist/ko-agent-sandbox.jar" --egress-preset=openai claude
 
 1. Use `--egress=deny-unless-selected` to limit network access to the selected presets, dropping
    the read-only sites.
@@ -141,7 +142,7 @@ credentials in directories such as `.aws` and `.ssh` ([SECURITY.md](SECURITY.md#
 1. To change a session option such as `--egress=`, quit, then relaunch with the new options and
    the agent's resume arguments:
 
-        java -jar "<path-to-jar>/ko-agent-sandbox.jar" --egress=deny-unless-selected claude --continue
+        java -jar "<checkout>/dist/ko-agent-sandbox.jar" --egress=deny-unless-selected claude --continue
 
     1. The resume arguments are `claude --continue`, `codex resume --last`, `agy --continue`,
        `kiro-cli chat --resume`, `copilot --continue` or `opencode --continue`.
@@ -695,7 +696,7 @@ them on.
 
 1. Remove every workspace's state and logs:
 
-       java -jar "<path-to-jar>/ko-agent-sandbox.jar" --reset-all
+       java -jar "<checkout>/dist/ko-agent-sandbox.jar" --reset-all
 
     1. Volumes you named with `--persistent-volume` are not removed.
 
