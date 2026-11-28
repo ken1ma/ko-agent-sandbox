@@ -2,8 +2,8 @@
 
 ## Adding project instructions
 
-Put a project's working conventions in `AGENTS.md` at the project root: `codex`, `agy`,
-`kiro-cli`, `copilot` and `opencode` read it.
+Put a project's rules for how agents write, code, review and use git in `AGENTS.md` at the
+project root: `codex`, `agy`, `kiro-cli`, `copilot` and `opencode` read it.
 
 For `claude`, add a `.claude/CLAUDE.md` whose content is `@../AGENTS.md`, as this repository's
 [.claude/CLAUDE.md](../.claude/CLAUDE.md) does.
@@ -14,8 +14,10 @@ For `claude`, add a `.claude/CLAUDE.md` whose content is `@../AGENTS.md`, as thi
   `allowManagedHooksOnly`:
   https://code.claude.com/docs/en/memory#when-agents-md-support-is-unavailable
 
-The sandbox's own instructions describe the container and the session's permissions, not how to
-work ([design.md](design.md#the-image-carries-no-working-conventions)).
+The sandbox's own instructions describe the container and the session's permissions. Where they
+also say what to do, they tell the agent to follow the project's instructions over their own. To
+stop the offer of `/ko-review`, for example, write "Do not offer a review" in `AGENTS.md`
+([design.md](design.md#a-workspace-can-replace-what-the-image-says-about-how-to-work)).
 
 ## Restoring permission prompts
 

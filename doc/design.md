@@ -268,18 +268,40 @@ A browser callback to 127.0.0.1 reaches the host, while the agent listens inside
 The supported device-code and pasted-code sign-ins need no callback listener exposed to the
 host. [README.md](../README.md#running-command) gives each agent’s sign-in steps.
 
-### The image carries no working conventions
+### A workspace can replace what the image says about how to work
 
-A session receives two sets of agent instructions:
+A session receives two sets of agent instructions besides the workspace's own:
 
 - the image's `AGENTS-SANDBOX.md`, which says what a workspace cannot know about itself;
 - the launcher's "What this session may do", which a workspace must not be trusted to declare.
 
-How an agent writes, codes and uses git is each workspace's choice. That choice goes in the
-workspace's own instruction files, which each installed agent reads without the launcher's help
-([agent-settings.md](agent-settings.md#adding-project-instructions)). The image's file loads
-unconditionally, for `claude` from the managed-policy location. A workspace could add to
-conventions placed there, but never drop them.
+How an agent writes, codes, reviews and uses git is each workspace's choice. That choice goes in
+the workspace's own instruction files, which each installed agent reads without the launcher's
+help ([agent-settings.md](agent-settings.md#adding-project-instructions)).
+
+The image may tell an agent what to do, such as to offer a review after a change, only in a form
+that a workspace can replace:
+
+- `AGENTS-SANDBOX.md` opens by telling the agent to follow the workspace's instructions where they
+  and the file disagree on what to do. So a line in the workspace's instructions replaces any
+  instruction of the file, and the file itself says which of the two to follow.
+  - The image's file loads unconditionally, for `claude` from the managed-policy location, and a
+    workspace cannot remove a sentence from it.
+  - Where two instruction files contradict each other, Claude Code may follow either
+    (https://code.claude.com/docs/en/memory, "Write effective instructions").
+  - Measured with `claude` 2.1.331 and `codex` 0.172.0, each run once without a terminal on the
+    same request in a project under `~`: with the line "Do not offer a review" in the project's
+    `AGENTS.md`, neither agent offers a review after its change, and without the line both do.
+  - The sentence covers the whole file as the agent reads it, the launcher's appended section
+    included. What the file says the container refuses is enforced and stays refused.
+  - The file also says what to report to the user, such as a refused operation or a needed
+    credential, and a session can edit the workspace's instruction files (below). So a session
+    can withdraw those instructions too, for the sessions after it.
+  - Not chosen: the condition on single instructions, such as the offer of a review alone. Each
+    instruction would need a judgement of whether it is a default.
+- A mechanism that the image adds for how to work, such as a hook that asks a question, takes a
+  replacement for its text and does nothing where the replacement is empty. The image has no such
+  mechanism, and `TODO.md` plans one ("A managed Stop hook that asks the host user's question").
 
 A session can edit the workspace's instruction files, and a later session reads the edit. The
 launcher does not prevent that: instruction files change no enforcement.

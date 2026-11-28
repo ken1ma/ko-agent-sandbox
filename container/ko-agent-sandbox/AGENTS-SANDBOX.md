@@ -2,6 +2,8 @@
 
 This container is the security boundary.
 
+Where the workspace's instructions and this file disagree on what to do, follow the workspace's.
+
 ## Unprivileged user, read-only root filesystem
 
 You are `nonroot` with `no-new-privileges` set. Linux capabilities are dropped except for

@@ -21,6 +21,12 @@ Inspect the repository and its working-tree changes yourself.
 Examine what the change adds, such as a state, a rule or a lock: every reader and writer of it,
 two at once, a failure between its steps, and each platform it runs on.
 
+Before you report a gap in what the change adds, look for a design with fewer states, rules or
+locks that has no such gap, and describe it in the finding when you find one.
+
+Read what the repository records as decided on the change's subject, and report as a finding each
+recorded decision that the change contradicts and does not name as reversed.
+
 `findings` are material issues only: correctness, regressions, edge cases, concurrency and resource
 safety, security, compatibility of APIs and behavior, error handling, missing tests. They alone
 decide the disposition.
@@ -32,6 +38,9 @@ the strongest first.
 - A suggestion is a design you would choose over the change's, a simpler way to the same result,
   an alternative another project took for the same problem, or a question about a premise of the
   change, each with its reason.
+- In a changed document, a sentence that leaves you to work out what a person or a program can or
+  cannot do because of it is a suggestion too: quote the sentence, and ask what you would ask its
+  author.
 - The author adopts each suggestion, disputes it on this thread, or puts it to the user when it is
   the user's to decide, as `USER_DECISION_REQUIRED` below defines: withdraw a suggestion that is
   adopted or whose dispute convinces you, and keep the rest.

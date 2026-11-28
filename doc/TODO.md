@@ -28,8 +28,9 @@ and `TODO-win.md` the work that only a Windows host has.
 - [ ] Implement `plan-preset-credential-proxy.md` in its delivery order. At a selected credential's
   refusing hosts, the refusal stops uploads under a foreign key in a form that the catalog
   declares (SECURITY.md, "Exfiltration through allowed network traffic").
-- [ ] Decide `plan-login-brokering.md`, which brokers the agents' own logins so that the refusal
-  covers a signed-in session.
+- [ ] Implement `plan-login-brokering.md` in its delivery order, after the preset plan's step 2.
+  It keeps the agents' own login tokens out of the sandbox, and lets the refusal cover a
+  signed-in session whose launch declares the login's account.
 - [ ] Measure `CODEX_ACCESS_TOKEN@openai`, which the preset plan delivers from Codex's source, with
   a token from a ChatGPT Business or Enterprise workspace, once the plan's step 2 has landed:
   - launch with `--egress-preset=openai --egress-preset-cred=CODEX_ACCESS_TOKEN@openai bash` and
@@ -876,6 +877,37 @@ Recorded Windows results (WSL2 6.18.58.1, podman 6.2.0; 2026-11-23), from launch
 - A plugin holding a directory junction (`New-Item -ItemType Junction`) is refused as "a junction,
   device or pipe".
 - A plugin with neither is accepted, and the banner lists it as `ok@host`.
+
+## A managed Stop hook that asks the host user's question
+
+Asked whether its additions are needed, an agent removes parts that it kept under the rule in
+`AGENTS.md` for that same test (`agents-prompt-rationale.md`, "Add or keep"). A Stop hook can ask
+before the user reads the turn: its `additionalContext` continues the turn, and `stop_hook_active`
+tells the hook that it has asked (https://code.claude.com/docs/en/hooks, "Stop").
+
+- [ ] Measure the hook as a plugin, which needs no image change (`agent-settings.md`, "Claude Code
+  plugins and mods"): a `hooks/hooks.json` Stop command that returns one question once per turn.
+  - Replay the requests that `agents-prompt-rationale.md` records under "Add or keep", with and
+    without the plugin, and compare what each first report holds.
+  - The image gets the hook only if the hook's question removes what the user's question removes.
+    The transcript labels the question `Stop hook feedback`, and whether the model weighs that as
+    it weighs the user is open.
+  - The run also shows whether a command hook runs through `--claude-plugin-dir`: the probe
+    plugin's hook is a module, `hooks/register.tsx`.
+- [ ] Then add the hook to the image as the status line is added: a managed command that reads the
+  question as data from the launch's environment, and asks nothing without it
+  (`agent-settings.md`, "Claude Code status line").
+  - The host user then sets the question in the options file and supplies no command, so no code
+    of the user's runs in the session, as a plugin's would.
+  - The image may carry a default question, and an empty value asks nothing: a workspace can
+    replace what the image tells an agent to do (`design.md`, "A workspace can replace what the
+    image says about how to work").
+  - Open: whether a file in the workspace can replace the question, as the host user's options
+    file can.
+  - Open: when the hook asks. Each question costs one more model pass, so asking at every stop
+    taxes turns that changed nothing. Asking only after a change to named files needs the files'
+    state at the turn's start, since an agent also edits through shell commands.
+  - Open: the same hook for Codex and the other agents.
 
 ## Deferred — the native-image launcher
 

@@ -651,7 +651,21 @@ For Claude:
 - asks the reviewer to examine what the change and each fix add: their readers and writers, two at
   once, partial failure and each platform. An outside reviewer caught holes that fixes had opened
   (`agents-prompt-rationale.md`, "Examine what each fix adds");
-- limits findings to material issues, and asks for suggestions beside them ("The cycle", step 2).
+- asks the reviewer, before it reports a gap in what the change adds, to look for a design with
+  fewer states, rules or locks. In four reviews of `doc/plan-login-brokering.md`, each finding
+  named a gap in a mechanism, each fix added a rule, and none of the 99 findings and suggestions
+  asked whether a mechanism was needed. One chain widened a response check to every path of the
+  login hosts and then bounded each response's size, which refused the documentation that one of
+  those hosts serves;
+- asks the reviewer to read the decisions recorded on the change's subject, and to report each
+  that the change contradicts without naming it as reversed. That plan rewrote token responses and
+  refused paths on a model host while `doc/design.md` recorded both as left out, and none of those
+  findings and suggestions compared the two;
+- limits findings to material issues, and asks for suggestions beside them ("The cycle", step 2);
+- asks the reviewer to give as a suggestion each sentence of a changed document that leaves it to
+  work out what a person or a program can or cannot do, with the question it would ask.
+  - The author cannot make this check. It knows the consequence, so its own sentence reads as
+    complete to it (`agents-prompt-rationale.md`, "what a person or a program can or cannot do").
 
 Further rules of the review:
 

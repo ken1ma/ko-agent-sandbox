@@ -69,8 +69,9 @@ stands for (such as "invariant", "venue", "prose", the verb "mint", or an everyd
 writer's own sense) only when concrete wording loses meaning or precision; name what it stands for
 in the same sentence. Report existing names and wording that fail this, and rewrite rather than
 imitate it in the passage you edit. Describe what a tool or service does with the verb its own
-documentation uses. Read each sentence alone, knowing only what the reader has read. Rewrite the
-sentence rather than mechanically replacing words.
+documentation uses. Read each sentence alone, knowing only what the reader has read. A sentence
+that states a rule or a condition says what a person or a program can or cannot do because of it.
+Rewrite the sentence rather than mechanically replacing words.
 
 Write for an experienced developer reading at speed. Terse means fewer claims, not fewer words per
 claim: keep articles and verbs, and give each sentence one main clause.
@@ -149,7 +150,8 @@ Record what helps other agents, as a rule for a class of cases, in a project doc
    show it.
 3. When a rule was not followed, identify what was missing, ambiguous or conflicting, or what
    prevented following it, and revise it; add a rule only when none covers the case.
-4. Record in `agents-prompt-rationale.md` why each sentence you add or revise earns its place.
+4. Record in `agents-prompt-rationale.md` why each sentence you add to this file or revise in it
+   earns its place.
 
 
 # git

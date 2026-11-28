@@ -22,6 +22,7 @@ VM's own provisioned session token; an attacker-embedded key is rejected by the 
 credentials"): the placeholder, the value grammar, exact-token substitution, the audit field and
 how the value reaches the proxy. `design.md`, "Credential brokering at the egress proxy", records
 what neither covers: stored credentials, refresh, OAuth flows and brokering at a tunnel host.
+`plan-login-brokering.md` takes up the first three.
 
 ## Why a binding is not enough
 
@@ -123,6 +124,8 @@ outlives the volume or needs a record of it. `plan-login-brokering.md` keeps its
   - A container that finds the staging directory without the file moves the remaining root
     entries; with the file, it creates `store` and renames the staging directory where either is
     missing. Only the move precedes the file, so a stop at any step completes at the next launch.
+  - At every launch the container leaves the volume's root unwritable, mode `0555`, as its last
+    step (below).
   - Before it moves any entry, the container refuses when a root entry's name is already in the
     staging directory, names both paths and says to rename one. Its own move renames each entry
     out of the root, so only a planted staging directory collides, and nothing is overwritten.
@@ -134,15 +137,37 @@ outlives the volume or needs a record of it. `plan-login-brokering.md` keeps its
     (Delivery order, step 2).
   - The layout container trusts a version file or staging directory that it finds. A session
     under layout `0.0` could plant the file with a `store` that the proxy then reads, such as an
-    approved binding of an attacker's account. The user accepts that risk, since nothing wrote the
-    file before this layout. A planted staging directory without a collision loses its own name,
-    and its entries land in `home`, which the session sees anyway.
+    attacker's login. The user accepts that risk, since nothing wrote the file before this layout.
+    A planted staging directory without a collision loses its own name, and its entries land in
+    `home`, which the session sees anyway.
 - Every container that the launcher creates on the volume carries the layout version as a label.
   The launch refuses while a container without that label uses the volume, and names it: such a
   container, from a launcher before the layout, mounts the volume's root and would see the store.
-  - A launcher before the layout that starts after the move still mounts the root and shows the
-    store to its session. Every launcher that shares the volume must be updated before the move.
-    The user accepts that risk, since only development builds predate the layout.
+  - A launcher before the layout that starts after the move still mounts the root. Its session
+    could read and write the store there, since the proxy and the sandbox run as one uid. That
+    launch happens to someone who runs two builds, or returns to an older one, on a volume that a
+    newer build settled.
+  - The unwritable root ends that session before its command runs. The entrypoint seeds each
+    agent directory that the root lacks, with `mktemp -d` in the root under `set -eu`
+    (`ko-sandbox-entrypoint`), and a settled root holds no agent directory. The sandbox and the
+    proxy of a launcher with the layout mount `home` and `store` alone, so neither writes the
+    root.
+  - A launcher before the layout can start between the check above and the move, while the root
+    still holds the agent directories, and its session then keeps the root mounted. So the launch
+    lists the volume's containers again after the layout container, and refuses as above. A
+    container that starts after that list meets the unwritable root.
+  - An entrypoint from before the layout that starts between the move and the mode change seeds
+    agent directories into the emptied root. A later session of that launcher would find them,
+    skip seeding and reach its command with the store mounted. So the layout container, once it
+    has left the root unwritable, refuses a root that holds an entry besides the layout's own,
+    and names each such entry. Where `home` holds an entry of that name, the refusal names that
+    path too, and says that `home`'s is the state from before the migration and the root's holds
+    only what was written since: the user removes the root's, or moves over what they want from
+    it. It checks at every launch, so no proxy starts on the volume, and the store holds no
+    login, while such an entry remains.
+  - Open, until step 2 measures it: whether podman changes the root's mode when a container
+    mounts the volume's root. Where the session still starts, the user accepts that it reads the
+    store.
 - Podman removes no volume that a container uses unless `--force` removes the containers first
   (`podman volume rm`). So a running proxy's volume is never removed or created again under it.
 - The store keeps its lock on a file that it never replaces, and writes each change to a new file
@@ -173,6 +198,10 @@ The catalog is a closed image resource beside the presets
   make no host refusing;
 - at each host, the writes, by method and path, that the client sends without a credential, which
   a refusing host forwards without one ("Refusing another credential").
+  - The two lists differ in what they prove. A sign-in request never carries a credential header.
+    A write of the second list was seen without one and may carry one in another run, as Claude
+    Code's `/api/event_logging/v2/batch` does (`anthropic-evidence.md`), so its grant leaves the
+    host refusing.
 
 The catalog's parser and tests require:
 
@@ -235,10 +264,10 @@ entry says otherwise:
     `classify_codex_access_token`). So the placeholder is `at-` followed by 22 random letters and
     digits, whatever the token's length. `EgressCredentials` gives no placeholder a fixed prefix
     yet.
-  - `auth.openai.com` refuses other credentials, since the `openai` preset grants writes at its
-    root. Codex's whoami `GET` carries the placeholder. The measured sign-in requests there carry
-    their codes and tokens in bodies, with no credential header (`openai-evidence.md`), so the
-    entry lists them as writes without a credential.
+  - `auth.openai.com` refuses other credentials, since the `openai` preset grants writes there
+    beyond the sign-in requests. Codex's whoami `GET` carries the placeholder. The measured
+    sign-in requests there carry their codes and tokens in bodies, with no credential header
+    (`openai-evidence.md`), so the entry lists them as writes without a credential.
 - `COPILOT_GITHUB_TOKEN@github` at the four `githubcopilot.com` hosts and `api.github.com`.
   - The variable holds a fine-grained personal access token with the "Copilot Requests" permission
     (https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/authenticate-copilot-cli).
@@ -250,11 +279,13 @@ entry says otherwise:
 - `GH_TOKEN@github` at `api.github.com` and `github.com`, both in the default place, so that `gh`
   and a Git credential helper returning `$GH_TOKEN` share one placeholder. Under the defaults the
   entry has no refusing host: the defaults grant neither host a write beyond `github.com`'s
-  device-sign-in `POST`s, and a Git fetch of a public repository sends no credential.
+  device-sign-in `POST`s, which the entry lists as sign-in requests, and a Git fetch of a public
+  repository sends no credential.
 - agy has no entry: its sign-in is OAuth with a refresh exchange, and a `GEMINI_API_KEY` session may
   send the key in the query (`ko-agent-egress-proxy/doc/preset/google-evidence.md`).
   kiro-cli has none either: its sign-in token is refreshed at expiry
-  (`ko-agent-egress-proxy/doc/preset/aws-evidence.md`).
+  (`ko-agent-egress-proxy/doc/preset/aws-evidence.md`). `plan-login-brokering.md` brokers both
+  logins (Delivery order, step 6).
 
 A workspace or a third-party kit cannot add an entry. A host-owned format for custom entries needs
 its own design for provenance and approval, and waits for a service that the reviewed catalog
@@ -381,12 +412,19 @@ alone (`RunOnHostPrereqs.egressRuleText`).
   (`design.md`, "Credential brokering at the egress proxy", "Brokering the agents' own logins").
   - A ChatGPT Plus or Pro user has no static token to select instead: only Business and
     Enterprise workspaces issue Codex access tokens.
-  - `plan-login-brokering.md` brokers such logins, and gives the refusal the session's own token.
+  - `plan-login-brokering.md` brokers such logins, and gives the refusal the session's own token
+    in a launch that declares the login's account.
 - A request that makes the provider connect to a server the request names carries the session's own
   credential, so the refusal does not stop it (`TODO.md`, "Server tools that connect where a
   request says").
 - A path refusal on the model host does not replace the credential refusal (`design.md`, "Model
-  hosts inspected by default", "Not done").
+  hosts inspected by default", "Not done"). A preset credential's placeholder resolves at every
+  path of its hosts, and the key's scope at its issuer bounds what it does (SECURITY.md, "Why the
+  ruleset is not a capability system"). `plan-login-brokering.md` refuses the known writes that
+  answer with a new credential, and says why no list of a client's writes is chosen ("The
+  rewrite").
+- A write that answers with a new credential returns it unrewritten under a preset credential, as
+  a response that echoes a credential does (SECURITY.md, "Who holds a brokered value").
 
 ## Delivery order
 
@@ -403,6 +441,12 @@ alone (`RunOnHostPrereqs.egressRuleText`).
      Linux, including a proxy killed while it holds the lock; and whether podman's `subpath` mount
      needs its subdirectory to exist, and which owner each subdirectory needs. Measure what the
      layout container adds to a launch on a settled volume.
+     - Measure a launch under the BPF backend with the sandbox's `subpath` mount: its controller
+       records the volume's mountpoint as the volume's root (`KoAgentBpf.launchScript`), and the
+       sandbox then mounts `home` beneath that root.
+     - Measure a session of a build from before the layout on a settled volume: whether the
+       root keeps mode `0555` under that session's mount, and whether the session ends at its
+       entrypoint.
      - macOS, podman 6.1.4, 2026-11-21: a second container's `flock -n` exited 1 while the holder
        held the lock and 0 after the holder was killed.
      - Windows, podman 6.2.0, 2026-11-22: the same results. Linux remains.
@@ -479,6 +523,13 @@ alone (`RunOnHostPrereqs.egressRuleText`).
     with every legacy entry at its path under `home`.
   - A legacy staging directory and root that both hold `settings.json`, with different contents,
     refuse the launch before any move, name both files and leave both as they were.
+  - A session of a launcher from before the layout, started on a settled volume, ends at its
+    entrypoint before its command runs, and leaves the store as it was.
+  - A container without the layout's label that starts on a legacy volume after the launch's
+    first list and before the move refuses that launch at its second list, and is named.
+  - Agent directories that such a container's entrypoint seeds into the root between the move and
+    the mode change refuse that launch and every later one, each naming them, until they are
+    moved or removed. The store holds no login meanwhile.
   - A container without the layout's label on the volume refuses the launch and is named; so does
     a layout version that the launcher does not know.
 - While a launch waits at its start prompt, `podman volume rm` of its volume is refused, and

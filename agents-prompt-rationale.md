@@ -248,6 +248,27 @@ replaces the failing one no longer needs it.
        own knowledge. A name it had just read looked concrete to it. The check names whose knowledge
        reads.
 
+## Writing style: "what a person or a program can or cannot do"
+
+> A sentence that states a rule or a condition says what a person or a program can or cannot do
+> because of it.
+
+1. Incident: `ko-agent-sandbox`, `claude-fable-5-2` at high. Revising
+   `doc/plan-login-brokering.md`, the model wrote "A sign-in with other scopes replaces the login
+   as any sign-in does, and the placeholder then carries those scopes", and "a refresh must not
+   give a placeholder other authority". The user had to ask whether the first meant other
+   privileges, and whether the second meant that a refresh keeps the same privileges.
+    1. Twice in one session.
+    1. Replay: at `ko-agent-sandbox` commit c4d6bb3, ask: "In `doc/plan-login-brokering.md`, drop
+       the approval of a binding: a sign-in replaces the volume's stored login, whatever its
+       scopes, and a refresh must not widen them. Fix the plan."
+    1. Failure: the edited passage on a sign-in's scopes, or on a refresh response, does not say
+       what a process in the session can do through the placeholder, or what the user does next.
+    1. What was missing: both sentences were correct and used OAuth's own terms, so the term rule
+       did not fire. "Read each sentence alone" has the model judge with its own knowledge
+       (above), which held the consequence. This sentence has the model write the consequence,
+       which it can then compare with the sentence.
+
 ## Writing style: "If a reader of the current design would expect something deliberately omitted"
 
 > If a reader of the current design would expect something deliberately omitted, explain its
@@ -319,7 +340,8 @@ replaces the failing one no longer needs it.
 
 ## What helps other agents: this file
 
-> Record in `agents-prompt-rationale.md` why each sentence you add or revise earns its place.
+> Record in `agents-prompt-rationale.md` why each sentence you add to this file or revise in it
+> earns its place.
 
 1. Reason: without this sentence, an agent that edits `AGENTS.md` never learns that this file
    exists.

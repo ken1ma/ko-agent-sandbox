@@ -9,12 +9,35 @@ hosts and in the refresh request. The real tokens live in a store on the host si
 persistent volume.
 
 - Today any process in the session reads an agent's refresh token from the persistent volume
-  (SECURITY.md, "Agents' own provider logins").
-- With a brokered login, the session's own credential is the volume's placeholder. So the refusal
-  of `plan-preset-credential-proxy.md` covers a signed-in session too, not only a static token.
+  (SECURITY.md, "Agents' own provider logins"). The process can send the token out in an allowed
+  request (SECURITY.md, "Exfiltration through allowed network traffic"), and the token then works
+  from anywhere until its owner revokes it. A brokered login works only through this volume's
+  proxies, at the catalog's hosts.
+  - That holds once a sign-in has completed. While one runs, the session holds what completes it:
+    the authorization code and its verifier, which Codex's device poll returns
+    (`codex-rs/login/src/device_code_auth.rs`, `CodeSuccessResp`). A process that sends both out
+    before the client exchanges them lets their receiver take the tokens elsewhere.
+- In a launch that declares the login's account ("Declaring the account"), the session's own
+  credential is the volume's placeholder. So the refusal of `plan-preset-credential-proxy.md`
+  covers a signed-in session too, not only a static token.
+- A process in the session still uses the login through the proxy while the session runs. The
+  proxy cannot tell the agent's request from another process's: the launched command is not a
+  security principal (SECURITY.md, "What the persistent volume holds"), and the log's `client=` is
+  the request's `User-Agent`. The placeholder works at the catalog's hosts alone, and the proxy
+  refuses the known requests that would answer with a new credential ("The rewrite").
 
-This plan reverses `design.md`, "Credential brokering at the egress proxy", "Brokering the agents'
-own logins". That section is rewritten when this plan is accepted.
+This plan reverses these recorded decisions, and delivery step 5 rewrites each where it stands:
+
+- `design.md`, "Credential brokering at the egress proxy": "Brokering the agents' own logins" and
+  "Storing a credential on the host across runs", both under "Left out"; and the rule that a
+  rewrite is "never in a body or a response", with "Response and body rewriting" under "Left out".
+- `design.md`, the same section, "Copilot CLI's `copilot login`" under "Left out", once that
+  login's measurement lands (Delivery order, step 6).
+- `design.md`, "Model hosts inspected by default": "Refusing paths on a model host" under "Not
+  done", and "A host's treatment is chosen in the ruleset alone".
+- `agent-measurement.md`, "Rules", 2: a login host grants every `method=` word at the root.
+- `TODO.md`, "Server tools that connect where a request says", says that a refusal by body "needs
+  a decision of its own". This plan makes that decision for the token and revoke endpoints alone.
 
 ## Why the earlier reasons no longer hold
 
@@ -24,13 +47,29 @@ own logins". That section is rewritten when this plan is accepted.
   closed, within the limits that "The rewrite" states.
 - "A host-side OAuth flow needs a public-client registration": the client signs in and refreshes
   under its own client identity, and the proxy only rewrites what passes.
-- "Hiding the model token does not pay": the refusal needs the session's own token, which only a
-  brokered login gives a signed-in session.
+- "Hiding the model token does not pay", since a stolen model token is "a nuisance to the account
+  holder": a token copied out of the volume works from anywhere until its owner revokes it, and
+  some logins grant more than model access (SECURITY.md, "The web reached through the model
+  provider"). The refusal needs the session's own token as well, which a brokered login gives a
+  signed-in session.
 - "Storing a credential on the host across runs" ("Left out"): the tokens already outlive the run,
   in a volume that the sandbox reads. The store moves them where the sandbox cannot read them, in
   the same volume, so they need no cleanup of their own. One placeholder per token kind keeps the
   store to one entry set per login, with no generations of placeholders to track (One placeholder
   per token kind); the store still needs the lock that "The store" describes.
+- "Never in a body or a response", since "broader rewriters recurrently fail by breaking
+  applications that carry tokens of their own": the proxy rewrites only a declared field, in a
+  request to a declared token or revoke endpoint and in that request's response. Every other body
+  and response passes as sent.
+- "Such a refusal is a per-release contract with each CLI" ("Refusing paths on a model host"): the
+  plan accepts that contract for the few known writes that answer with a new credential ("The
+  rewrite"). A release that moves one of them returns its credential unrewritten until the
+  catalog follows. Each release's measurement already compares the paths that the client calls
+  with the records (`agent-measurement.md`, "The measurement suite").
+- "A host's treatment is chosen in the ruleset alone": while brokering is on for a login, a
+  setting in the volume's store decides whether the proxy opens a workspace's tunnel to that
+  login's hosts ("The rewrite"). A tunnel there would bring a sign-in's real tokens into the
+  volume.
 
 ## Prior art
 
@@ -74,9 +113,13 @@ A closed catalog entry in the proxy image names, per agent login:
   `openai-evidence.md`). Codex's device poll, `/api/accounts/deviceauth/token`, is no token
   endpoint: it answers with an authorization code that `/oauth/token` then exchanges
   (`codex-rs/login/src/device_code_auth.rs`, `CodeSuccessResp`);
-- the paths that the check below reads: every path on the login hosts, `platform.claude.com` and
-  `auth.openai.com`, and the paths under `/v1/oauth/` on `api.anthropic.com`, which streams model
-  responses at its other paths;
+- the path prefixes whose writes the check below reads: `/v1/oauth/` on `platform.claude.com` and
+  on `api.anthropic.com`, and `/oauth/` and `/api/accounts/deviceauth/` on `auth.openai.com`.
+  - The presets grant the login hosts, `platform.claude.com` and `auth.openai.com`, no write
+    outside these prefixes (Delivery order, step 3). So the ruleset refuses a token endpoint that
+    a release moves elsewhere on a login host, unless a workspace's rule grants a write there. A
+    sign-in at a path that such a rule grants brings real tokens into the volume.
+  - `api.anthropic.com` keeps its writes at the root, where it serves model traffic;
 - the revoke endpoints: those that the measured sign-outs called, Claude Code's
   `platform.claude.com` `/v1/oauth/token/revoke` and Codex's `auth.openai.com` `/oauth/revoke`;
   and `api.anthropic.com` `/v1/oauth/token/revoke`, where `ant auth logout` revokes the profile's
@@ -85,14 +128,15 @@ A closed catalog entry in the proxy image names, per agent login:
   proxy brokers only token requests that carry one: a refresh token is bound to the client that it
   was issued to (RFC 6749, section 6), so another client's grant must not share the login's
   placeholders. Another client's sign-in passes unbrokered, and its real tokens are refused as
-  foreign once a login is approved there.
+  foreign where a launch's refusal applies ("Selection and the refusal").
   - Claude Code's entry names two: its `CLIENT_ID`, which its subscription sign-in sends, and the
     Anthropic profile client, which its Console sign-in sends and writes into the profile
     (2.1.326's binary). `ant auth login` uses the profile client too (anthropic-cli
     `pkg/cmd/cmd_auth.go`, `oauthClientIDProd`), so the proxy brokers it as the Console sign-in
     (below).
   - The `client_id` selects the catalog rule and proves nothing: a client identifier is no secret
-    (RFC 6749, section 2.2). The account binding and its approval establish trust.
+    (RFC 6749, section 2.2). A launch's declaration says which account it trusts ("Declaring the
+    account").
   - A revoke request needs none: Codex revokes an access token without one
     (`codex-rs/login/src/auth/revoke.rs`, `RevokeTokenKind`). The proxy recognizes a revoke by its
     declared endpoint; a current placeholder in its token field decides whether the proxy resolves
@@ -103,8 +147,8 @@ A closed catalog entry in the proxy image names, per agent login:
   `plan-preset-credential-proxy.md`'s catalog declares. A host outside the entry gets the
   placeholder unresolved, so a feature that sends the token there fails until a measurement adds
   the host (Open questions);
-- the routes on an API host that answer with a new credential, which the proxy refuses before it
-  forwards them. Claude Code's legacy Console sign-in, "Create an API key", sends `POST`
+- the known writes that answer with a new credential, which the proxy refuses whatever credential
+  they carry. Claude Code's legacy Console sign-in, "Create an API key", sends `POST`
   `api.anthropic.com` `/api/oauth/claude_cli/create_api_key` with the access token, and stores the
   response's `raw_key`, a real API key; a subscription sign-in, whose token has the
   `user:inference` scope, skips it (2.1.326's binary).
@@ -118,17 +162,25 @@ A closed catalog entry in the proxy image names, per agent login:
     that the response carries (`codex-rs/login/src/auth/manager/workspace_switching.rs`,
     `exchange_workspace_token`). `/backend-api` is the path of Codex's production ChatGPT base URL
     (`codex-rs/agent-identity/src/lib.rs`). The entry refuses it: another workspace is another
-    account, which the launcher action and a sign-in bring in.
+    account, which a sign-in brings in.
   - Claude Code's Remote Control registers with `POST` `api.anthropic.com`
     `/v1/environments/bridge` under the access token, and reads `environment_secret` from the
     response, the credential of its later polls (2.1.326's binary, `anthropic-evidence.md`). The
     entry refuses it until the proxy captures that secret (Open questions), so Remote Control fails
     at its start.
   - A route that creates a credential and that the catalog does not list returns it unrewritten,
-    as a response that echoes a credential does (SECURITY.md).
+    as a response that echoes a credential does (SECURITY.md). Each release's measurement reports
+    a path that no record lists (`agent-measurement.md`, "The measurement suite"); a new write at
+    an API host is then read for what its response holds, and joins these routes when it holds a
+    credential.
+  - Not chosen: a list of the writes at which a placeholder resolves, with every other write
+    refused, for a login or for a preset credential. Such a list fails each time a release adds or
+    moves an endpoint, and in every mode that no measurement ran: the image installs each client's
+    latest release unmeasured (`agent-measurement.md`, "Rules"). It would also refuse a workspace's
+    own programs, which may use a selected key at other paths.
 
 Claude Code's keyless Console sign-in belongs to Claude Code's login, as its subscription sign-in
-does: a volume holds one login per client ("Which account the store accepts"). Claude Code keeps
+does: a volume holds one login per client ("The login's account"). Claude Code keeps
 the Console sign-in as an Anthropic profile, whose `credentials/<profile>.json` holds
 `access_token`, `expires_at` and `refresh_token`
 (https://platform.claude.com/docs/en/manage-claude/wif-reference, "Configuration directory"), and
@@ -145,22 +197,23 @@ JSON, so step 3's first run records each request's body format.
 
 The proxy:
 
-- reads each response at the catalog's checked paths whole, with any status, before it stores or
-  forwards any part of it. They cover every path on the login hosts, since the presets grant
-  `POST` at the roots of `platform.claude.com` and `auth.openai.com`:
+- reads each response to a write under the catalog's checked prefixes whole, with any status,
+  before it stores or forwards any part of it:
   - the body is at most 64 KiB, enforced while the proxy reads a declared length, a chunked body
     or a body that the connection's close ends; a longer one is refused before any byte reaches
-    the client. Open: the bound, until step 3's rewrite logs the largest response at each checked
-    path that the measurements list, since the bound applies to every one of them;
+    the client. Open: the bound, until step 3's rewrite logs the largest response to each checked
+    write that the measurements list, since the bound applies to every one of them;
+  - a read's response passes as it arrives, under a checked prefix too. `platform.claude.com` also
+    serves Anthropic's documentation, whose pages no bound for a token response admits. Measured
+    on 2026-11-24 with `Accept-Encoding: identity`: `/docs/en/build-with-claude/files` is
+    1,064,757 bytes, and `/llms.txt` 108,297;
   - the proxy asks for the body uncompressed (`Accept-Encoding: identity`) and refuses a compressed
     one, so that it reads what the client would;
   - the proxy forwards the body, rewritten or not, with a `Content-Length` of its own length and no
     `Transfer-Encoding`, as it forwards a token request. A `204` goes without either header, which
-    HTTP forbids on it (RFC 9110, section 8.6). A `304` or a response to `HEAD` keeps its headers,
-    which describe a representation, not the body: the proxy rewrites only token and revoke
-    responses, which answer `POST` (RFC 6749, section 3.2; RFC 7009, section 2.1). An interim
-    head, such as `103 Early Hints`, reaches the client before the final head, as the relay
-    forwards it today, but without either header, which HTTP forbids on every `1xx`;
+    HTTP forbids on it (RFC 9110, section 8.6). An interim head, such as `103 Early Hints`,
+    reaches the client before the final head, as the relay forwards it today, but without either
+    header, which HTTP forbids on every `1xx`;
 - reads each request to a token or revoke endpoint whole before it forwards any part of it, so
   that it decides and substitutes on the bytes that it sends:
   - the body has a bound, enforced while the proxy reads a declared length or a chunked body, and a
@@ -172,8 +225,8 @@ The proxy:
   - the proxy answers `Expect: 100-continue` with its own `100` and forwards the request without
     `Expect`, since the provider sees nothing until the body has arrived. Elsewhere the relay sends
     no interim response of its own (`AgentEgressProxy.scala`, `relayInspected`);
-- refuses a token or revoke request, or a response at a checked path, whose body repeats a field
-  name, in a JSON object at any depth or in a form body, even with equal values:
+- refuses a token or revoke request, or a checked response, whose body repeats a field name, in a
+  JSON object at any depth or in a form body, even with equal values:
   - RFC 6749 forbids a repeated parameter (section 3.2). A repeat could let the proxy read one
     value and the provider or client another, such as a second `grant_type` beside the exchange
     that the proxy refuses, or a second `access_token` beside the one it replaces;
@@ -184,22 +237,38 @@ The proxy:
     and the token-name check below, so `"\u0061ccess_token"` repeats `access_token` and
     `client%5Fid` repeats `client_id`. It finds repeats while it parses, before a map could drop
     them, and refuses a request before forwarding it;
-- refuses the whole response when it holds a field named like a token (`access_token`,
+- stores the declared tokens of a successful (`2xx`) refresh response before the checks that
+  decide only whether to forward it. The provider has replaced the refresh token by then, and
+  Claude Code's provider refused the old one 17 seconds later ("The store"). So a refresh response
+  that the proxy refuses to forward leaves the client's placeholders on the new tokens.
+  - A refresh must not let a placeholder do more than its sign-in permits. So the proxy stores
+    nothing from a refresh response that names another user, organization or workspace than the
+    login's, or a scope that the login's sign-in did not grant, and refuses to forward it. A
+    response that names fewer scopes is stored as any other.
+  - A response over the bound, or one that does not parse, stores nothing either.
+  - A response that stores nothing ends a login whose provider no longer accepts the old refresh
+    token: the next refresh fails, and the user signs in again.
+- refuses to forward a checked response that holds a field named like a token (`access_token`,
   `refresh_token`, `id_token` or another `*_token`) that the entry does not declare for that path,
   a declared field beside it included. nono checks its capture hosts' unmatched paths and error
   responses for such fields (`docs/cli/features/sandboxed-oauth-logins.mdx`, "token_endpoints");
-  - the check fails closed for a moved endpoint, an error response and a new token field, but not
-    for a token under a name it does not recognize;
+  - the check fails closed for an error response, for a new token field and for a token endpoint
+    that a release moves within a checked prefix, but not for a token under a name it does not
+    recognize;
   - nor for a token response that a release moves out of `/v1/oauth/` on `api.anthropic.com`. A
     refresh moved there still fails, since the proxy resolves the refresh placeholder only at a
     token endpoint. A sign-in's exchange moved there brings real tokens into the volume until a
     measurement lists its path;
+  - a provider can add a token field without a client release, which no release's measurement
+    sees. Until the catalog declares the field, each refresh stays in the store while the client
+    reads it as failed, and each sign-in is refused. Turning brokering off is the way back
+    (below);
 - refuses a response with an error status that holds any token field, declared or not, and stores
   nothing from it, so a failed exchange never replaces a working credential;
 - otherwise, for a successful (`2xx`) response, replaces each declared token in a token endpoint's
   response with the volume's placeholder for that field, after it stores the real token. A
-  refresh reaches the provider only with the volume's refresh placeholder, so a login binds only
-  at a sign-in ("Which account the store accepts");
+  refresh reaches the provider only with the volume's refresh placeholder, so only a sign-in
+  changes whose account the login is ("The login's account");
 - puts the real refresh token in place of its placeholder in a token request, and the real access
   token in place of its placeholder at the API hosts.
 
@@ -210,33 +279,31 @@ refusal names the rule and the launcher action below. A tunnel at the login host
 sign-in's real tokens into the volume, and one at an API host would pass foreign credentials beside
 the refusal, as the preset plan refuses a tunnel at an entry's host.
 
-- A launcher action turns brokering off for a login on the volume, and drops its binding and its
-  login; only then may a proxy open a tunnel to those hosts. This keeps the way back that
-  `design.md`, "Model hosts inspected by default", leaves for a client release that fails under
-  inspection. A later launch that declares the login is refused ("Declaring the account").
+- A launcher action turns brokering off for a login on the volume, and drops its login in the same
+  write; from then on a proxy opens a tunnel to those hosts, except in a launch that declares
+  the login ("Declaring the account"). This keeps the way back that `design.md`, "Model hosts
+  inspected by default", leaves for a client release that fails under inspection, and it is the
+  way back from a token response that the catalog does not yet read. A
+  launch that declares the login is refused meanwhile ("Declaring the account").
 - The setting lives in the store, so it follows the store's volume, and every launch on the volume
   reads the same one whatever its launcher's state root. A new store starts with brokering on. A
   proxy whose store exists but cannot be read refuses to start, names the store, and leaves it for
-  recovery, since it could enforce neither the setting nor the approvals.
-- Each proxy holds a shared lock on a presence file in the store for its whole run, reads the
-  setting under it at its start, and keeps the setting for its run. A proxy brokers nothing for a
-  login whose brokering is off.
-- The action takes the presence lock exclusively without waiting, and is refused, in either
-  direction, while any proxy on the volume holds it, a paused launch's included. So the setting
-  never changes under a proxy; a proxy that starts during the action waits for it and reads the
-  new setting. The kernel releases a dead proxy's lock.
-  - Every path takes the presence lock before the store's lock, so the two cannot deadlock.
-  - Turning brokering off drops the login and its binding and records the setting in one write.
+  recovery, since it could enforce neither the setting nor a declaration.
+- A proxy reads the setting under the store's shared lock at each decision that depends on it: a
+  tunnel's `CONNECT` to a login's host, a token request and a placeholder's resolution ("The
+  store"). The action writes it under the exclusive lock. So a change applies to the next decision
+  in every proxy on the volume, and the action needs no session stopped.
+  - A tunnel opened while brokering was off runs on to its end after brokering is turned on, as a
+    WebSocket opened before a change does ("The store").
 - The store is in the persistent volume, so a volume removed and created again starts with a new
   store, brokering on, and podman removes no volume that a running proxy uses
   (`plan-preset-credential-proxy.md`, "The volume's store").
-- The banner shows the setting from the launcher's saved reports, as it shows bindings, so a launch
-  that tunnels such a host learns of the refusal when its proxy starts, before the sandbox's
-  container starts. Tunnels at those hosts serve a client release that fails under inspection, so
+- A proxy reports at its start each tunnel of its ruleset that the setting refuses, before the
+  sandbox's container starts, and the banner shows the setting from the launcher's saved report
+  ("The store"). Tunnels at those hosts serve a client release that fails under inspection, so
   this is rare.
 - Either change takes a sign-in. Off leaves the client's credentials holding placeholders that
-  resolve nothing; on refuses the client's refresh of its real tokens ("Which account the store
-  accepts").
+  resolve nothing; on refuses the client's refresh of its real tokens ("The login's account").
 
 Where a host of the catalog's token or revoke endpoints refuses other credentials, the sign-in,
 refresh and revoke requests that it receives, which carry their codes and tokens in bodies with no
@@ -312,110 +379,74 @@ scoped to the volume, and OpenShell's stable handle.
   - The proxy tells the exchange by its body: `setup-token` adds `expires_in`, which `/login`'s
     exchange does not send (the 2.1.326 binary).
 
-## Which account the store accepts
+## The login's account
 
 A sign-in inside the sandbox could bring an attacker's account: a process could exchange an
 authorization code that the attacker obtained for their own account, and the provider answers with
-real tokens. Captured blindly, that account would stand behind the volume's placeholder, and the
-refusal would pass uploads to it.
+real tokens. That account then stands behind the volume's placeholder. The store accepts any
+sign-in all the same. A launch that declares the login's account refuses the placeholder while
+the store's login is another account's, and refuses other credentials ("Declaring the account").
+An undeclared launch does neither ("What an undeclared launch leaves open").
 
-- The store binds a login to the account of the first sign-in that it captures in the volume;
-  under a declaration, only a sign-in to the declared address binds ("Declaring the account"). The
-  banner names that account at every launch and whether the user approved it, or says that the
-  login is unbound.
-- The proxy binds under the store's exclusive lock, comparing and writing in one step, so of two
-  launches that sign in at once to different accounts, one binds and the other's response is
-  refused.
-- A refresh keeps the placeholders. A token response for another account is refused, and nothing
-  is stored. The refusal names the bound account, the account that signed in and the launcher
-  action below, so a user whose own sign-in meets another account's binding learns why and what to
-  do.
+- A sign-in replaces the volume's login for its client: the store holds the new tokens behind new
+  placeholders, and records the account that the response names. So changing the account, or
+  switching between Claude Code's subscription and Console sign-ins, takes a sign-in and nothing
+  else.
+  - A volume thus holds one login per client. Claude Code's keyless sign-in itself signs out of
+    the claude.ai login (https://code.claude.com/docs/en/authentication, "Sign in without an API
+    key").
+- The proxy replaces the login under the store's exclusive lock, in one write. So of two launches
+  that sign in at once, the later write is the volume's login, whole.
+  - Each client saves its own response afterwards, in either order. Where the earlier sign-in's
+    client saves last, the shared credentials file holds retired placeholders, which authenticate
+    nothing, and the user signs in again.
+- The store records, where the sign-in response names them, the user, the organization, the
+  workspace, the granted scopes, the email address and the organization's and workspace's names.
+  Claude Code 2.1.330 reads `account.uuid`, `account.email_address`, `organization.uuid`,
+  `workspace.id` and `scope` from its token response (the binary's `formatTokens`); Codex's ID
+  token names `sub`, `email` and `chatgpt_account_id` (`openai-evidence.md`). Step 3's first run
+  confirms the fields in the token responses.
+  - The store records the address only where the sign-in satisfies the entry's verification
+    rule, such as Codex's `email_verified`. A login without a recorded address matches no
+    declaration, whichever launch took its sign-in, so no declared launch runs on an address that
+    the provider did not verify.
+  - A declaration compares the address ("Declaring the account"), a refresh the user, the
+    organization, the workspace and the scopes ("The rewrite"), and the banner shows the address
+    and the names.
+  - The store keeps the provider's stable user identifier beside the address, since OpenID Connect
+    lets a provider move an address to another subject (Core, section 5.7).
+  - A sign-in whose token has other scopes replaces the login as any sign-in does. The placeholder
+    then permits what those scopes permit at the provider, which can be more than before. Two
+    Anthropic profiles of one user and organization can differ in workspace and scopes, such as a
+    profile with `org:admin`
+    (https://platform.claude.com/docs/en/cli-sdks-libraries/cli/authentication, "Admin access").
+  - The user grants a sign-in's scopes in the host's browser. The proxy never sees the authorize
+    request, so it cannot hold a sign-in to the scopes that the client itself asks for.
 - While brokering is on, the proxy refuses a token request that sends back a token other than the
-  volume's placeholder, such as a real refresh token, bound or not. So a login from before the
-  binding, or from before brokering, brings no real token into the volume: its next refresh fails,
-  and the refusal says to sign in again, which brokers the login. A real access token works until
-  it expires.
-- Each entry declares the field that names the account in its sign-in responses. The proxy
-  refuses a sign-in response without it, since it can neither bind nor compare that response.
-- On the host, a launcher action drops the volume's binding and login: to change the account, to
-  switch between Claude Code's subscription and Console sign-ins, to refuse a pending binding, or
-  to sign out when the agent's own sign-out sent no revoke request. The next sign-in then binds
-  anew and gets new placeholders.
-- The binding holds a user, an organization, a workspace where the token is scoped to one, and
-  the granted scopes, each where the credential has it; a change in any of them is another
-  account. Claude Code 2.1.330 reads `account.uuid`, `organization.uuid` and `workspace.id` from
-  its token response (the binary's `formatTokens`); Codex's ID token names `sub` and
-  `chatgpt_account_id` (`openai-evidence.md`). Step 3's rewrite confirms the fields in the token
-  responses.
-  - The proxy compares scopes as sets, read where the entry declares that its sign-in responses
-    carry them, such as a response field or a claim of a token in the response. A sign-in
-    response without them is refused: the proxy never sees the authorize request that a missing
-    field would repeat (RFC 6749, section 5.1).
-  - A login whose entry can name no such place is not brokered until a measurement finds one, so
-    that two grants of different authority never look alike to the store.
-  - A refresh response without scopes keeps those that the refresh request named, or the bound
-    ones when it named none (RFC 6749, section 6).
-  - The scopes are part of it because a placeholder must not gain authority. Two Anthropic
-    profiles of one user and organization can differ in workspace and scopes, such as a profile
-    with `org:admin` (https://platform.claude.com/docs/en/cli-sdks-libraries/cli/authentication,
-    "Admin access"). Claude Code reads the scopes from its token response (2.1.326's binary).
-  - Profiles with the same identity share the login's placeholders, since they carry the same
-    authority. A volume thus holds one identity per client. Claude Code's subscription and Console
-    sign-ins differ in scopes, so a switch between them is another account; Claude Code's keyless
-    sign-in itself signs out of the claude.ai login
-    (https://code.claude.com/docs/en/authentication, "Sign in without an API key").
-  - The prompt shows the whole identity, scopes included, with the email address and the
-    organization's and workspace's names; the banner shows the email address and the names.
-    Claude Code keeps `oauthAccount.emailAddress` and organization fields in
-    `~/.claude/.claude.json`, and Codex's ID token has an `email` claim and each organization's
-    `title`. Step 3 confirms where each token response carries them.
-- A binding waits for the user's approval. The next launch under `--session-start=pause` names
-  the pending account at its start prompt, and the user approves the binding or drops it with the
-  login.
-  - A launch that reads no answer leaves the binding pending: under `immediate`, and under `pause`
-    without a terminal, where the launch starts without a prompt, as for every consent that the
-    start prompt carries (`AgentSandboxLauncher.startPrompt`). Its banner names two ways to
-    approve the binding: `--egress-login` with the pending identity at a later launch, which needs
-    no prompt ("Declaring the account"), and the launcher action, which is refused while any
-    session on the volume runs.
-  - Until the approval the login is brokered, but the refusal is off, as on an unbound volume
-    ("What an undeclared login leaves open").
-  - An attacker who signs in first can write the placeholders it receives into the client's
-    credentials file. The client then works under the attacker's account, and a binding that
-    took effect at once would make the refusal protect that account.
-  - The launcher records the approval in the store, and every proxy on the volume applies the
-    refusal from then on.
-  - The answer, an approval or a drop, names the binding that the prompt showed by its identity.
-    The proxy compares it with the store's under the exclusive lock, and requires the binding to
-    be still pending; it refuses a mismatch. So a prompt that showed a dropped binding approves no
-    successor of another identity, and a second prompt for the same binding drops no login that
-    the first approved.
-  - A successor of the same identity takes the answer: it carries the authority that the prompt
-    showed, and the user approves that authority, not the placeholders.
-  - Refusing writes until the approval is not chosen: every model call is a `POST`.
+  volume's placeholder, such as a real refresh token. So a login from before brokering brings no
+  real token into the volume: its next refresh fails, and the refusal says to sign in again, which
+  brokers the login. A real access token works until it expires.
+- On the host, a launcher action drops the volume's login, to sign out when the agent's own
+  sign-out sent no revoke request. It writes under the store's exclusive lock, so it needs no
+  session stopped ("The store").
 
 ## Declaring the account
 
-`--egress-login=LOGIN:IDENTITY`, such as `--egress-login=codex:me@example.com`, approves in
-advance the binding of the login's next sign-in on the volume, so that the refusal protects the
-session from its first request. The option is not required: a required declaration would ask every
+`--egress-login=LOGIN:IDENTITY`, such as `--egress-login=codex:me@example.com`, names the account
+that the launch trusts for a login. The refusal covers a login only in a launch that declares it
+("Selection and the refusal"). The option is not required: a required declaration would ask every
 user for each client's exact identity before the client first starts.
 
 - `LOGIN` names a catalog login, `claude` or `codex`, and `IDENTITY` the user's email address at
   its provider. Each entry declares the response field or claim that carries the address, and
   cites the provider's evidence that it verifies the address and keeps it on one account. The
   launch refuses a declaration for a login whose entry lacks either.
-  - The address matches only at the first sign-in, and when a declaration approves a pending
-    binding. The binding then holds the provider's stable user identifier, as every binding does,
-    since OpenID Connect lets a provider move an address to another subject (Core, section 5.7).
   - Codex's ID token has the claims `email`, `email_verified` and `sub` (`openai-evidence.md`),
-    and the proxy requires `email_verified` to be true.
-  - Claude Code 2.1.330 reads `account.email_address` from its token response, beside
-    `account.uuid`, `organization.uuid`, `workspace.id` and `scope` (the binary's `formatTokens`).
-    Step 3's first run confirms that each sign-in response holds them.
+    and the store records the address only when `email_verified` is true ("The login's account").
+  - Claude Code 2.1.330 reads `account.email_address` from its token response ("The login's
+    account"). Step 3's first run confirms that each sign-in response holds it.
 - The option comes from the command line or the options file, never from a repository file, as
-  `--egress-preset-cred` does: a workspace's declaration would bind the attacker's account in
-  advance.
+  `--egress-preset-cred` does: a workspace's declaration would name the attacker's account.
   - In the options file, one declaration reaches every volume at its next launch, in every
     workspace and after `--reset`. The README recommends it there.
   - It merges as `--egress-cred` does: a command-line `--egress-login` replaces the file's entry
@@ -423,65 +454,48 @@ user for each client's exact identity before the client first starts.
     account declares that account on its command line.
   - A launch that names one login twice, after the options file and the command line merge, is
     refused.
-- A declaration writes nothing to the store by itself, so the store holds only what a sign-in and
-  its approval leave:
-  - The proxy keeps the launch's declarations in memory. It refuses at each declared login's API
-    hosts from the session's first request, and accepts the login's access placeholder only while
-    the volume's binding names the declared identity ("Selection and the refusal").
-    - Another launch on the volume can bind another identity first. The refusal then names both
-      identities, so this session never runs on an account that it did not declare.
-  - The first sign-in to the declared address binds the login approved, without a prompt: the
-    declaration is the approval. The store then holds what a sign-in and its approval at a later
-    launch leave, which later launches keep without the option. An attacker cannot sign in as that
-    address while the provider verifies it and keeps it on one account.
-  - A sign-in to another address is refused, as any sign-in to another account is, and stores
-    nothing ("Which account the store accepts"). So a mistyped declaration costs one relaunch.
-  - A session without a sign-in leaves the store unchanged.
-- At the launch, the proxy checks every declaration against the store under the exclusive lock
-  before any takes effect, so a launch refused for one declaration approves nothing for another:
-  - a declaration that names the identity of the volume's pending binding approves the binding.
-    This is the one write that a declaration makes without a sign-in: the binding came from a
-    sign-in at an earlier launch, so the store again holds what a sign-in and its approval leave;
-  - one that names the identity of the volume's approved binding changes nothing;
-  - one that names another identity than the volume's binding, pending or approved, refuses the
-    launch, and the refusal names both identities and the launcher action that drops the binding
-    and its login. Refusing makes an attacker's pending binding loud: every launch that declares
-    the user's identity stops until the user drops it, which needs the sessions on the volume
-    stopped;
-  - one for a login whose brokering is off on the volume refuses the launch, and the refusal names
-    the launcher action that turns brokering on: turning brokering off drops the binding, which a
-    declared sign-in would otherwise bring back.
-- A paused launch asks nothing at its start prompt about a login that it declares: the
-  declaration decides that binding, and a mismatch refuses the launch.
+- A declaration writes nothing to the store. The proxy keeps the launch's declarations in memory,
+  and in that launch:
+  - it refuses other credentials at each declared login's API hosts from the session's first
+    request ("Selection and the refusal");
+  - it accepts the login's access placeholder only while the store's login names the declared
+    address. Another launch on the volume can sign in to another account meanwhile; the refusal
+    then names both addresses, so this session never runs on an account that it did not declare;
+  - it refuses a sign-in response that names another address, or none, stores nothing from it, and
+    names both addresses. So a mistyped declaration costs one relaunch. An attacker cannot sign in
+    as the declared address while the provider verifies it and keeps it on one account;
+  - a sign-in to the declared address replaces the login, as any sign-in does;
+  - a session without a sign-in leaves the store unchanged.
+- A launch that declares another address than the store's login names starts. Its refusal names
+  both addresses, and a sign-in to the declared address in that launch replaces the login.
+- A launch that declares a login whose brokering is off on the volume is refused when its proxy
+  starts, and the refusal names the launcher action that turns brokering on: with brokering off,
+  the session's own token is a real one, which the proxy cannot tell from a foreign one.
+- A launch that declares a login refuses a tunnel to that login's hosts for as long as it runs,
+  whatever the setting. So an action that turns brokering off while the launch runs opens no
+  tunnel there, through which a foreign credential would pass the refusal. The action drops the
+  login, so its placeholder resolves nothing in that launch from then on. The launch's preset
+  entries and bindings at those hosts keep passing, and every other credential stays refused.
 
-## What an undeclared login leaves open
+## What an undeclared launch leaves open
 
-The default, a binding that waits for approval, leaves these risks for each login that the user
-does not declare. SECURITY.md records them (Delivery order, step 5).
+A launch that declares no account for a login still hides that login's tokens. It leaves these
+risks, which SECURITY.md records (Delivery order, step 5):
 
-- A process that signs in before the user, on a volume where that login is unbound, binds its own
-  account. The client works under that account for the rest of the session, and the refusal stays
-  off at the login's hosts until a later launch approves the binding.
-  - A launch that selects a preset credential at one of those hosts refuses there already, the
-    pending login's placeholder included ("Selection and the refusal"), so the client fails there
-    instead.
-  - The user learns of it at the next launch's prompt, a concurrent launch's included. Within the
-    session, the user learns of it only from a refused sign-in of their own, which names the bound
-    account, or from the client's account display, such as `/status`.
-  - The attack needs code that runs before the user's own sign-in, such as a workspace script,
-    another agent with its own login, or an `--env` session: after that sign-in, a sign-in to
-    another account is refused.
-- A login that the user never signs in to stays open on the volume while it is unbound. The next
-  prompt then shows a pending binding that the user never made.
-- The approval rests on the user reading the identity at the prompt. Approving an attacker's
-  lookalike address makes the refusal protect the attacker's account.
-- At a refusing host where nothing is selected or approved, the refusal does not apply, and a
-  foreign key passes ("Selection and the refusal").
+- A foreign key passes at the login's hosts, as today, unless the launch selects a preset
+  credential there ("Selection and the refusal").
+- A process can sign in to its own account, which replaces the volume's login. The client then
+  works under that account, and what it uploads goes there.
+  - The user learns of it from the client's account display, such as `/status`, or from a later
+    launch's banner, which names the login's address as last reported ("The store").
+  - A launch that declares the user's address refuses that login's placeholder and names both
+    addresses.
 
-A declaration closes the first three for its login, and the fourth at its login's hosts. On a
-volume with an unbound login, the banner names `--egress-login` and says that a sign-in there runs
-unprotected until a later launch approves it, or, at a host where the launch selected a preset
-credential, that the proxy refuses the signed-in client's requests there until then.
+A declaration closes both for its login, in its launch. For each login on the volume that the
+launch does not declare, the banner names the login's address and the `--egress-login` option that
+declares it, and says that the launch refuses no other credential at that login's hosts; at a host
+where the launch selected a preset credential, it says instead that the proxy refuses the signed-in
+client's requests there.
 
 ## The store
 
@@ -500,16 +514,16 @@ credential, that the proxy refuses the signed-in client's requests there until t
     token requests a second apart, each followed by a new token (`anthropic-evidence.md`).
 - A request that resolves a placeholder takes the lock shared, so it waits only while a refresh
   runs, and then gets the new token.
-- Every refusal decision at a refusing host reads the bindings and their approvals under the
-  shared lock, so an approval applies to the next request in every proxy, and no proxy decides
-  from a copy it read earlier.
-  - An approval governs later requests and WebSocket handshakes. A WebSocket opened before it runs
+- Every decision that depends on the store reads it under the shared lock: the token behind a
+  placeholder, the account that the login names, and the brokering setting. So a sign-in, a
+  dropped login or a changed setting applies to the next request in every proxy, and no proxy
+  decides from a copy it read earlier.
+  - A change governs later requests and WebSocket handshakes. A WebSocket opened before it runs
     on, since the proxy relays an upgraded stream without further decisions
     (`AgentEgressProxy.scala`).
-- A revoke and the answer at the start prompt take the lock exclusively too, so an in-flight
-  refresh cannot bring a retired login back: a refresh that holds the lock finishes before the
-  retire, and one that starts after it finds no login. A launcher action meets no refresh: it runs
-  only while no proxy holds the presence lock.
+- A sign-in, a revoke and a launcher action take the lock exclusively too, so an in-flight refresh
+  cannot bring a retired login back: a refresh that holds the lock finishes before the retire, and
+  one that starts after it finds no login.
 - The proxy bounds a refresh's exchange in time, since every request that resolves a placeholder
   waits for the lock meanwhile. It treats a timed-out exchange as one whose outcome it does not
   know, as for a proxy that dies (below).
@@ -536,9 +550,6 @@ credential, that the proxy refuses the signed-in client's requests there until t
     reaches it. If that sign-in wrote the same profile, `ant` then deletes the file
     (anthropic-cli `authLogout`), and the client signs in again; the new login's store entries
     stay.
-  - The volume keeps its bound account and its refusal: a later sign-in to the same account gets
-    new placeholders, and one to another account is refused until the host-side action drops the
-    binding ("Which account the store accepts").
   - Both clients delete their local credentials when the revoke request fails, so the store
     follows the request, not the answer: claude 2.1.326 warns that the login may still work, and
     codex 0.169.0 reports a successful logout (`anthropic-evidence.md`, `openai-evidence.md`).
@@ -558,18 +569,21 @@ credential, that the proxy refuses the signed-in client's requests there until t
     across the refresh request (`codex-rs/login/src/auth/manager.rs`, `refresh_token_with_reason`,
     `persist_tokens`).
 - The launcher reaches the store only through a proxy container:
-  - The launcher learns a binding from its proxy, which reports each binding during the run and
-    the store's bindings at its start, so a binding whose proxy died before reporting it still
-    reaches a later prompt. The launcher saves them, and each launch shows a saved pending binding
-    right before its prompt, as it prints the BPF reconcile's saved notes: the proxy starts beside
-    the prompt, so the prompt cannot wait for it (`design.md`, "What may move across the start
-    prompt").
-  - The launcher passes the answer to its launch's proxy, which writes it to the store. A launcher
-    action runs while no proxy holds the store's presence lock, so no proxy is there: the
-    launcher runs a short-lived container of the proxy image that mounts the volume, takes the
-    locks, writes the change and exits.
-  - At rest it is a plaintext file in the persistent volume, where the real tokens are kept today;
-    the sandbox only loses its read.
+  - A launcher action runs a short-lived container of the proxy image that mounts the store,
+    takes the lock, writes the change and exits, whether or not a session runs on the volume.
+  - A proxy reports the volume's logins at its start and after each sign-in: each client, its
+    address and names, and its brokering setting. The launcher saves the report, and each launch's
+    banner prints the saved one, as it prints the BPF reconcile's saved notes: the proxy starts
+    beside the prompt, so the banner cannot wait for it (`design.md`, "What may move across the
+    start prompt").
+  - The saved report decides nothing: every decision reads the store. The banner says that it
+    shows the logins as last reported: a sign-in whose proxy died before reporting it appears
+    once a later proxy's report has arrived, which can be after the next launch's banner.
+- A proxy can read every login in its volume's store, those of agents that its session never runs
+  included, where a proxy today holds only the credentials sent through it (SECURITY.md, "Who
+  holds a brokered value").
+- At rest the store is a plaintext file in the persistent volume, where the real tokens are kept
+  today; the sandbox only loses its read.
 - Not chosen:
   - a file under the state root, mounted as the leaf key is: on macOS and Windows its lock would
     cross the podman machine's file sharing, the state root is per workspace rather than per
@@ -586,25 +600,24 @@ credential, that the proxy refuses the signed-in client's requests there until t
 - Brokering is on by default for every login that the catalog names. A problem found in delivery
   reopens this. Codex's login is on by default once the Codex TUI passes the production-image
   check (Verification).
-- At each refusing host, the refusal accepts one set: the placeholders of the launch's preset
-  entries and `--egress-cred` bindings there (`plan-preset-credential-proxy.md`, "Refusing another
-  credential"), and the access placeholder of each approved login on the volume there, except a
-  login that the launch declares and whose binding names another identity. It applies once the
-  set holds a preset entry or an approved login, signed out or not, or once the launch declares a
-  login with an API host there; until then the host keeps today's behavior ("What an undeclared
-  login leaves open").
-  - Every value in the set is one that the user selected at launch or approved, so a foreign key
-    stays refused. A pending login's placeholder, which may be an attacker's, is refused where the
-    refusal applies; the refusal says to approve the login at the next launch, by its prompt or by
-    `--egress-login`, or with the launcher action.
-  - Each refusal decision reads the approvals under the store's shared lock ("The store"), so an
-    approval applies to the next request in every proxy. From then on the proxy refuses requests
-    carrying an `--env` key at that host, which the launch's note says.
-- A volume whose client already holds real tokens stays unbound until the client's next sign-in,
-  which its refused refresh asks for ("Which account the store accepts"). The banner says the
-  login is unbound.
-  - Binding at a refresh is not chosen: it would rest on a refresh response that names the
-    account, and the forced sign-in brokers the login at the first refresh as well.
+- The refusal is decided per launch. At each refusing host, it accepts one set: the placeholders
+  of the launch's preset entries and `--egress-cred` bindings there
+  (`plan-preset-credential-proxy.md`, "Refusing another credential"), and the access placeholder
+  of each login that the launch declares, while the store's login names the declared address. It
+  applies once the set holds a preset entry, or once the launch declares a login with an API host
+  there; until then the host keeps today's behavior ("What an undeclared launch leaves open").
+  - Every value in the set is one that the user selected or declared at launch, so a foreign key
+    stays refused. The placeholder of a login that the launch does not declare, which may stand
+    for an attacker's account, is refused where the refusal applies; the refusal names
+    `--egress-login`.
+  - Nothing that another launch does changes the set. Which account the store's login names can
+    change at any sign-in on the volume, so the proxy reads it with the token at each resolution
+    ("The store").
+- A volume whose client already holds real tokens has no login in the store until the client's
+  next sign-in, which its refused refresh asks for ("The login's account"). The banner names no
+  login for that client.
+  - Capturing the login at a refresh is not chosen: it would rest on a refresh response that names
+    the account, and the forced sign-in brokers the login at the first refresh as well.
   - Importing the tokens at launch is not chosen: the launcher would read and write each client's
     credentials file, which "The rewrite" leaves to the client.
 
@@ -628,8 +641,6 @@ credential, that the proxy refuses the signed-in client's requests there until t
   `https://mcp-proxy.anthropic.com` and `/v1/mcp/{server_id}` beside its OAuth endpoints, for
   claude.ai's connectors; the defaults refuse that host, so a workspace that allows it loses those
   connectors under brokering until a measurement adds it.
-- Copilot's device-flow token and agy's and kiro-cli's logins: whether each refreshes, and through
-  which endpoint.
 - Whether each provider treats an email address's letter case as significant, which decides
   whether a declaration's comparison ignores it ("Declaring the account").
 - The rest of the providers' evidence that each verifies an account's address and keeps it on that
@@ -656,8 +667,7 @@ credential, that the proxy refuses the signed-in client's requests there until t
      to an entry's token endpoints, whichever `client_id` it carries, it records the names of the
      fields and token claims in request and response, the request's `client_id`, and which field
      or claim holds the account, the email address, the workspace and the scopes; never a token or
-     an identifier's value. A login whose scopes that run finds nowhere stays unbrokered ("Which
-     account the store accepts"), and one whose email address it finds nowhere, or whose
+     an identifier's value. A login whose email address that run finds nowhere, or whose
      provider's evidence does not show the address verified and kept on one account, cannot be
      declared ("Declaring the account").
    - The proxy's log records no body field. The token fields come from Codex's source (a JSON
@@ -667,18 +677,54 @@ credential, that the proxy refuses the signed-in client's requests there until t
    - Record the result in the preset's evidence file.
 2. The store and its lock come with `plan-preset-credential-proxy.md`, step 2, which measures the
    lock.
-3. Add the catalog, the store and the rewrite, without the refusal.
+3. Add the catalog, the store and the rewrite, without the refusal. Narrow the `anthropic` and
+   `openai` presets' write grants at `platform.claude.com` and `auth.openai.com` to the checked
+   prefixes.
    Remote Control ships unsupported from this step, which refuses its registration, and the README
    says so, unless the proxy captures its tokens first (Open questions).
-4. Let the refusal of `plan-preset-credential-proxy.md` use the access placeholder of each
-   approved login on the volume, and add `--egress-login`, which approves one in advance.
-5. Rewrite `design.md`'s section and SECURITY.md ("Agents' own provider logins", "Exfiltration
-   through allowed network traffic"), and delete each plan fact once they record it. SECURITY.md
-   lists a credential-creating route that the catalog does not list beside echoed credentials, and
-   the README tells Console users to choose "Sign in with your Console account", and that "Create
-   an API key (legacy)" fails in the sandbox.
-   - SECURITY.md records what an undeclared login leaves open and what a declaration closes. The
-     README and the launcher help describe `--egress-login` and recommend it in the options file.
+4. Let the refusal of `plan-preset-credential-proxy.md` use the access placeholder of each login
+   that the launch declares, and add `--egress-login`.
+5. Rewrite the documents that record what this plan reverses, and delete each plan fact once they
+   record it:
+   - `design.md`, "Credential brokering at the egress proxy" and "Model hosts inspected by
+     default", in the items that "Outcome" lists;
+   - SECURITY.md: "Agents' own provider logins", "Exfiltration through allowed network traffic"
+     and "What the persistent volume holds"; in "Who holds a brokered value", that a proxy can
+     read every login in its volume's store; what an undeclared launch leaves open and what a
+     declaration closes; that a placeholder permits what its latest sign-in's scopes permit; that
+     a session holds a sign-in's code and verifier while the sign-in runs; and, beside echoed
+     credentials, a credential-creating route that the catalog does not list;
+   - `egress-proxy.md`, "Where the value goes", which says that no response is rewritten;
+   - `agent-measurement.md`: rule 2, for the login hosts' narrowed grants, and a reading of each
+     write that a release adds at an API host, for a credential in its response;
+   - `TODO.md`, "Server tools that connect where a request says", which then cites the decision on
+     refusing by body;
+   - the README and the launcher help: `--egress-login`, recommended in the options file; that
+     Console users choose "Sign in with your Console account"; and that "Create an API key
+     (legacy)" fails in the sandbox.
+6. Broker the other agents' logins, each after a measurement as in step 1, in this order. A forge
+   token rates above a model token (`design.md`, "Credential brokering at the egress proxy"):
+   - Copilot CLI's `copilot login`, whose OAuth token has the `repo` scope and is kept in
+     plaintext under `~/.copilot` (SECURITY.md, "The web reached through the model provider").
+     - The device sign-in polls `github.com` `/login/oauth/access_token`, and the token goes to
+       `api.github.com` and the plan's host (`github-evidence.md`).
+     - The `github` preset grants `GET` `api.github.com` `/copilot_internal/v2/token` as a read,
+       and its response carries a Copilot token. A read's response passes as it arrives, so the
+       entry refuses or brokers that exchange before this login is brokered.
+     - Open: whether the token expires or refreshes, the token response's format and fields,
+       which field names the account, and whether Copilot's local token check accepts a
+       placeholder (github/copilot-cli #2431). `/logout` fails in the sandbox before any request
+       (`github-evidence.md`), so the launcher action is this login's sign-out.
+   - agy's Google sign-in, which exchanges its code and refreshes at `oauth2.googleapis.com`
+     `/token` and keeps the token in `~/.gemini/antigravity-cli/antigravity-oauth-token`
+     (`google-evidence.md`).
+     - Other Google clients in a session, such as gcloud, exchange their tokens at the same
+       endpoint, so the entry's client IDs tell agy's requests apart. agy's sign-out sent no
+       request.
+   - kiro-cli's sign-in, which refreshes at `/refreshToken` and signs out at `/logout`
+     (`aws-evidence.md`).
+     - A refresh forced 50 minutes early was answered 401, and kiro-cli deleted the token. Open:
+       its Builder ID, Identity Center and GitHub sign-ins, which are unmeasured.
 
 ## Verification
 
@@ -686,19 +732,18 @@ credential, that the proxy refuses the signed-in client's requests there until t
   both orders. After one proxy is killed between a test provider's refresh answer and the store's
   write, the next refresh sends the old refresh token once: the login continues where the test
   provider accepts it, and ends with a refused refresh where it does not.
-- A token response for an account other than the volume's is refused, names the bound account and
-  the account that signed in, and leaves the store with the volume's login.
-- Two launches on one unbound volume that sign in at once to different accounts: one binds, and
-  the other's response is refused and stores nothing.
-- A new binding leaves the refusal off until the user approves it at a start prompt, and running
-  proxies on the volume refuse from then on. Dropping it there removes the binding and the login.
-  A launch under `immediate`, or under `pause` without a terminal, leaves it pending and names
-  `--egress-login` and the launcher action. A later launch under `immediate` that declares the
-  pending identity approves it.
+- A sign-in replaces the volume's login for its client, whatever account, sign-in kind or scopes
+  the stored login has, and gives the client new placeholders. Two launches that sign in at once
+  to different accounts leave one login whole in the store, the later write's. Where the other
+  sign-in's client saves its credentials last, its requests fail, and the next sign-in works.
+- After a sign-out, a sign-in to another account replaces the login. A keyless Console sign-in on
+  a volume that holds Claude Code's subscription login replaces it.
 - A revoke while a refresh holds the lock leaves no login afterwards. A refresh exchange past its
   time bound leaves the old token in the store and is not retried.
-- A launcher action while a proxy on the volume runs is refused and leaves the login; after the
-  proxy exits, the same action drops it.
+- A launcher action that drops a login while a proxy on the volume runs applies to that proxy's
+  next request: the login's placeholders then authenticate nothing. The action changes the store
+  through its short-lived container, with or without a session on the volume, and leaves no
+  container behind.
 - A first launch on a fresh volume starts, and two concurrent first launches on one name share a
   volume and its store.
 - `--reset` during a delayed refresh exchange removes the proxy (`podman rm --force`) and the
@@ -706,15 +751,16 @@ credential, that the proxy refuses the signed-in client's requests there until t
 - A proxy killed at each point of a store write leaves the old state or the new one, whole.
 - After the agent deletes its credentials without a revoke request, its placeholders keep working
   until the launcher action drops the login, and authenticate nothing afterwards.
-- While brokering is on, a refresh request with a real refresh token is refused, on a bound or an
-  unbound volume, and the refusal says to sign in again.
-- Codex's token exchange for an API key is refused before it is forwarded, and the browser
-  sign-in completes without a key; its authorization-code exchange and its refreshes pass and
-  change only their own store entries.
-- Codex's device poll answers pass unchanged, and bind nothing.
-- Codex's workspace switch is refused before it is forwarded, and no token of another workspace
-  reaches the volume.
-- A login whose entry names no place for its scopes is not brokered.
+- While brokering is on, a refresh request with a real refresh token is refused, and the refusal
+  says to sign in again. A volume whose client holds real tokens is brokered at the sign-in that
+  its refused refresh asks for.
+- Codex's token exchange for an API key and `claude setup-token`'s exchange are refused before
+  they are forwarded. Codex's browser sign-in completes without a key, and the `setup-token`
+  refusal says to run it outside the sandbox. Codex's authorization-code exchange and its
+  refreshes pass and change only their own store entries.
+- Codex's device poll answers pass unchanged, and store nothing.
+- Codex's workspace switch at `/backend-api/accounts/switch-workspace-token` is refused before it
+  is forwarded, and no token of another workspace reaches the volume.
 - `create_api_key` is refused before it is forwarded, at the volume's placeholder and at any other
   credential, and no key reaches the volume. A keyless Console sign-in completes, survives the next
   launch, and leaves placeholders in its profile; its refresh at `api.anthropic.com` changes only
@@ -725,73 +771,75 @@ credential, that the proxy refuses the signed-in client's requests there until t
   neither case changes the store.
 - Remote Control's registration is refused before it is forwarded, and no environment secret
   reaches the volume.
-- An `ant auth login` binds as Claude Code's Console login, or is refused on a volume bound to the
-  subscription login; Claude Code then uses that profile, and a refresh by either client changes
-  only that login's store entries.
-- Codex's API-key exchange and `claude setup-token`'s exchange are refused before they are
-  forwarded. Codex's sign-in completes without a key, and the `setup-token` refusal says to run it
-  outside the sandbox.
-- A response under `/v1/oauth/` on `api.anthropic.com` with an undeclared token field is refused,
-  and a `/v1/messages` stream passes as it arrives.
-- With a preset entry and an approved login at one host, each placeholder passes, and a foreign
-  token is refused. A pending login's placeholder there is refused and names the approval.
-- A keyless Console sign-in on a volume bound to Claude Code's subscription login is refused and
-  names the launcher action; after the action, it binds.
-- A token response that changes the user, the organization, the workspace or the scopes is
-  refused, and scopes in another order are no change. A sign-in response without scopes, where the
-  entry declares them, is refused. A refresh response without scopes keeps the bound ones.
+- An `ant auth login` replaces the volume's Claude Code login, as a Console sign-in does; Claude
+  Code then uses that profile, and a refresh by either client changes only that login's store
+  entries.
+- A response to a write under `/v1/oauth/` on `api.anthropic.com` with an undeclared token field is
+  refused, and a `/v1/messages` stream passes as it arrives. A documentation page of 1 MiB at
+  `platform.claude.com` passes as it arrives, and so does a read under `/v1/oauth/`. Under the
+  presets alone, the ruleset refuses a write outside the checked prefixes at
+  `platform.claude.com` and `auth.openai.com`. Where a workspace's rule grants such a write, a
+  token response there passes unchecked.
+- A refresh response with an undeclared token field is refused to the client, and the store holds
+  its declared tokens: the next request under the same placeholders reaches the provider with the
+  new access token. A refresh response that names another user, organization or workspace, or a
+  scope beyond the sign-in's, stores nothing; scopes in another order, or fewer, are no change.
 - A token request with another `client_id` passes unbrokered, and its response changes nothing in
   the store.
-- The prompt shows a pending binding's scopes.
-- An approval in one proxy applies to the next request in another running proxy.
-- A sign-in response without the entry's account field is refused and stores nothing.
+- A sign-in or a dropped login in one proxy applies to the next request in another running proxy.
 - Under `--egress-login=codex:EMAIL`, a foreign key at `chatgpt.com` is refused before any sign-in,
   and a session without a sign-in leaves the store unchanged. A sign-in to the declared address
-  binds without a prompt, its placeholder passes, and the store then holds what a sign-in without
-  the option and its approval at a later launch leave. A sign-in to another address, or one whose
-  `email_verified` is false, is refused, names both identities and stores nothing, and a relaunch
-  with the corrected declaration binds at its sign-in.
-- A later launch without the option keeps a binding that a declared sign-in wrote, and the launcher
-  action drops it. A declaration that names a pending binding's identity approves it, and one that
-  names the approved binding's changes nothing; one that names another identity, pending or
-  approved, refuses the launch and names both identities. Of two launches that declare different
-  identities and sign in, the first sign-in binds, and the other is refused and names both. The
-  other launch's API requests that carry the binding's placeholder are refused too, before its own
-  sign-in and after it, and the refusal names both identities.
-- A launch that declares a pending binding's identity for one login, and for the other a
-  conflicting identity or a login with brokering off, is refused and approves nothing, in either
-  order. A paused launch that declares a saved pending binding's identity asks nothing about that
-  binding at its prompt and approves it.
+  replaces the login, and its placeholder passes. A sign-in to another address, one whose response
+  names no address, or one whose `email_verified` is false, is refused, names both identities and
+  stores nothing, and a relaunch with the corrected declaration takes its sign-in. In a launch
+  that declares no login, the same sign-ins replace the login. After such a sign-in whose
+  `email_verified` is false, the store records no address, and a launch that declares that
+  address refuses the login's placeholder.
+- A later launch without the option resolves the login's placeholder and refuses no foreign key
+  at its hosts. A launch that declares another address than the store's login names starts,
+  refuses the placeholder and names both addresses; a sign-in to its declared address then
+  replaces the login. Of two running launches that declare different addresses, each refuses the
+  placeholder while the store's login names the other's address.
+- A running session's refusal does not change when another launch on the volume declares a login
+  or selects a preset credential.
+- With a preset entry and a declared login at one host, each placeholder passes, and a foreign
+  token is refused. In a launch that selects the preset entry and declares no login, the login's
+  placeholder is refused there and the refusal names `--egress-login`, and a sign-in in that
+  launch replaces the login as in any other.
+- A launch that declares a login and binds a refusing host with `--egress-cred` starts, and the
+  binding's placeholder passes there as the login's does; a foreign token is refused.
 - No workspace file declares a login. A declaration for a login whose entry names no email field,
   or cites no evidence that the provider verifies the address, is refused. So is one for a login
   whose provider verifies the address but whose entry cites no evidence that it keeps the address
-  on one account, a declaration that names a pending binding's identity included.
+  on one account.
 - A command-line `--egress-login` replaces the options file's entry for its login, and its empty
   value drops the file's entries. A launch that names one login twice is refused. With brokering
   off for a login on the volume, a launch that declares that login is refused and names the action
   that turns brokering on.
-- On a volume with an unbound login, the banner names `--egress-login` and says that a sign-in
-  there runs unprotected until a later launch approves it; with a preset credential selected at
-  the login's host, it says that the sign-in's placeholder is refused there until then.
+- For a login that the launch does not declare, the banner names the login's address and
+  `--egress-login`, and says that the launch refuses no other credential at the login's hosts;
+  with a preset credential selected at the login's host, it says that the login's placeholder is
+  refused there. The launch after a sign-in names the new address. After a sign-in whose proxy
+  died before reporting it, the next launch's banner names the new address where that launch's
+  proxy reported before the banner printed, and the old one where it had not; the launch after
+  names the new one in both orders.
 - While brokering is on for a login, a proxy refuses a tunnel to its login host or an API host and
-  names the launcher action. The action, in either direction, is refused while any proxy on the
-  volume runs, a paused launch's included.
+  names the launcher action. The action, in either direction, applies to the next decision in
+  every running proxy on the volume, and a tunnel opened before it runs on. A running launch that
+  declares the login still refuses the tunnel after the action turns brokering off. At the
+  login's API hosts it then refuses the login's placeholder and a foreign token, and a preset
+  entry's placeholder that it selected there still passes.
 - An action and a proxy's start, in both orders and from launchers with different state roots,
-  leave every proxy with the setting that the store holds while it runs.
+  leave every proxy deciding by the setting that the store holds.
 - A volume with brokering off, removed with `podman volume rm` or by `--reset` and created again
   under its name, starts with brokering on; so does a volume whose store is missing. A proxy whose
   store exists but cannot be read refuses to start and leaves the store.
-- Codex's workspace switch at `/backend-api/accounts/switch-workspace-token` is refused.
-- A launcher action with no session on the volume changes the store through its short-lived
-  container, and leaves no container behind.
 - A brokered login, turned off, then a tunneled launch and a sign-in, completes a request; turned
   back on, its refresh is refused, and a sign-in brokers it again.
-- A volume whose client holds real tokens binds at the sign-in that its refused refresh asks
-  for.
-- A response with a token-like field at an undeclared path, with an error status, or beside a
-  declared field at a token endpoint is refused, as is a body over the bound, whether its length is
-  declared, chunked or ended by the connection's close. An error response that holds only declared
-  token fields is refused and changes nothing in the store.
+- A response to a checked write with a token-like field at an undeclared path, with an error
+  status, or beside a declared field at a token endpoint is refused, as is a body over the bound,
+  whether its length is declared, chunked or ended by the connection's close. An error response
+  that holds only declared token fields is refused and changes nothing in the store.
 - A refresh whose real token differs in length from its placeholder reaches the provider with a
   matching `Content-Length`, and a chunked one arrives with a `Content-Length`. A token request
   over the bound is refused before any byte reaches the provider. A request with
@@ -804,32 +852,18 @@ credential, that the proxy refuses the signed-in client's requests there until t
   undeclared token field whose name is spelled with escapes.
 - A token response whose rewrite changes its length reaches the client with a matching
   `Content-Length`, whether the provider framed it by length, chunked it or ended it by closing
-  the connection. A `204` at a checked path reaches the client without `Content-Length` or
-  `Transfer-Encoding`, even when the provider sent one, and a response to `HEAD` keeps its
-  `Content-Length`. A `103` before a final response reaches the client without either header, and
-  the final response is reframed.
-- After a sign-out, a sign-in to another account is refused until the host-side action drops the
-  binding.
-- A preset-credential launch keeps its credential accepted while a login at that host is pending
-  or approved, and a sign-in in that launch binds as in any other. An `--env` session's real key is
-  refused from the moment the user approves the volume's binding at another launch's start.
-- On a volume with an approved binding, a launch with an `--egress-cred` binding to a refusing
-  host starts, and the binding's placeholder passes there as the brokered login's does; a foreign
-  token is refused.
+  the connection. A `204` to a checked write reaches the client without `Content-Length` or
+  `Transfer-Encoding`, even when the provider sent one. A `103` before a final response reaches
+  the client without either header, and the final response is reframed.
 - One client that sends two refreshes a second apart keeps working, and both responses carry the
   same placeholders.
 - A refresh that changes a claim Codex reads, such as the plan type, reaches Codex's stored ID
   token. Codex refreshes before the access token's `exp` without a 401, and an older access
   placeholder still resolves.
-- The launch after a sign-in shows the pending binding before its prompt. An approval for a
-  binding that another launch dropped and replaced with another identity is refused, and the next
-  prompt shows the replacement; a replacement of the same identity is approved. After one prompt
-  approves a binding, a drop from a second prompt that showed it is refused. A binding whose proxy
-  died before reporting it appears at a later prompt.
 - `--reset-all` keeps a user-named volume and its login.
 - A revoke request that a workspace rule refuses leaves the login until the launcher action
   drops it. Codex's revoke of an access token, which carries no `client_id`, retires the login.
-- Once a login is bound, no real token of it reaches the sandbox's environment or persistent
+- Once a sign-in is brokered, no real token of it reaches the sandbox's environment or persistent
   volume (`ProxyContainerTest`).
 - Removing the volume removes its store, and a placeholder copied out of the session authenticates
   nothing elsewhere.

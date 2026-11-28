@@ -1,7 +1,8 @@
 # Plan: measurements for the credential plans
 
-Step 1 of `plan-preset-credential-proxy.md` and of `plan-login-brokering.md`, step 2 of the
-brokering plan, and the brokering plan's open questions that a session settles, run on the host.
+Step 1 of `plan-preset-credential-proxy.md` and of `plan-login-brokering.md`, steps 2 and 6 of
+the brokering plan, and the brokering plan's open questions that a session settles, run on the
+host.
 
 - Record each result in the provider's evidence file, with the client's version and the date
   (`agent-measurement.md`, "Measurement"), and settle the plan item that it answers.
@@ -22,7 +23,8 @@ brokering plan, and the brokering plan's open questions that a session settles, 
     ```sh
     for v in measure-claude-key measure-claude-oat measure-claude-login measure-claude-console \
         measure-claude-rotation measure-claude-rc measure-claude-rc-oat \
-        measure-codex-key measure-codex-login measure-codex-tui measure-copilot; do
+        measure-codex-key measure-codex-login measure-codex-tui measure-copilot \
+        measure-copilot-login measure-agy-login measure-kiro-login; do
         podman volume exists "$v"
         case $? in
             0) echo "$v exists" ;;
@@ -356,11 +358,61 @@ brokering plan, and the brokering plan's open questions that a session settles, 
       30 seconds to take the lock, stops if setting up or the kill fails, and removes both on
       every exit.
 
+## The other agents' logins (brokering plan, step 6)
+
+15. Copilot CLI's sign-in:
+    - Choose an account whose other Copilot CLI sign-ins may end: "After the session" deletes
+      the application's grant, which deletes every token of that application for the user
+      (https://docs.github.com/en/rest/apps/oauth-applications).
+    - Launch with `--egress-preset=github --persistent-volume=measure-copilot-login bash`, run
+      `copilot`, sign in with `/login`, send a message and quit.
+    - Record the files under `~/.copilot` (`ls -la ~/.copilot`), and the shape of each JSON file
+      among them with item 3's `jq` filter, a field that holds an expiry or a second token
+      included. Whether the token refreshes stays open until a token request at its expiry, or
+      the client's source, shows it.
+    - Record the log's lines at `github.com`, `api.github.com` and the plan's host, with each
+      `cred=` index.
+    - Copy the file that holds the token to `~/persistent-volume/copilot-token.bak`. In the file,
+      change one letter of the token to another letter of the same case, and run
+      `copilot -p "say ok"`. Record whether a request carries a new `cred=` index: Copilot sends
+      nothing for a token that fails its local check (github/copilot-cli #2431). Put the copy
+      back, and delete it.
+    - `/logout` fails in the sandbox before any request (`github-evidence.md`), so "After the
+      session" revokes this sign-in at GitHub.
+16. agy's sign-in:
+    - Choose an account whose other agy sign-ins may end: "After the session" removes agy's
+      access to the account.
+    - Launch with `--egress-preset=google --persistent-volume=measure-agy-login bash`, run `agy`,
+      sign in, send a message and quit.
+    - Record the shape of `~/.gemini/antigravity-cli/antigravity-oauth-token` with item 3's `jq`
+      filter.
+    - Move the file's expiry into the past, as the earlier measurement did
+      (`google-evidence.md`), and run `agy -p "say ok"`. Record the token request's line at
+      `oauth2.googleapis.com` and the new `cred=` index after it.
+    - Put 22 random letters and digits in the file's access token, with item 5's `python3`
+      command, and run `agy -p "say ok"`. Record whether a request carries a new `cred=` index,
+      and whether a token request follows.
+    - The log shows no body, so the client ID that agy sends to the token endpoint comes from
+      agy's source, or from the first run of the brokering plan's step 3.
+    - agy's sign-out sends no request (`google-evidence.md`), so "After the session" revokes this
+      sign-in at Google.
+17. kiro-cli's sign-in:
+    - Launch with `--egress-preset=aws --persistent-volume=measure-kiro-login bash`, sign in with
+      `kiro-cli login --use-device-flow`, and run `kiro-cli chat --v3 --no-interactive "say ok"`.
+      Without `--v3` the headless run starts the V2 engine, whose model host the preset refuses
+      (README, "`kiro-cli`").
+    - Record the files under `~/.local/share/kiro-cli` (`ls -la`), which of them holds the token,
+      and its shape where it is JSON.
+    - Record the log's lines at the sign-in host: the device poll, `/refreshToken` at the token's
+      expiry, and `/logout` after `kiro-cli logout`.
+    - Repeat with each sign-in that the earlier measurement left out, where an account allows it:
+      Builder ID, Identity Center and GitHub (`aws-evidence.md`).
+
 ## After the session
 
 1. Sign out of each login that a volume still holds, so that the provider revokes it before the
-   volume goes: launch on the volume, and run `/logout` in `claude` or `codex logout`. Items 6, 7
-   and 12 end with one.
+   volume goes: launch on the volume, and run `/logout` in `claude`, `codex logout` or
+   `kiro-cli logout`. Items 6, 7, 12 and 17 end with one.
 2. From the measurement directory, run `<launcher> --reset`. It removes that workspace's
    containers, volume, CA and logs, and leaves the named volumes.
 3. Remove the named volumes:
@@ -368,7 +420,8 @@ brokering plan, and the brokering plan's open questions that a session settles, 
    ```sh
    podman volume rm measure-claude-key measure-claude-oat measure-claude-login \
        measure-claude-console measure-claude-rotation measure-claude-rc measure-claude-rc-oat \
-       measure-codex-key measure-codex-login measure-codex-tui measure-copilot
+       measure-codex-key measure-codex-login measure-codex-tui measure-copilot \
+       measure-copilot-login measure-agy-login measure-kiro-login
    ```
 
 4. Remove the measurement directory.
@@ -387,4 +440,7 @@ brokering plan, and the brokering plan's open questions that a session settles, 
      token with its sign-in time. To check it, run `claude -p` with `CLAUDE_CODE_OAUTH_TOKEN` set
      and `ANTHROPIC_API_KEY` unset: a set API key outranks the token, and the run then succeeds
      whatever the token's state;
+   - Copilot's sign-in of item 15, among the account's authorized OAuth apps
+     (https://docs.github.com/en/apps/oauth-apps/using-oauth-apps/reviewing-your-authorized-oauth-apps),
+     and agy's sign-in of item 16, in the Google account's settings;
    - any key or token created only for the session.
